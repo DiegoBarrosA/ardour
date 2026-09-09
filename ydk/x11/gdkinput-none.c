@@ -123,4 +123,3 @@ gdk_device_set_mode (GdkDevice   *device,
 }
 
 #define __GDK_INPUT_NONE_C__
-#include "gdkaliasdef.c"

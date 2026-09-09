@@ -48,5 +48,3 @@ gdk_window_impl_get_type (void)
 }
 
 #define __GDK_WINDOW_IMPL_C__
-#include "gdkaliasdef.c"
-

@@ -136,4 +136,3 @@ gdk_utf8_to_compound_text (const gchar *str,
 }
 
 #define __GDK_SELECTION_C__
-#include "gdkaliasdef.c"

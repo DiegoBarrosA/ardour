@@ -1976,4 +1976,3 @@ _gdk_drawable_create_cairo_surface (GdkDrawable *drawable,
 
 
 #define __GDK_DRAW_C__
-#include "gdkaliasdef.c"

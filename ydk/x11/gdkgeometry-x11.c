@@ -320,4 +320,3 @@ _gdk_window_process_expose (GdkWindow    *window,
 }
 
 #define __GDK_GEOMETRY_X11_C__
-#include "gdkaliasdef.c"

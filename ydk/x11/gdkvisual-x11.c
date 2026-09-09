@@ -676,4 +676,3 @@ gdk_visual_get_screen (GdkVisual *visual)
 }
 
 #define __GDK_VISUAL_X11_C__
-#include "gdkaliasdef.c"

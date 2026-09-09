@@ -5709,4 +5709,3 @@ gdk_window_impl_iface_init (GdkWindowImplIface *iface)
 }
 
 #define __GDK_WINDOW_X11_C__
-#include "gdkaliasdef.c"

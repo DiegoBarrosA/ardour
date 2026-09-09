@@ -1596,4 +1596,3 @@ _gdk_gc_update_context (GdkGC          *gc,
 
 
 #define __GDK_GC_C__
-#include "gdkaliasdef.c"

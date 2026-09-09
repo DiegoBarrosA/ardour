@@ -356,4 +356,3 @@ gdk_font_load (const gchar *font_name)
 }
 
 #define __GDK_FONT_C__
-#include "gdkaliasdef.c"

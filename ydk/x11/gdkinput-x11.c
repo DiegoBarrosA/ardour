@@ -972,4 +972,3 @@ gdk_device_get_state (GdkDevice       *device,
 }
 
 #define __GDK_INPUT_X11_C__
-#include "gdkaliasdef.c"

@@ -261,4 +261,3 @@ gdk_display_manager_list_displays (GdkDisplayManager *display_manager)
 }
 
 #define __GDK_DISPLAY_MANAGER_C__
-#include "gdkaliasdef.c"

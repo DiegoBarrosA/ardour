@@ -395,4 +395,3 @@ gdk_colormap_get_system (void)
 }
 
 #define __GDK_COLOR_C__
-#include "gdkaliasdef.c"

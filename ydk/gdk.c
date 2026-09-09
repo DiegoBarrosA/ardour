@@ -836,4 +836,3 @@ gdk_set_program_class (const char *program_class)
 }
 
 #define __GDK_C__
-#include "gdkaliasdef.c"

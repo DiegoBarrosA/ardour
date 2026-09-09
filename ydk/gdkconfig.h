@@ -20,16 +20,14 @@ extern "C" {
 #endif /* !GSEAL */
 
 
-#ifdef __APPLE__
-# define GDK_WINDOWING_QUARTZ
-# define GDK_HAVE_BROKEN_WCTYPE 1
-# define GDK_NATIVE_WINDOW_POINTER
-#elif defined PLATFORM_WINDOWS
-# define GDK_WINDOWING_WIN32
-# define GDK_NATIVE_WINDOW_POINTER
-#else
-# define GDK_WINDOWING_X11
-#endif
+/*
+ * ydk-wayland fork: both the X11 and Wayland backends are compiled into
+ * libydk and selected at runtime via GDK_BACKEND (see gdkbackend.c).
+ * The Quartz and Win32 backends, which live on in Ardour's tree, were
+ * pruned from this project; see README.md for the divergence notes.
+ */
+#define GDK_WINDOWING_X11
+#define GDK_WINDOWING_WAYLAND
 
 #define GDK_HAVE_WCHAR_H 1
 #define GDK_HAVE_WCTYPE_H 1

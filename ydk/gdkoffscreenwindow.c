@@ -1305,4 +1305,3 @@ gdk_offscreen_window_impl_iface_init (GdkWindowImplIface *iface)
 }
 
 #define __GDK_OFFSCREEN_WINDOW_C__
-#include "gdkaliasdef.c"

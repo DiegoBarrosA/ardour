@@ -147,4 +147,3 @@ gdk_xid_equal (XID *a,
 }
 
 #define __GDK_XID_C__
-#include "gdkaliasdef.c"

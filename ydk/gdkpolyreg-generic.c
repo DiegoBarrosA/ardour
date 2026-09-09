@@ -624,4 +624,3 @@ gdk_region_polygon (const GdkPoint *points,
 }
 
 #define __GDK_POLYREG_GENERIC_C__
-#include "gdkaliasdef.c"

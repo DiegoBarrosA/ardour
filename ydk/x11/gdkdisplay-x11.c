@@ -1498,4 +1498,3 @@ gdk_display_supports_composite (GdkDisplay *display)
 
 
 #define __GDK_DISPLAY_X11_C__
-#include "gdkaliasdef.c"

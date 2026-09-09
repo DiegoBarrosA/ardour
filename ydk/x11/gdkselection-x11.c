@@ -944,4 +944,3 @@ void gdk_x11_free_compound_text (guchar *ctext)
 }
 
 #define __GDK_SELECTION_X11_C__
-#include "gdkaliasdef.c"

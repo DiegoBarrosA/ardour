@@ -346,5 +346,3 @@ gdk_pixbuf_render_pixmap_and_mask_for_colormap (GdkPixbuf   *pixbuf,
 }
 
 #define __GDK_PIXBUF_RENDER_C__
-#include "gdkaliasdef.c"
-

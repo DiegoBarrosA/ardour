@@ -3767,4 +3767,3 @@ gdk_rgb_get_visual (void)
 }
 
 #define __GDK_RGB_C__
-#include "gdkaliasdef.c"

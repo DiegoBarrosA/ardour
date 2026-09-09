@@ -1309,4 +1309,3 @@ gdk_display_pointer_is_grabbed (GdkDisplay *display)
 }
 
 #define __GDK_DISPLAY_C__
-#include "gdkaliasdef.c"

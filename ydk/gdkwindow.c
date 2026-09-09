@@ -11554,4 +11554,3 @@ gdk_window_set_modal_notify (void (*modal_notify)(GdkWindow*,gboolean))
 }
 
 #define __GDK_WINDOW_C__
-#include "gdkaliasdef.c"

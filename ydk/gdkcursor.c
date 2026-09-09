@@ -116,4 +116,3 @@ gdk_cursor_get_cursor_type (GdkCursor *cursor)
 }
 
 #define __GDK_CURSOR_C__
-#include "gdkaliasdef.c"

@@ -251,4 +251,3 @@ gdk_visual_get_blue_pixel_details (GdkVisual *visual,
 }
 
 #define __GDK_VISUAL_C__
-#include "gdkaliasdef.c"

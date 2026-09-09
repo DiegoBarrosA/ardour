@@ -209,4 +209,3 @@ gdk_drag_context_get_protocol (GdkDragContext *context)
 }
 
 #define __GDK_DND_C__
-#include "gdkaliasdef.c"

@@ -759,4 +759,3 @@ gdk_property_delete (GdkWindow *window,
 }
 
 #define __GDK_PROPERTY_X11_C__
-#include "gdkaliasdef.c"

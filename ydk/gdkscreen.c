@@ -542,4 +542,3 @@ gdk_screen_set_property (GObject      *object,
 }
 
 #define __GDK_SCREEN_C__
-#include "gdkaliasdef.c"

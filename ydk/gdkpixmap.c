@@ -866,4 +866,3 @@ gdk_pixmap_get_size (GdkPixmap *pixmap,
 }
 
 #define __GDK_PIXMAP_C__
-#include "gdkaliasdef.c"

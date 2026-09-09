@@ -1710,4 +1710,3 @@ gdk_unicode_to_keyval (guint32 wc)
 }
 
 #define __GDK_KEYUNI_C__
-#include "gdkaliasdef.c"

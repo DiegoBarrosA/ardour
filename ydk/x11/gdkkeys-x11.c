@@ -1854,4 +1854,3 @@ gdk_keymap_map_virtual_modifiers (GdkKeymap       *keymap,
 
 
 #define __GDK_KEYS_X11_C__
-#include "gdkaliasdef.c"

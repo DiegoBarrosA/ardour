@@ -4042,4 +4042,3 @@ gdk_drag_drop_succeeded (GdkDragContext *context)
 }
 
 #define __GDK_DND_X11_C__
-#include "gdkaliasdef.c"

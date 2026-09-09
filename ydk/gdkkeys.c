@@ -313,4 +313,3 @@ gdk_keymap_get_default (void)
 }
 
 #define __GDK_KEYS_C__
-#include "gdkaliasdef.c"

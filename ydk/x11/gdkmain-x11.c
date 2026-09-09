@@ -755,4 +755,3 @@ gdk_x11_get_default_xdisplay (void)
 }
 
 #define __GDK_MAIN_X11_C__
-#include "gdkaliasdef.c"

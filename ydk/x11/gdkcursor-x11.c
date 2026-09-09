@@ -1032,4 +1032,3 @@ gdk_display_get_maximal_cursor_size (GdkDisplay *display,
 }
 
 #define __GDK_CURSOR_X11_C__
-#include "gdkaliasdef.c"
