@@ -67,6 +67,7 @@ libydk_sources = [
 libydk_wayland_sources = [
     'ydk/wayland/gdkdisplay-wayland.c',
     'ydk/wayland/gdkmain-wayland.c',
+    'ydk/wayland/gdkscreen-wayland.c',
 ]
 
 libydk_x11_sources = [

@@ -202,6 +202,78 @@ _gdk_screen_close (GdkScreen *screen)
     }
 }
 
+/**
+ * gdk_screen_get_display:
+ * @screen: a #GdkScreen
+ *
+ * Gets the display to which the @screen belongs.
+ * 
+ * Returns: the display to which @screen belongs
+ *
+ * Since: 2.2
+ **/
+GdkDisplay *
+gdk_screen_get_display (GdkScreen *screen)
+{
+  g_return_val_if_fail (GDK_IS_SCREEN (screen), NULL);
+
+  return GDK_SCREEN_GET_CLASS (screen)->get_display (screen);
+}
+
+/**
+ * gdk_screen_get_width:
+ * @screen: a #GdkScreen
+ *
+ * Gets the width of @screen in pixels
+ * 
+ * Returns: the width of @screen in pixels.
+ *
+ * Since: 2.2
+ **/
+gint
+gdk_screen_get_width (GdkScreen *screen)
+{
+  g_return_val_if_fail (GDK_IS_SCREEN (screen), 0);
+
+  return GDK_SCREEN_GET_CLASS (screen)->get_width (screen);
+}
+
+/**
+ * gdk_screen_get_height:
+ * @screen: a #GdkScreen
+ *
+ * Gets the height of @screen in pixels
+ * 
+ * Returns: the height of @screen in pixels.
+ *
+ * Since: 2.2
+ **/
+gint
+gdk_screen_get_height (GdkScreen *screen)
+{
+  g_return_val_if_fail (GDK_IS_SCREEN (screen), 0);
+
+  return GDK_SCREEN_GET_CLASS (screen)->get_height (screen);
+}
+
+/**
+ * gdk_screen_get_root_window:
+ * @screen: a #GdkScreen
+ *
+ * Gets the root window of @screen.
+ *
+ * Returns: (transfer none): the root window
+ *
+ * Since: 2.2
+ **/
+GdkWindow *
+gdk_screen_get_root_window (GdkScreen *screen)
+{
+  g_return_val_if_fail (GDK_IS_SCREEN (screen), NULL);
+
+  return GDK_SCREEN_GET_CLASS (screen)->get_root_window (screen);
+}
+
 /* Fallback used when the monitor "at" a point or window
  * doesn't exist.
  */

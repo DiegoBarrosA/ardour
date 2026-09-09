@@ -72,6 +72,11 @@
 static void   gdk_display_x11_dispose            (GObject            *object);
 static void   gdk_display_x11_finalize           (GObject            *object);
 
+static gint        gdkw_display_x11_get_n_screens       (GdkDisplay *display);
+static GdkScreen * gdkw_display_x11_get_screen          (GdkDisplay *display,
+							 gint screen_num);
+static GdkScreen * gdkw_display_x11_get_default_screen  (GdkDisplay *display);
+
 #ifdef HAVE_X11R6
 static void gdk_internal_connection_watch (Display  *display,
 					   XPointer  arg,
@@ -129,9 +134,14 @@ static void
 _gdk_display_x11_class_init (GdkDisplayX11Class * class)
 {
   GObjectClass *object_class = G_OBJECT_CLASS (class);
+  GdkDisplayClass *display_class = GDK_DISPLAY_CLASS (class);
   
   object_class->dispose = gdk_display_x11_dispose;
   object_class->finalize = gdk_display_x11_finalize;
+
+  display_class->get_n_screens = gdkw_display_x11_get_n_screens;
+  display_class->get_screen = gdkw_display_x11_get_screen;
+  display_class->get_default_screen = gdkw_display_x11_get_default_screen;
 }
 
 static void
@@ -519,60 +529,22 @@ gdk_display_get_name (GdkDisplay *display)
   return (gchar *) DisplayString (GDK_DISPLAY_X11 (display)->xdisplay);
 }
 
-/**
- * gdk_display_get_n_screens:
- * @display: a #GdkDisplay
- *
- * Gets the number of screen managed by the @display.
- * 
- * Returns: number of screens.
- * 
- * Since: 2.2
- */
-gint
-gdk_display_get_n_screens (GdkDisplay *display)
+static gint
+gdkw_display_x11_get_n_screens (GdkDisplay *display)
 {
-  g_return_val_if_fail (GDK_IS_DISPLAY (display), 0);
-  
   return ScreenCount (GDK_DISPLAY_X11 (display)->xdisplay);
 }
 
-/**
- * gdk_display_get_screen:
- * @display: a #GdkDisplay
- * @screen_num: the screen number
- *
- * Returns a screen object for one of the screens of the display.
- *
- * Returns: the #GdkScreen object
- *
- * Since: 2.2
- */
-GdkScreen *
-gdk_display_get_screen (GdkDisplay *display, 
-			gint        screen_num)
+static GdkScreen *
+gdkw_display_x11_get_screen (GdkDisplay *display,
+			     gint        screen_num)
 {
-  g_return_val_if_fail (GDK_IS_DISPLAY (display), NULL);
-  g_return_val_if_fail (ScreenCount (GDK_DISPLAY_X11 (display)->xdisplay) > screen_num, NULL);
-  
   return GDK_DISPLAY_X11 (display)->screens[screen_num];
 }
 
-/**
- * gdk_display_get_default_screen:
- * @display: a #GdkDisplay
- *
- * Get the default #GdkScreen for @display.
- * 
- * Returns: the default #GdkScreen object for @display
- *
- * Since: 2.2
- */
-GdkScreen *
-gdk_display_get_default_screen (GdkDisplay *display)
+static GdkScreen *
+gdkw_display_x11_get_default_screen (GdkDisplay *display)
 {
-  g_return_val_if_fail (GDK_IS_DISPLAY (display), NULL);
-  
   return GDK_DISPLAY_X11 (display)->default_screen;
 }
 

@@ -11,6 +11,7 @@
 
 #include "config.h"
 
+#include <string.h>
 #include <sys/types.h>
 #include <unistd.h>
 
@@ -48,14 +49,15 @@ gdkw_display_wayland_get_n_screens (GdkDisplay *display)
 static GdkScreen *
 gdkw_display_wayland_get_screen (GdkDisplay *display, gint screen_num)
 {
-  /* A real screen object arrives with window support in M1/M2. */
-  return NULL;
+  GDKWDisplayWayland *wayland_display = GDKW_DISPLAY_WAYLAND (display);
+
+  return screen_num == 0 ? wayland_display->default_screen : NULL;
 }
 
 static GdkScreen *
 gdkw_display_wayland_get_default_screen (GdkDisplay *display)
 {
-  return NULL;
+  return GDKW_DISPLAY_WAYLAND (display)->default_screen;
 }
 
 static void
@@ -92,8 +94,88 @@ gdkw_display_wayland_init (GDKWDisplayWayland *display)
 {
   display->wl_display = NULL;
   display->wl_registry = NULL;
+  display->wl_output = NULL;
   display->serial = 0;
+  display->default_screen = NULL;
+  display->output_width = 0;
+  display->output_height = 0;
 }
+
+/*************** wl_registry + wl_output (screen geometry) ***************/
+
+static void
+wl_output_geometry (void *data,
+		    struct wl_output *output,
+		    int32_t x,
+		    int32_t y,
+		    int32_t physical_width,
+		    int32_t physical_height,
+		    int32_t subpixel,
+		    const char *make,
+		    const char *model,
+		    int32_t transform)
+{
+}
+
+static void
+wl_output_mode (void *data,
+		struct wl_output *output,
+		uint32_t flags,
+		int32_t width,
+		int32_t height,
+		int32_t refresh)
+{
+  GDKWDisplayWayland *display = data;
+
+  /* M1 tracks a single output (the first with a current mode); multihead
+   * handling can extend this when window support lands. */
+  if (flags & WL_OUTPUT_MODE_CURRENT)
+    {
+      display->output_width = width;
+      display->output_height = height;
+    }
+}
+
+static void
+wl_output_done (void *data, struct wl_output *output)
+{
+}
+
+static const struct wl_output_listener wl_output_listener = {
+  wl_output_geometry,
+  wl_output_mode,
+  wl_output_done
+};
+
+static void
+wl_registry_global (void *data,
+		    struct wl_registry *registry,
+		    uint32_t name,
+		    const char *interface,
+		    uint32_t version)
+{
+  GDKWDisplayWayland *display = data;
+
+  if (strcmp (interface, "wl_output") == 0 && !display->wl_output)
+    {
+      display->wl_output =
+	wl_registry_bind (registry, name, &wl_output_interface, 1);
+      wl_output_add_listener (display->wl_output, &wl_output_listener,
+			      display);
+    }
+}
+
+static void
+wl_registry_global_remove (void *data,
+			   struct wl_registry *registry,
+			   uint32_t name)
+{
+}
+
+static const struct wl_registry_listener wl_registry_listener = {
+  wl_registry_global,
+  wl_registry_global_remove
+};
 
 GdkDisplay *
 _gdk_wayland_display_open (const gchar *display_name)
@@ -113,13 +195,34 @@ _gdk_wayland_display_open (const gchar *display_name)
   display->wl_display = wl_display;
   display->serial = 0;
 
-  /* A roundtrip proves we reached the compositor and populates the
-   * global registry.  M1 walks the registry for wl_shm/xdg_wm_base. */
-  if (wl_display_roundtrip (wl_display) < 0)
+  /* Walk the registry for wl_output so the screen below has compositor
+   * geometry; wl_shm/xdg_wm_base are picked up with window support.  A
+   * second roundtrip settles the output mode events. */
+  display->wl_registry = wl_display_get_registry (wl_display);
+  wl_registry_add_listener (display->wl_registry, &wl_registry_listener,
+			    display);
+
+  if (wl_display_roundtrip (wl_display) < 0 ||
+      wl_display_roundtrip (wl_display) < 0)
     {
       g_object_unref (display);
       return NULL;
     }
+
+  wl_registry_destroy (display->wl_registry);
+  display->wl_registry = NULL;
+
+  /* M1: one logical screen per display.  The depth/scale of the output is
+   * read later if the fallback is not used. */
+  if (display->output_width <= 0 || display->output_height <= 0)
+    {
+      display->output_width = 1024;
+      display->output_height = 768;
+    }
+
+  display->default_screen =
+    _gdk_wayland_screen_new (GDK_DISPLAY_OBJECT (display),
+			     display->output_width, display->output_height);
 
   return GDK_DISPLAY_OBJECT (display);
 }

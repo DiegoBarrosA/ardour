@@ -64,6 +64,14 @@ struct _GdkScreenClass
   void (*size_changed) (GdkScreen *screen);
   void (*composited_changed) (GdkScreen *screen);
   void (*monitors_changed) (GdkScreen *screen);
+
+  /* ydk-wayland: per-backend screen queries.  GTK2 defined these as
+   * per-backend public functions owned by the X11 TU; they are dispatched
+   * here so the Wayland backend can provide its own screen object. */
+  GdkDisplay *(*get_display)     (GdkScreen *screen);
+  gint        (*get_width)       (GdkScreen *screen);
+  gint        (*get_height)      (GdkScreen *screen);
+  GdkWindow  *(*get_root_window) (GdkScreen *screen);
 };
 
 GType        gdk_screen_get_type              (void) G_GNUC_CONST;

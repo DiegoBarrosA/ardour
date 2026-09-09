@@ -205,6 +205,62 @@ gdk_display_close (GdkDisplay *display)
 }
 
 /**
+ * gdk_display_get_n_screens:
+ * @display: a #GdkDisplay
+ * 
+ * Gets the number of screens managed by the @display.
+ * 
+ * Returns: number of screens.
+ * 
+ * Since: 2.2
+ */
+gint
+gdk_display_get_n_screens (GdkDisplay *display)
+{
+  g_return_val_if_fail (GDK_IS_DISPLAY (display), 0);
+
+  return GDK_DISPLAY_GET_CLASS (display)->get_n_screens (display);
+}
+
+/**
+ * gdk_display_get_screen:
+ * @display: a #GdkDisplay
+ * @screen_num: the screen number
+ *
+ * Returns a screen object for one of the screens of the display.
+ *
+ * Returns: the #GdkScreen object
+ *
+ * Since: 2.2
+ */
+GdkScreen *
+gdk_display_get_screen (GdkDisplay *display, 
+			gint        screen_num)
+{
+  g_return_val_if_fail (GDK_IS_DISPLAY (display), NULL);
+
+  return GDK_DISPLAY_GET_CLASS (display)->get_screen (display, screen_num);
+}
+
+/**
+ * gdk_display_get_default_screen:
+ * @display: a #GdkDisplay
+ *
+ * Get the default #GdkScreen for @display.
+ * 
+ * Returns: the default #GdkScreen object for @display
+ *
+ * Since: 2.2
+ */
+GdkScreen *
+gdk_display_get_default_screen (GdkDisplay *display)
+{
+  g_return_val_if_fail (GDK_IS_DISPLAY (display), NULL);
+
+  return GDK_DISPLAY_GET_CLASS (display)->get_default_screen (display);
+}
+
+/**
  * gdk_display_is_closed:
  * @display: a #GdkDisplay
  *

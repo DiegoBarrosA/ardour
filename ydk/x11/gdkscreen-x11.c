@@ -56,6 +56,11 @@ static void         gdk_screen_x11_finalize    (GObject		  *object);
 static void	    init_randr_support	       (GdkScreen	  *screen);
 static void	    deinit_multihead           (GdkScreen         *screen);
 
+static GdkDisplay *gdkw_screen_x11_get_display      (GdkScreen *screen);
+static gint        gdkw_screen_x11_get_width        (GdkScreen *screen);
+static gint        gdkw_screen_x11_get_height       (GdkScreen *screen);
+static GdkWindow  *gdkw_screen_x11_get_root_window   (GdkScreen *screen);
+
 enum
 {
   WINDOW_MANAGER_CHANGED,
@@ -80,9 +85,15 @@ static void
 _gdk_screen_x11_class_init (GdkScreenX11Class *klass)
 {
   GObjectClass *object_class = G_OBJECT_CLASS (klass);
+  GdkScreenClass *screen_class = GDK_SCREEN_CLASS (klass);
   
   object_class->dispose = gdk_screen_x11_dispose;
   object_class->finalize = gdk_screen_x11_finalize;
+
+  screen_class->get_display = gdkw_screen_x11_get_display;
+  screen_class->get_width = gdkw_screen_x11_get_width;
+  screen_class->get_height = gdkw_screen_x11_get_height;
+  screen_class->get_root_window = gdkw_screen_x11_get_root_window;
 
   signals[WINDOW_MANAGER_CHANGED] =
     g_signal_new (g_intern_static_string ("window_manager_changed"),
@@ -100,56 +111,21 @@ _gdk_screen_x11_init (GdkScreenX11 *screen)
 {
 }
 
-/**
- * gdk_screen_get_display:
- * @screen: a #GdkScreen
- *
- * Gets the display to which the @screen belongs.
- * 
- * Returns: the display to which @screen belongs
- *
- * Since: 2.2
- **/
-GdkDisplay *
-gdk_screen_get_display (GdkScreen *screen)
+static GdkDisplay *
+gdkw_screen_x11_get_display (GdkScreen *screen)
 {
-  g_return_val_if_fail (GDK_IS_SCREEN (screen), NULL);
-
   return GDK_SCREEN_X11 (screen)->display;
 }
-/**
- * gdk_screen_get_width:
- * @screen: a #GdkScreen
- *
- * Gets the width of @screen in pixels
- * 
- * Returns: the width of @screen in pixels.
- *
- * Since: 2.2
- **/
-gint
-gdk_screen_get_width (GdkScreen *screen)
-{
-  g_return_val_if_fail (GDK_IS_SCREEN (screen), 0);
 
+static gint
+gdkw_screen_x11_get_width (GdkScreen *screen)
+{
   return WidthOfScreen (GDK_SCREEN_X11 (screen)->xscreen);
 }
 
-/**
- * gdk_screen_get_height:
- * @screen: a #GdkScreen
- *
- * Gets the height of @screen in pixels
- * 
- * Returns: the height of @screen in pixels.
- *
- * Since: 2.2
- **/
-gint
-gdk_screen_get_height (GdkScreen *screen)
+static gint
+gdkw_screen_x11_get_height (GdkScreen *screen)
 {
-  g_return_val_if_fail (GDK_IS_SCREEN (screen), 0);
-
   return HeightOfScreen (GDK_SCREEN_X11 (screen)->xscreen);
 }
 
@@ -210,21 +186,9 @@ gdk_screen_get_number (GdkScreen *screen)
   return GDK_SCREEN_X11 (screen)->screen_num;
 }
 
-/**
- * gdk_screen_get_root_window:
- * @screen: a #GdkScreen
- *
- * Gets the root window of @screen.
- *
- * Returns: (transfer none): the root window
- *
- * Since: 2.2
- **/
-GdkWindow *
-gdk_screen_get_root_window (GdkScreen *screen)
+static GdkWindow *
+gdkw_screen_x11_get_root_window (GdkScreen *screen)
 {
-  g_return_val_if_fail (GDK_IS_SCREEN (screen), NULL);
-
   return GDK_SCREEN_X11 (screen)->root_window;
 }
 

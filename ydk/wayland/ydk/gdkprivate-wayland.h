@@ -32,10 +32,19 @@
 #define GDKW_IS_DISPLAY_WAYLAND(object)    (G_TYPE_CHECK_INSTANCE_TYPE ((object), GDKW_TYPE_DISPLAY_WAYLAND))
 #define GDKW_IS_DISPLAY_WAYLAND_CLASS(klass)(G_TYPE_CHECK_CLASS_TYPE ((klass), GDKW_TYPE_DISPLAY_WAYLAND))
 #define GDKW_DISPLAY_WAYLAND_GET_CLASS(obj)(G_TYPE_INSTANCE_GET_CLASS ((obj), GDKW_TYPE_DISPLAY_WAYLAND, GDKWDisplayWaylandClass))
+
+#define GDKW_TYPE_SCREEN_WAYLAND           (gdkw_screen_wayland_get_type ())
+#define GDKW_SCREEN_WAYLAND(object)        (G_TYPE_CHECK_INSTANCE_CAST ((object), GDKW_TYPE_SCREEN_WAYLAND, GDKWScreenWayland))
+#define GDKW_SCREEN_WAYLAND_CLASS(klass)   (G_TYPE_CHECK_CLASS_CAST ((klass), GDKW_TYPE_SCREEN_WAYLAND, GDKWScreenWaylandClass))
+#define GDKW_IS_SCREEN_WAYLAND(object)     (G_TYPE_CHECK_INSTANCE_TYPE ((object), GDKW_TYPE_SCREEN_WAYLAND))
+#define GDKW_IS_SCREEN_WAYLAND_CLASS(klass)(G_TYPE_CHECK_CLASS_TYPE ((klass), GDKW_TYPE_SCREEN_WAYLAND))
+#define GDKW_SCREEN_WAYLAND_GET_CLASS(obj) (G_TYPE_INSTANCE_GET_CLASS ((obj), GDKW_TYPE_SCREEN_WAYLAND, GDKWScreenWaylandClass))
 #endif /* GDK_COMPILATION */
 
 typedef struct _GDKWDisplayWayland GDKWDisplayWayland;
 typedef struct _GDKWDisplayWaylandClass GDKWDisplayWaylandClass;
+typedef struct _GDKWScreenWayland GDKWScreenWayland;
+typedef struct _GDKWScreenWaylandClass GDKWScreenWaylandClass;
 
 struct _GDKWDisplayWayland
 {
@@ -44,7 +53,15 @@ struct _GDKWDisplayWayland
   /*< private >*/
   struct wl_display *wl_display;
   struct wl_registry *wl_registry;
+  struct wl_output *wl_output;
   guint32 serial;
+
+  /* M1: the single logical screen, tracked from the wl_output that the
+   * registry walk below found.  Wayland has no per-screen objects; the
+   * whole display is one screen. */
+  GdkScreen *default_screen;
+  gint output_width;
+  gint output_height;
 };
 
 struct _GDKWDisplayWaylandClass
@@ -52,7 +69,23 @@ struct _GDKWDisplayWaylandClass
   GdkDisplayClass parent_class;
 };
 
+struct _GDKWScreenWayland
+{
+  GdkScreen parent_instance;
+
+  /*< private >*/
+  GdkDisplay *display;
+  gint width;
+  gint height;
+};
+
+struct _GDKWScreenWaylandClass
+{
+  GdkScreenClass parent_class;
+};
+
 GType gdkw_display_wayland_get_type (void) G_GNUC_CONST;
+GType gdkw_screen_wayland_get_type (void) G_GNUC_CONST;
 
 /********************************************************
  * Internal windowing contract, namespaced to wayland
@@ -114,5 +147,7 @@ cairo_surface_t *_gdk_wayland_windowing_create_cairo_surface (GdkDrawable *drawa
 
 /* public per-backend functions */
 GdkDisplay *_gdk_wayland_display_open (const gchar *display_name);
+GdkScreen  *_gdk_wayland_screen_new (GdkDisplay *display,
+				     gint width, gint height);
 
 #endif /* __YDK_GDKP_PRIVATE_WAYLAND_H__ */
