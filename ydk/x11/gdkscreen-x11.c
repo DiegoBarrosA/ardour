@@ -61,6 +61,11 @@ static gint        gdkw_screen_x11_get_width        (GdkScreen *screen);
 static gint        gdkw_screen_x11_get_height       (GdkScreen *screen);
 static GdkWindow  *gdkw_screen_x11_get_root_window   (GdkScreen *screen);
 
+/* gdkw_screen_x11_get_system_visual() and
+ * gdkw_screen_x11_get_system_colormap() are non-static; they are
+ * implemented in gdkvisual-x11.c and gdkcolor-x11.c (see
+ * ydk/x11/ydk/gdkprivate-x11.h). */
+
 enum
 {
   WINDOW_MANAGER_CHANGED,
@@ -94,6 +99,8 @@ _gdk_screen_x11_class_init (GdkScreenX11Class *klass)
   screen_class->get_width = gdkw_screen_x11_get_width;
   screen_class->get_height = gdkw_screen_x11_get_height;
   screen_class->get_root_window = gdkw_screen_x11_get_root_window;
+  screen_class->get_system_visual = gdkw_screen_x11_get_system_visual;
+  screen_class->get_system_colormap = gdkw_screen_x11_get_system_colormap;
 
   signals[WINDOW_MANAGER_CHANGED] =
     g_signal_new (g_intern_static_string ("window_manager_changed"),

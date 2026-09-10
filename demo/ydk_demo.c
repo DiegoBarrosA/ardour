@@ -8,8 +8,8 @@
  * see ydk/gdkbackend.c), draws a fixed scene into a 640x480 toplevel and
  * exits.  Exit codes are meaningful to the harness:
  *
- *   0  window created and drawn (X11 baseline)
- *   77 skipped: backend has no window support yet (Wayland until M1)
+ *   0  window created and drawn (X11 baseline and Wayland since M2)
+ *   77 skipped: backend has no window support yet
  *   78 skipped: display opened but primary screen unavailable
  *   1  nothing worked (display open failed)
  */
@@ -87,7 +87,8 @@ main (int argc, char **argv)
                            GDK_WA_X | GDK_WA_Y | GDK_WA_WMCLASS);
   if (!window)
     {
-      /* Expected for the Wayland backend until M1. */
+      /* Expected for backends without window support yet (e.g. an X11
+       * display absent from the screen). */
       g_printerr ("ydk_demo: window creation not supported on this "
                   "backend (exit 77)\n");
       return 77;

@@ -61,6 +61,12 @@
 #define _gdk_windowing_create_cairo_surface      _gdk_x11_windowing_create_cairo_surface
 #define _gdk_windowing_image_init                _gdk_x11_windowing_image_init
 #define _gdk_windowing_window_init               _gdk_x11_windowing_window_init
+#define _gdk_window_impl_new                     _gdk_x11_window_impl_new
+
+/* ydk-wayland: `_gdk_window_impl_new()` is per-backend in GTK2 (the core
+ * declares it in gdkinternals.h and each backend defines the one symbol).
+ * With both backends in one lib the X11 definition is renamed here and a
+ * canonical dispatcher is provided by ydk/gdkbackend.c. */
 
 /* public functions that are per-backend in GDK2
  *

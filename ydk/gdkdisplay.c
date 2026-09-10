@@ -1364,4 +1364,83 @@ gdk_display_pointer_is_grabbed (GdkDisplay *display)
   return (info && !info->implicit);
 }
 
+/**
+ * gdk_display_flush:
+ * @display: a #GdkDisplay
+ *
+ * Flushes any requests queued for the windowing system; this happens
+ * automatically when the main loop blocks waiting for new events, but if
+ * your application is drawing without returning control to the main loop,
+ * you may need to call this function explicitely. A common case where this
+ * function needs to be called is when an application is executing drawing
+ * commands from a thread other than the thread where the main loop is
+ * running.
+ *
+ * This is most useful for X11. On windowing systems where requests are
+ * handled synchronously, this function will do nothing.
+ *
+ * Since: 2.4
+ *
+ * ydk-wayland: backend-neutral.  The Windowing System sends its buffered
+ * requests; this is dispatched to the selected backend's display class.
+ */
+void
+gdk_display_flush (GdkDisplay *display)
+{
+  g_return_if_fail (GDK_IS_DISPLAY (display));
+
+  if (!display->closed &&
+      GDK_DISPLAY_GET_CLASS (display)->flush)
+    GDK_DISPLAY_GET_CLASS (display)->flush (display);
+}
+
+/**
+ * gdk_display_sync:
+ * @display: a #GdkDisplay
+ *
+ * Flushes any requests queued for the windowing system and waits until all
+ * requests have been handled. This is often used for making sure that the
+ * display is synchronized with the current state of the program, e.g. before
+ * doing XGetImage calls.
+ *
+ * This is most useful for X11. On windowing systems where requests are
+ * handled synchronously, this function will do nothing.
+ *
+ * Since: 2.2
+ *
+ * ydk-wayland: backend-neutral.  The Windowing System drains its requests
+ * and blocks until they are processed; this is dispatched to the selected
+ * backend's display class.
+ */
+void
+gdk_display_sync (GdkDisplay *display)
+{
+  g_return_if_fail (GDK_IS_DISPLAY (display));
+
+  if (GDK_DISPLAY_GET_CLASS (display)->sync)
+    GDK_DISPLAY_GET_CLASS (display)->sync (display);
+}
+
+/**
+ * gdk_flush:
+ *
+ * Flushes the output queue of each open display and waits until all
+ * requests have been received and processed by the server. It's needed for
+ * dealing with XShm.
+ *
+ * ydk-wayland: backend-neutral; calls gdk_display_sync() for every open
+ * display.
+ */
+void
+gdk_flush (void)
+{
+  GSList *tmp_list = _gdk_displays;
+
+  while (tmp_list)
+    {
+      gdk_display_sync (tmp_list->data);
+      tmp_list = tmp_list->next;
+    }
+}
+
 #define __GDK_DISPLAY_C__

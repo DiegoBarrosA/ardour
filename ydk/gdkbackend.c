@@ -89,6 +89,17 @@ extern cairo_surface_t *_gdk_x11_windowing_create_cairo_surface (GdkDrawable *dr
 								 int width, int height);
 extern GdkDisplay *_gdk_x11_display_open (const gchar *display_name);
 
+/* `_gdk_window_impl_new` (see gdkinternals.h) is also per-backend; the X11
+ * definition compiles as `_gdk_x11_window_impl_new` under the rename map
+ * (gdkwindowing-x11.h), the Wayland one as `_gdk_wayland_window_impl_new`. */
+extern void _gdk_x11_window_impl_new (GdkWindow     *window,
+				      GdkWindow     *real_parent,
+				      GdkScreen     *screen,
+				      GdkVisual     *visual,
+				      GdkEventMask   event_mask,
+				      GdkWindowAttr *attributes,
+				      gint           attributes_mask);
+
 typedef enum
 {
   GDK_SELECTED_BACKEND_UNSET = 0,
@@ -389,6 +400,23 @@ _gdk_windowing_create_cairo_surface (GdkDrawable *drawable,
 							height);
   else
     return _gdk_x11_windowing_create_cairo_surface (drawable, width, height);
+}
+
+void
+_gdk_window_impl_new (GdkWindow     *window,
+		      GdkWindow     *real_parent,
+		      GdkScreen     *screen,
+		      GdkVisual     *visual,
+		      GdkEventMask   event_mask,
+		      GdkWindowAttr *attributes,
+		      gint           attributes_mask)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    _gdk_wayland_window_impl_new (window, real_parent, screen, visual,
+				  event_mask, attributes, attributes_mask);
+  else
+    _gdk_x11_window_impl_new (window, real_parent, screen, visual,
+			      event_mask, attributes, attributes_mask);
 }
 
 /**

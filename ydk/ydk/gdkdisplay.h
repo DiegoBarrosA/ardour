@@ -117,7 +117,12 @@ struct _GdkDisplayClass
 						    gint        screen_num);
   GdkScreen *		     (*get_default_screen) (GdkDisplay *display);
 
-  
+  /* ydk-wayland: backend-neutral flush/sync.  GTK2 owned these as
+   * per-backend public functions (X11: XFlush/XSync); they are dispatched
+   * here so the Wayland backend can flush/roundtrip its wl_display. */
+  void (*flush)              (GdkDisplay *display);
+  void (*sync)               (GdkDisplay *display);
+
   /* Signals */
   void (*closed) (GdkDisplay *display,
 		  gboolean    is_error);

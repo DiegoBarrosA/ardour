@@ -341,23 +341,11 @@ gdk_visual_get_best_type (void)
   return GDK_SCREEN_X11 (screen)->available_types[0];
 }
 
-/**
- * gdk_screen_get_system_visual:
- * @screen: a #GdkScreen.
- * 
- * Get the system's default visual for @screen.
- * This is the visual for the root window of the display.
- * The return value should not be freed.
- * 
- * Return value: (transfer none): the system visual
- *
- * Since: 2.2
- **/
+/* ydk-wayland: X11 implementation of the GdkScreenClass system visual
+ * query (see gdkscreen.h). */
 GdkVisual *
-gdk_screen_get_system_visual (GdkScreen * screen)
+gdkw_screen_x11_get_system_visual (GdkScreen * screen)
 {
-  g_return_val_if_fail (GDK_IS_SCREEN (screen), NULL);
-
   return ((GdkVisual *) GDK_SCREEN_X11 (screen)->system_visual);
 }
 

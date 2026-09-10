@@ -5,7 +5,8 @@
 # Phase 1 runs ydk_demo against an Xvfb X server (the baseline X11 path)
 # and captures a screenshot with ImageMagick to prove real rendering.
 # Phase 2 connects the demo to a headless Weston compositor over the
-# Wayland backend; until M1 the demo exits 77 (window creation unsupported),
+# Wayland backend; since M2 the demo creates a real toplevel and renders
+# into an shm buffer (rc 0).  Backends without window support exit 77,
 # which still proves the display open/roundtrip works.
 #
 # Exits 0 on success.
@@ -58,7 +59,7 @@ set +e
 DEMO_RC=$?
 set -e
 
-# 0 = window created (M1+), 77 = connect OK but window unsupported,
+# 0 = window created and rendered, 77 = connect OK but window unsupported,
 # 78 = connect OK but no primary screen yet, 1 = fail
 if [ "$DEMO_RC" -ne 0 ] && [ "$DEMO_RC" -ne 77 ] && [ "$DEMO_RC" -ne 78 ]; then
   echo "smoke-test: wayland demo failed with rc=$DEMO_RC" >&2

@@ -202,6 +202,13 @@ extern const int         _gdk_event_mask_table[];
 extern GdkAtom		 _gdk_selection_property;
 extern gboolean          _gdk_synchronize;
 
+/* ydk-wayland: system visual/colormap screen queries.  The public
+ * gdk_screen_get_system_visual()/gdk_screen_get_system_colormap() now
+ * dispatch through GdkScreenClass (ydk/gdkscreen.c); these are the X11
+ * class vfuncs, wired up in gdkscreen-x11.c. */
+GdkVisual *   gdkw_screen_x11_get_system_visual   (GdkScreen *screen);
+GdkColormap * gdkw_screen_x11_get_system_colormap (GdkScreen *screen);
+
 #define GDK_PIXMAP_SCREEN(pix)	      (GDK_DRAWABLE_IMPL_X11 (((GdkPixmapObject *)pix)->impl)->screen)
 #define GDK_PIXMAP_DISPLAY(pix)       (GDK_SCREEN_X11 (GDK_PIXMAP_SCREEN (pix))->display)
 #define GDK_PIXMAP_XROOTWIN(pix)      (GDK_SCREEN_X11 (GDK_PIXMAP_SCREEN (pix))->xroot_window)

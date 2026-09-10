@@ -24,6 +24,9 @@
 #include <wayland-client.h>
 
 #include <ydk/gdkdisplay.h>
+#include <ydk/gdkscreen.h>
+#include <ydk/gdkcolor.h>
+#include <ydk/gdkwindow.h>
 
 #ifdef GDK_COMPILATION
 #define GDKW_TYPE_DISPLAY_WAYLAND          (gdkw_display_wayland_get_type ())
@@ -39,12 +42,21 @@
 #define GDKW_IS_SCREEN_WAYLAND(object)     (G_TYPE_CHECK_INSTANCE_TYPE ((object), GDKW_TYPE_SCREEN_WAYLAND))
 #define GDKW_IS_SCREEN_WAYLAND_CLASS(klass)(G_TYPE_CHECK_CLASS_TYPE ((klass), GDKW_TYPE_SCREEN_WAYLAND))
 #define GDKW_SCREEN_WAYLAND_GET_CLASS(obj) (G_TYPE_INSTANCE_GET_CLASS ((obj), GDKW_TYPE_SCREEN_WAYLAND, GDKWScreenWaylandClass))
+
+#define GDKW_TYPE_WINDOW_IMPL_WAYLAND      (gdkw_window_impl_wayland_get_type ())
+#define GDKW_WINDOW_IMPL_WAYLAND(obj)      (G_TYPE_CHECK_INSTANCE_CAST ((obj), GDKW_TYPE_WINDOW_IMPL_WAYLAND, GDKWWindowImplWayland))
+#define GDKW_WINDOW_IMPL_WAYLAND_CLASS(klass)(G_TYPE_CHECK_CLASS_CAST ((klass), GDKW_TYPE_WINDOW_IMPL_WAYLAND, GDKWWindowImplWaylandClass))
+#define GDKW_IS_WINDOW_IMPL_WAYLAND(object)(G_TYPE_CHECK_INSTANCE_TYPE ((object), GDKW_TYPE_WINDOW_IMPL_WAYLAND))
+#define GDKW_IS_WINDOW_IMPL_WAYLAND_CLASS(klass)(G_TYPE_CHECK_CLASS_TYPE ((klass), GDKW_TYPE_WINDOW_IMPL_WAYLAND))
+#define GDKW_WINDOW_IMPL_WAYLAND_GET_CLASS(obj)(G_TYPE_INSTANCE_GET_CLASS ((obj), GDKW_TYPE_WINDOW_IMPL_WAYLAND, GDKWWindowImplWaylandClass))
 #endif /* GDK_COMPILATION */
 
 typedef struct _GDKWDisplayWayland GDKWDisplayWayland;
 typedef struct _GDKWDisplayWaylandClass GDKWDisplayWaylandClass;
 typedef struct _GDKWScreenWayland GDKWScreenWayland;
 typedef struct _GDKWScreenWaylandClass GDKWScreenWaylandClass;
+typedef struct _GDKWWindowImplWayland GDKWWindowImplWayland;
+typedef struct _GDKWWindowImplWaylandClass GDKWWindowImplWaylandClass;
 
 struct _GDKWDisplayWayland
 {
@@ -62,6 +74,15 @@ struct _GDKWDisplayWayland
   GdkScreen *default_screen;
   gint output_width;
   gint output_height;
+
+  /* M2: shm + xdg-shell globals; every toplevel impl registers itself here
+   * so display sync can present them before roundtripping.  Root windows
+   * are not in the list (they have no wl_surface). */
+  struct wl_compositor *wl_compositor;
+  struct wl_shm *wl_shm;
+  struct xdg_wm_base *xdg_wm_base;
+  GSList *windows;
+  gboolean xdg_shell_supported;
 };
 
 struct _GDKWDisplayWaylandClass
@@ -77,6 +98,13 @@ struct _GDKWScreenWayland
   GdkDisplay *display;
   gint width;
   gint height;
+
+  /* M2: hand-built TRUE_COLOR system visual/colormap, plus the real root
+   * window whose GdkWindowImplWayland has no wl_surface (window creation
+   * never targets it; it is the parent for toplevels). */
+  GdkVisual *system_visual;
+  GdkColormap *system_colormap;
+  GdkWindow *root_window;
 };
 
 struct _GDKWScreenWaylandClass
@@ -84,8 +112,53 @@ struct _GDKWScreenWaylandClass
   GdkScreenClass parent_class;
 };
 
+/* M2 window implementation.  Must subclass GdkDrawable (the core
+ * get_colormap path in gdkwindow.c dispatches gdk_drawable_get_colormap()
+ * off the impl drawable) and implement the GdkWindowImpl interface. */
+typedef struct xdg_surface xdg_surface;
+typedef struct xdg_toplevel xdg_toplevel;
+
+struct _GDKWWindowImplWayland
+{
+  GdkDrawable parent_instance;
+
+  /*< private >*/
+  GdkScreen *screen;
+  GdkColormap *colormap;
+
+  /* The GdkWindowObject we implement + its geometry (kept in sync by
+   * move_resize/get_geometry). */
+  GdkWindow *wrapper;
+  gint x, y;
+  guint width, height;
+  GdkEventMask events;
+  GdkColor background;
+
+  /* wl objects; NULL until a toplevel is shown. */
+  struct wl_surface *wl_surface;
+  xdg_surface *xdg_surface;
+  xdg_toplevel *xdg_toplevel;
+  struct wl_buffer *wl_buffer;
+
+  /* shm backing: the cairo image surface used for drawing is created
+   * directly over this buffer (zero-copy presents). */
+  int shm_fd;
+  guchar *shm_data;
+  unsigned int shm_size;
+  unsigned int stride;
+  cairo_surface_t *backing;
+
+  gboolean configured;
+};
+
+struct _GDKWWindowImplWaylandClass
+{
+  GdkDrawableClass parent_class;
+};
+
 GType gdkw_display_wayland_get_type (void) G_GNUC_CONST;
 GType gdkw_screen_wayland_get_type (void) G_GNUC_CONST;
+GType gdkw_window_impl_wayland_get_type (void) G_GNUC_CONST;
 
 /********************************************************
  * Internal windowing contract, namespaced to wayland
@@ -149,5 +222,32 @@ cairo_surface_t *_gdk_wayland_windowing_create_cairo_surface (GdkDrawable *drawa
 GdkDisplay *_gdk_wayland_display_open (const gchar *display_name);
 GdkScreen  *_gdk_wayland_screen_new (GdkDisplay *display,
 				     gint width, gint height);
+
+/* M2: per-backend window impl constructor (canonical `_gdk_window_impl_new`
+ * is dispatched from ydk/gdkbackend.c) and display-sync helpers. */
+GdkDrawable *_gdk_wayland_window_impl_new (GdkWindow      *window,
+					   GdkWindow      *real_parent,
+					   GdkScreen      *screen,
+					   GdkVisual      *visual,
+					   GdkEventMask    event_mask,
+					   GdkWindowAttr  *attributes,
+					   gint            attributes_mask);
+void _gdk_wayland_display_present_all (GDKWDisplayWayland *wayland_display);
+
+/* Attaches and commits a window impl's shm buffer (creating it on demand).
+ * Safe to call any number of times; no-ops until the xdg_surface has been
+ * acked-configured (the first configure has to be acked before a buffer
+ * may be committed). */
+void _gdk_wayland_window_impl_present (GDKWWindowImplWayland *impl);
+
+/* Releases a window impl's wl objects and shm; idempotent.  Used by the
+ * impl iface destroy and by display finalize cleanup. */
+void _gdk_wayland_window_impl_teardown (GDKWWindowImplWayland *impl);
+
+/* M2: builds the hand-rolled TRUE_COLOR system visual, the colormap over
+ * it, and the real root window for a screen.  Called from screen_new. */
+GdkVisual *_gdk_wayland_screen_create_system_visual (void);
+GdkColormap *_gdk_wayland_screen_create_colormap (GdkScreen *screen,
+						  GdkVisual *visual);
 
 #endif /* __YDK_GDKP_PRIVATE_WAYLAND_H__ */

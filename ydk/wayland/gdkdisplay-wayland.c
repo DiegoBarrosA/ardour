@@ -6,7 +6,7 @@
  *
  * Skeleton status: connects to the compositor and gives back a valid
  * GdkDisplay so that `gdk_init_check`/`gdk_display_open` succeed under a
- * Wayland session.  Window/styling machinery lands in M1.
+ * Wayland session.  Window/styling machinery lands in M2.
  */
 
 #include "config.h"
@@ -20,6 +20,8 @@
 #include <ydk/gdk.h>
 #include <ydk/gdkapplaunchcontext.h>
 #include <ydk/gdkcairo.h>
+
+#include "xdg-shell-client.h"
 
 #include "gdkprivate-wayland.h"
 
@@ -60,10 +62,92 @@ gdkw_display_wayland_get_default_screen (GdkDisplay *display)
   return GDKW_DISPLAY_WAYLAND (display)->default_screen;
 }
 
+void
+_gdk_wayland_display_present_all (GDKWDisplayWayland *display)
+{
+  GSList *l;
+
+  for (l = display->windows; l; l = l->next)
+    {
+      GDKWWindowImplWayland *impl = l->data;
+
+      _gdk_wayland_window_impl_present (impl);
+    }
+}
+
+static void
+gdkw_display_wayland_sync (GdkDisplay *display)
+{
+  GDKWDisplayWayland *wayland_display = GDKW_DISPLAY_WAYLAND (display);
+
+  /* Present any outstanding window content, then block until the
+   * compositor has consumed it.  The roundtrip is what delivers the
+   * xdg_surface configure events that let toplevels map. */
+  _gdk_wayland_display_present_all (wayland_display);
+  wl_display_flush (wayland_display->wl_display);
+  wl_display_roundtrip (wayland_display->wl_display);
+}
+
+static void
+gdkw_display_wayland_flush (GdkDisplay *display)
+{
+  wl_display_flush (GDKW_DISPLAY_WAYLAND (display)->wl_display);
+}
+
+static void
+xdg_wm_base_ping (void *data,
+		  struct xdg_wm_base *xdg_wm_base,
+		  uint32_t serial)
+{
+  xdg_wm_base_pong (xdg_wm_base, serial);
+}
+
+static const struct xdg_wm_base_listener xdg_wm_base_listener = {
+  xdg_wm_base_ping
+};
+
 static void
 gdkw_display_wayland_finalize (GObject *object)
 {
   GDKWDisplayWayland *display = GDKW_DISPLAY_WAYLAND (object);
+
+  /* give the running window impls (their wl objects are already gone if
+   * gdk_window_destroy ran) a last chance to release their surfaces */
+  if (display->windows)
+    {
+      GSList *l;
+
+      for (l = display->windows; l; l = l->next)
+	_gdk_wayland_window_impl_teardown (l->data);
+      g_slist_free (display->windows);
+      display->windows = NULL;
+    }
+
+  if (display->wl_registry)
+    {
+      wl_registry_destroy (display->wl_registry);
+      display->wl_registry = NULL;
+    }
+  if (display->wl_shm)
+    {
+      wl_shm_destroy (display->wl_shm);
+      display->wl_shm = NULL;
+    }
+  if (display->xdg_wm_base)
+    {
+      xdg_wm_base_destroy (display->xdg_wm_base);
+      display->xdg_wm_base = NULL;
+    }
+  if (display->wl_compositor)
+    {
+      wl_compositor_destroy (display->wl_compositor);
+      display->wl_compositor = NULL;
+    }
+  if (display->wl_output)
+    {
+      wl_output_destroy (display->wl_output);
+      display->wl_output = NULL;
+    }
 
   if (display->wl_display)
     {
@@ -87,6 +171,8 @@ gdkw_display_wayland_class_init (GDKWDisplayWaylandClass *klass)
   display_class->get_n_screens = gdkw_display_wayland_get_n_screens;
   display_class->get_screen = gdkw_display_wayland_get_screen;
   display_class->get_default_screen = gdkw_display_wayland_get_default_screen;
+  display_class->flush = gdkw_display_wayland_flush;
+  display_class->sync = gdkw_display_wayland_sync;
 }
 
 static void
@@ -94,11 +180,16 @@ gdkw_display_wayland_init (GDKWDisplayWayland *display)
 {
   display->wl_display = NULL;
   display->wl_registry = NULL;
+  display->wl_compositor = NULL;
+  display->wl_shm = NULL;
+  display->xdg_wm_base = NULL;
   display->wl_output = NULL;
   display->serial = 0;
   display->default_screen = NULL;
   display->output_width = 0;
   display->output_height = 0;
+  display->windows = NULL;
+  display->xdg_shell_supported = FALSE;
 }
 
 /*************** wl_registry + wl_output (screen geometry) ***************/
@@ -162,6 +253,24 @@ wl_registry_global (void *data,
 	wl_registry_bind (registry, name, &wl_output_interface, 1);
       wl_output_add_listener (display->wl_output, &wl_output_listener,
 			      display);
+    }
+  else if (strcmp (interface, "wl_compositor") == 0 && !display->wl_compositor)
+    {
+      display->wl_compositor =
+	wl_registry_bind (registry, name, &wl_compositor_interface, 1);
+    }
+  else if (strcmp (interface, "wl_shm") == 0 && !display->wl_shm)
+    {
+      display->wl_shm =
+	wl_registry_bind (registry, name, &wl_shm_interface, 1);
+    }
+  else if (strcmp (interface, "xdg_wm_base") == 0 && !display->xdg_wm_base)
+    {
+      display->xdg_wm_base =
+	wl_registry_bind (registry, name, &xdg_wm_base_interface, 1);
+      xdg_wm_base_add_listener (display->xdg_wm_base,
+				&xdg_wm_base_listener, display);
+      display->xdg_shell_supported = TRUE;
     }
 }
 
@@ -368,10 +477,6 @@ _gdk_wayland_windowing_set_cairo_surface_size (cairo_surface_t *surface,
 {
 }
 
-cairo_surface_t *
-_gdk_wayland_windowing_create_cairo_surface (GdkDrawable *drawable,
-					     int width,
-					     int height)
-{
-  return NULL;
-}
+/* `_gdk_wayland_windowing_create_cairo_surface` lives in the window impl
+ * TU (gdkwindowimpl-wayland.c): the cairo target for a window is the
+ * shm-backed image surface, so it must be created where the impl lives. */

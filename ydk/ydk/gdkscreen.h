@@ -72,6 +72,12 @@ struct _GdkScreenClass
   gint        (*get_width)       (GdkScreen *screen);
   gint        (*get_height)      (GdkScreen *screen);
   GdkWindow  *(*get_root_window) (GdkScreen *screen);
+
+  /* ydk-wayland: backend-neutral visual/colormap queries.  GTK2 owned
+   * these as per-backend public functions (X11 built them from X visuals);
+   * they are dispatched here so the Wayland backend can provide its own. */
+  GdkVisual   *(*get_system_visual)    (GdkScreen *screen);
+  GdkColormap*(*get_system_colormap)   (GdkScreen *screen);
 };
 
 GType        gdk_screen_get_type              (void) G_GNUC_CONST;

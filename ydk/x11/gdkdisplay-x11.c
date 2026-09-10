@@ -76,6 +76,8 @@ static gint        gdkw_display_x11_get_n_screens       (GdkDisplay *display);
 static GdkScreen * gdkw_display_x11_get_screen          (GdkDisplay *display,
 							 gint screen_num);
 static GdkScreen * gdkw_display_x11_get_default_screen  (GdkDisplay *display);
+static void        gdkw_display_x11_flush               (GdkDisplay *display);
+static void        gdkw_display_x11_sync                (GdkDisplay *display);
 
 #ifdef HAVE_X11R6
 static void gdk_internal_connection_watch (Display  *display,
@@ -142,6 +144,8 @@ _gdk_display_x11_class_init (GdkDisplayX11Class * class)
   display_class->get_n_screens = gdkw_display_x11_get_n_screens;
   display_class->get_screen = gdkw_display_x11_get_screen;
   display_class->get_default_screen = gdkw_display_x11_get_default_screen;
+  display_class->flush = gdkw_display_x11_flush;
+  display_class->sync = gdkw_display_x11_sync;
 }
 
 static void
@@ -695,34 +699,14 @@ gdk_display_beep (GdkDisplay *display)
  * Since: 2.2
  */
 void
-gdk_display_sync (GdkDisplay *display)
+gdkw_display_x11_sync (GdkDisplay *display)
 {
-  g_return_if_fail (GDK_IS_DISPLAY (display));
-  
   XSync (GDK_DISPLAY_XDISPLAY (display), False);
 }
 
-/**
- * gdk_display_flush:
- * @display: a #GdkDisplay
- *
- * Flushes any requests queued for the windowing system; this happens automatically
- * when the main loop blocks waiting for new events, but if your application
- * is drawing without returning control to the main loop, you may need
- * to call this function explicitely. A common case where this function
- * needs to be called is when an application is executing drawing commands
- * from a thread other than the thread where the main loop is running.
- *
- * This is most useful for X11. On windowing systems where requests are
- * handled synchronously, this function will do nothing.
- *
- * Since: 2.4
- */
-void 
-gdk_display_flush (GdkDisplay *display)
+void
+gdkw_display_x11_flush (GdkDisplay *display)
 {
-  g_return_if_fail (GDK_IS_DISPLAY (display));
-
   if (!display->closed)
     XFlush (GDK_DISPLAY_XDISPLAY (display));
 }

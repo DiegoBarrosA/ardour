@@ -274,6 +274,48 @@ gdk_screen_get_root_window (GdkScreen *screen)
   return GDK_SCREEN_GET_CLASS (screen)->get_root_window (screen);
 }
 
+/**
+ * gdk_screen_get_system_visual:
+ * @screen: a #GdkScreen.
+ *
+ * Get the system's default visual for @screen.
+ * This is the visual for the root window of the display.
+ * The return value should not be freed.
+ *
+ * Returns: (transfer none): the system visual
+ *
+ * Since: 2.2
+ *
+ * ydk-wayland: backend-neutral; dispatched to the screen class.
+ **/
+GdkVisual *
+gdk_screen_get_system_visual (GdkScreen *screen)
+{
+  g_return_val_if_fail (GDK_IS_SCREEN (screen), NULL);
+
+  return GDK_SCREEN_GET_CLASS (screen)->get_system_visual (screen);
+}
+
+/**
+ * gdk_screen_get_system_colormap:
+ * @screen: a #GdkScreen
+ *
+ * Gets the system's default colormap for @screen
+ *
+ * Returns: (transfer none): the default colormap for @screen.
+ *
+ * Since: 2.2
+ *
+ * ydk-wayland: backend-neutral; dispatched to the screen class.
+ */
+GdkColormap *
+gdk_screen_get_system_colormap (GdkScreen *screen)
+{
+  g_return_val_if_fail (GDK_IS_SCREEN (screen), NULL);
+
+  return GDK_SCREEN_GET_CLASS (screen)->get_system_colormap (screen);
+}
+
 /* Fallback used when the monitor "at" a point or window
  * doesn't exist.
  */

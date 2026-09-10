@@ -68,6 +68,8 @@ libydk_wayland_sources = [
     'ydk/wayland/gdkdisplay-wayland.c',
     'ydk/wayland/gdkmain-wayland.c',
     'ydk/wayland/gdkscreen-wayland.c',
+    'ydk/wayland/gdkwindowimpl-wayland.c',
+    'ydk/wayland/xdg-shell-protocol.c',
 ]
 
 libydk_x11_sources = [
@@ -219,7 +221,7 @@ def build(bld):
         ydk_wayland_objs = per_source(
             'wayland', libydk_wayland_sources,
             ['.', 'ydk', 'ydk/ydk', 'ydk/wayland/ydk',
-             'ydk-pixbuf', 'ydk-pixbuf/ydk-pixbuf'], [],
+             'ydk-pixbuf', 'ydk-pixbuf/ydk-pixbuf'], ['_GNU_SOURCE'],
             ['GLIB', 'GOBJECT', 'WAYLAND', 'CAIRO', 'PANGO'], [])
 
     ydk_x11_objs = []
