@@ -32,6 +32,7 @@
 
 #include <ydk/gdk.h>
 #include <ydk/gdkcairo.h>
+#include <ydk/gdkinternals.h>
 
 #include "xdg-shell-client.h"
 
@@ -42,15 +43,20 @@
 #endif
 
 static void gdk_window_impl_iface_init (GdkWindowImplIface *iface);
+static void gdk_paintable_iface_init (GdkPaintableIface *iface);
 
 G_DEFINE_TYPE_WITH_CODE (GDKWWindowImplWayland,
                          gdkw_window_impl_wayland,
                          GDK_TYPE_DRAWABLE,
                          G_IMPLEMENT_INTERFACE (GDK_TYPE_WINDOW_IMPL,
-                                                gdk_window_impl_iface_init));
+                                                gdk_window_impl_iface_init)
+                         G_IMPLEMENT_INTERFACE (GDK_TYPE_PAINTABLE,
+                                                gdk_paintable_iface_init));
 
 static gboolean ensure_shm_buffer (GDKWWindowImplWayland *impl);
 static void paint_background (GDKWWindowImplWayland *impl);
+static void resize_buffer (GDKWWindowImplWayland *impl,
+			   gint width, gint height);
 
 /*************** drawable vfuncs ***************/
 
@@ -262,6 +268,39 @@ ensure_shm_buffer (GDKWWindowImplWayland *impl)
   return TRUE;
 }
 
+/* M3: drop the current buffer/backing so a later present (or
+ * create-cairo-surface) rebuilds them at the new geometry.  Used when the
+ * compositor forces a size change via the xdg configure event. */
+static void
+resize_buffer (GDKWWindowImplWayland *impl, gint width, gint height)
+{
+  if (impl->wl_buffer)
+    {
+      wl_buffer_destroy (impl->wl_buffer);
+      impl->wl_buffer = NULL;
+    }
+  if (impl->backing)
+    {
+      cairo_surface_destroy (impl->backing);
+      impl->backing = NULL;
+    }
+  if (impl->shm_data)
+    {
+      munmap (impl->shm_data, impl->shm_size);
+      impl->shm_data = NULL;
+    }
+  if (impl->shm_fd >= 0)
+    {
+      close (impl->shm_fd);
+      impl->shm_fd = -1;
+    }
+  impl->shm_size = 0;
+  impl->stride = 0;
+
+  impl->width = width;
+  impl->height = height;
+}
+
 void
 _gdk_wayland_window_impl_present (GDKWWindowImplWayland *impl)
 {
@@ -279,6 +318,23 @@ _gdk_wayland_window_impl_present (GDKWWindowImplWayland *impl)
   wl_surface_attach (impl->wl_surface, impl->wl_buffer, 0, 0);
   wl_surface_damage (impl->wl_surface, 0, 0, impl->width, impl->height);
   wl_surface_commit (impl->wl_surface);
+}
+
+GDKWWindowImplWayland *
+_gdk_wayland_impl_from_surface (GDKWDisplayWayland *display,
+				struct wl_surface *surface)
+{
+  GSList *l;
+
+  for (l = display->windows; l; l = l->next)
+    {
+      GDKWWindowImplWayland *impl = l->data;
+
+      if (impl->wl_surface == surface)
+	return impl;
+    }
+
+  return NULL;
 }
 
 void
@@ -332,6 +388,8 @@ _gdk_wayland_window_impl_teardown (GDKWWindowImplWayland *impl)
       wl_surface_destroy (impl->wl_surface);
       impl->wl_surface = NULL;
     }
+  g_free (impl->wmclass);
+  impl->wmclass = NULL;
 }
 
 static void
@@ -381,6 +439,20 @@ xdg_toplevel_handle_configure (void *data,
 			       int32_t height,
 			       struct wl_array *states)
 {
+  GDKWWindowImplWayland *impl = data;
+
+  if (width > 0 && height > 0 &&
+      ((guint) width != impl->width || (guint) height != impl->height))
+    {
+      resize_buffer (impl, width, height);
+
+      if (impl->configured && impl->wrapper)
+	{
+	  GdkRectangle rect = { 0, 0, width, height };
+
+	  gdk_window_invalidate_rect (impl->wrapper, &rect, FALSE);
+	}
+    }
 }
 
 static void
@@ -393,7 +465,47 @@ static const struct xdg_toplevel_listener xdg_toplevel_listener = {
   xdg_toplevel_handle_close
 };
 
+/*************** paintable interface ***************/
+
+/* Each Wayland window owns a shm-backed cairo surface and re-composites it
+ * (via wl_surface_attach) whenever it needs a new frame, so its backing
+ * store is already the double buffer.  By implementing GdkPaintable we tell
+ * the core (gdk_window_begin_implicit_paint gdkwindow.c) to skip the
+ * implicit paint and backing-pixmap machinery entirely; drawing during
+ * expose goes straight to the window's own surface.  begin/end_paint are
+ * therefore no-ops. */
+static void
+gdk_paintable_wayland_begin_paint_region (GdkPaintable *paintable,
+					  GdkWindow *window,
+					  const GdkRegion *region)
+{
+}
+
+static void
+gdk_paintable_wayland_end_paint (GdkPaintable *paintable)
+{
+}
+
+static void
+gdk_paintable_iface_init (GdkPaintableIface *iface)
+{
+  iface->begin_paint_region = gdk_paintable_wayland_begin_paint_region;
+  iface->end_paint = gdk_paintable_wayland_end_paint;
+}
+
 /*************** window impl interface ***************/
+
+/* xdg-shell surface identifiers don't exist in GDK2, which only carries
+ * WM_CLASS.  If the window was created with one, use the class half as the
+ * compositor app id (the natural xdg analogue). */
+static const gchar *
+wmclass_of (GDKWWindowImplWayland *impl)
+{
+  if (impl->wmclass)
+    return impl->wmclass;
+
+  return NULL;
+}
 
 static void
 gdk_window_wayland_show (GdkWindow *window, gboolean already_mapped)
@@ -425,6 +537,13 @@ gdk_window_wayland_show (GdkWindow *window, gboolean already_mapped)
     xdg_wm_base_get_xdg_surface (display->xdg_wm_base, impl->wl_surface);
   impl->xdg_toplevel = xdg_surface_get_toplevel (impl->xdg_surface);
 
+  /* xdg_toplevel_set_app_id corresponds to the X11 WM_CLASS hint; the
+   * compositor uses it to match the surface with a desktop entry. */
+  if (wmclass_of (impl))
+    {
+      xdg_toplevel_set_app_id (impl->xdg_toplevel, impl->wmclass);
+    }
+
   xdg_surface_add_listener (impl->xdg_surface, &xdg_surface_listener, impl);
   xdg_toplevel_add_listener (impl->xdg_toplevel, &xdg_toplevel_listener,
 			     impl);
@@ -442,11 +561,20 @@ gdk_window_wayland_show (GdkWindow *window, gboolean already_mapped)
 static void
 gdk_window_wayland_hide (GdkWindow *window)
 {
+  GDKWWindowImplWayland *impl;
+
+  impl = GDKW_WINDOW_IMPL_WAYLAND (((GdkWindowObject *) window)->impl);
+
+  resize_buffer (impl, impl->width, impl->height);
+
+  if (impl->wl_surface)
+    wl_surface_commit (impl->wl_surface);
 }
 
 static void
 gdk_window_wayland_withdraw (GdkWindow *window)
 {
+  gdk_window_wayland_hide (window);
 }
 
 static void
@@ -602,6 +730,30 @@ gdk_window_wayland_get_pointer (GdkWindow *window,
 				gint *y,
 				GdkModifierType *mask)
 {
+  GDKWWindowImplWayland *impl;
+  GDKWDisplayWayland *display;
+
+  impl = GDKW_WINDOW_IMPL_WAYLAND (((GdkWindowObject *) window)->impl);
+  display = GDKW_DISPLAY_WAYLAND (gdk_screen_get_display (impl->screen));
+
+  if (impl == display->pointer_focus)
+    {
+      if (x)
+	*x = (gint) display->px;
+      if (y)
+	*y = (gint) display->py;
+      if (mask)
+	*mask = 0;
+      return TRUE;
+    }
+
+  if (x)
+    *x = 0;
+  if (y)
+    *y = 0;
+  if (mask)
+    *mask = 0;
+
   return FALSE;
 }
 
@@ -745,6 +897,12 @@ _gdk_wayland_window_impl_new (GdkWindow     *window,
 								visual);
 	}
     }
+
+  /* Capture the WM_CLASS hint so it can be forwarded as the xdg_toplevel
+   * app_id at show time.  wmclass_class is the more specific half and
+   * matches the desktop entry name on most compositors. */
+  if ((attributes_mask & GDK_WA_WMCLASS) && attributes->wmclass_class)
+    impl->wmclass = g_strdup (attributes->wmclass_class);
 
   return (GdkDrawable *) impl;
 }

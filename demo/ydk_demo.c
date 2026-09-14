@@ -14,21 +14,24 @@
  *   1  nothing worked (display open failed)
  */
 
-#include <unistd.h>
-
+#include <glib.h>
 #include <ydk/gdk.h>
 #include <ydk/gdkcairo.h>
+#include <ydk/gdkkeysyms.h>
 
 #define WINDOW_WIDTH  640
 #define WINDOW_HEIGHT 480
+#define QUIT_TIMEOUT_MS  2500
+#define TICK_TIMEOUT_MS    50
+
+static GMainLoop *main_loop;
+static GdkWindow *main_window;
 
 static void
 draw_scene (GdkWindow *window)
 {
   cairo_t *cr;
 
-  /* The scene is deterministic so screenshots can be diffed: solid
-   * background, one disc, one rectangle. */
   cr = gdk_cairo_create (window);
 
   cairo_set_source_rgb (cr, 1.0, 1.0, 1.0);
@@ -47,14 +50,49 @@ draw_scene (GdkWindow *window)
   gdk_window_flush (window);
 }
 
+static void
+event_handler (GdkEvent *event, gpointer data)
+{
+  switch (event->type)
+    {
+    case GDK_EXPOSE:
+      draw_scene (event->expose.window);
+      break;
+
+    case GDK_KEY_PRESS:
+      if (event->key.keyval == GDK_Escape ||
+	  event->key.keyval == GDK_q)
+	g_main_loop_quit (main_loop);
+      break;
+
+    case GDK_BUTTON_PRESS:
+      break;
+
+    default:
+      break;
+    }
+}
+
+static gboolean
+quit_timeout (gpointer data)
+{
+  g_main_loop_quit (main_loop);
+  return FALSE;
+}
+
+static gboolean
+tick_timeout (gpointer data)
+{
+  gdk_window_process_all_updates ();
+  return TRUE;
+}
+
 int
 main (int argc, char **argv)
 {
   GdkWindowAttr attr;
-  GdkWindow *window;
   GdkColor bg;
   GdkScreen *screen;
-  gint width, height;
 
   if (!gdk_init_check (&argc, &argv))
     {
@@ -69,9 +107,6 @@ main (int argc, char **argv)
       return 78;
     }
 
-  width = gdk_screen_get_width (screen);
-  height = gdk_screen_get_height (screen);
-
   attr.window_type = GDK_WINDOW_TOPLEVEL;
   attr.wclass = GDK_INPUT_OUTPUT;
   attr.x = 10;
@@ -83,36 +118,33 @@ main (int argc, char **argv)
   attr.wmclass_name = "ydk_demo";
   attr.wmclass_class = "YdkDemo";
 
-  window = gdk_window_new (gdk_get_default_root_window (), &attr,
-                           GDK_WA_X | GDK_WA_Y | GDK_WA_WMCLASS);
-  if (!window)
+  main_window = gdk_window_new (gdk_get_default_root_window (), &attr,
+                                GDK_WA_X | GDK_WA_Y | GDK_WA_WMCLASS);
+  if (!main_window)
     {
-      /* Expected for backends without window support yet (e.g. an X11
-       * display absent from the screen). */
       g_printerr ("ydk_demo: window creation not supported on this "
                   "backend (exit 77)\n");
       return 77;
     }
 
   gdk_color_parse ("#ffffff", &bg);
-  gdk_window_set_background (window, &bg);
+  gdk_window_set_background (main_window, &bg);
 
-  gdk_window_show (window);
+  gdk_event_handler_set (event_handler, NULL, NULL);
 
-  /* Let the server commit the mapping before we capture it. */
-  gdk_flush ();
-  usleep (300 * 1000);
-  gdk_flush ();
+  main_loop = g_main_loop_new (NULL, FALSE);
 
-  draw_scene (window);
+  gdk_window_show (main_window);
 
-  /* Leave the frame on screen long enough for the harness screenshot. */
-  gdk_flush ();
-  usleep (1500 * 1000);
-  gdk_flush ();
+  g_timeout_add (TICK_TIMEOUT_MS, tick_timeout, NULL);
+  g_timeout_add (QUIT_TIMEOUT_MS, quit_timeout, NULL);
 
-  gdk_window_destroy (window);
+  g_main_loop_run (main_loop);
+
+  gdk_window_destroy (main_window);
   gdk_display_close (gdk_display_get_default ());
+
+  g_main_loop_unref (main_loop);
 
   return 0;
 }

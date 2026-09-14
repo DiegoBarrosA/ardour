@@ -63,10 +63,11 @@
 #define _gdk_windowing_window_init               _gdk_x11_windowing_window_init
 #define _gdk_window_impl_new                     _gdk_x11_window_impl_new
 
-/* ydk-wayland: `_gdk_window_impl_new()` is per-backend in GTK2 (the core
- * declares it in gdkinternals.h and each backend defines the one symbol).
- * With both backends in one lib the X11 definition is renamed here and a
- * canonical dispatcher is provided by ydk/gdkbackend.c. */
+/* ydk-wayland: `_gdk_events_queue()` is the per-display "fetch events from
+ * the server into the GDK queue" hook that gdk_display_get_event() calls
+ * (gdkdisplay.c).  In GDK2 only X11 defined it; with two backends in one
+ * library the X11 definition is renamed here and the Wayland backend owns
+ * the canonical symbol. */
 
 /* public functions that are per-backend in GDK2
  *
@@ -80,5 +81,6 @@
  * alias resolves to whichever backend is active at runtime.
  */
 #define IA__gdk_display_open                    _gdk_x11_display_open
+#define _gdk_events_queue                       _gdk_x11_events_queue
 
 #endif /* __YDK_GDKWINDOWING_X11_H__ */

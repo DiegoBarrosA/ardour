@@ -35,6 +35,7 @@ G_BEGIN_DECLS
 
 typedef struct _GdkDisplayClass GdkDisplayClass;
 typedef struct _GdkDisplayPointerHooks GdkDisplayPointerHooks;
+typedef struct _GdkKeymap GdkKeymap;
 
 #define GDK_TYPE_DISPLAY              (gdk_display_get_type ())
 #define GDK_DISPLAY_OBJECT(object)    (G_TYPE_CHECK_INSTANCE_CAST ((object), GDK_TYPE_DISPLAY, GdkDisplay))
@@ -122,6 +123,11 @@ struct _GdkDisplayClass
    * here so the Wayland backend can flush/roundtrip its wl_display. */
   void (*flush)              (GdkDisplay *display);
   void (*sync)               (GdkDisplay *display);
+
+  /* ydk-wayland: backend keymap accessor.  GTK2 implemented
+   * gdk_keymap_get_for_display() per-backend; it is dispatched here like
+   * the other per-display operations so X11 and Wayland can coexist. */
+  GdkKeymap *(*keymap)       (GdkDisplay *display);
 
   /* Signals */
   void (*closed) (GdkDisplay *display,

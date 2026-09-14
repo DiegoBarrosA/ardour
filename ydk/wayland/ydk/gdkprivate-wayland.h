@@ -26,6 +26,7 @@
 #include <ydk/gdkdisplay.h>
 #include <ydk/gdkscreen.h>
 #include <ydk/gdkcolor.h>
+#include <ydk/gdkkeys.h>
 #include <ydk/gdkwindow.h>
 
 #ifdef GDK_COMPILATION
@@ -83,6 +84,22 @@ struct _GDKWDisplayWayland
   struct xdg_wm_base *xdg_wm_base;
   GSList *windows;
   gboolean xdg_shell_supported;
+
+  /* M3: seat + input.  wl_seat is bound v1 (capabilities event, no
+   * release); wl_pointer/wl_keyboard are created/destroyed from the
+   * capabilities callback.  pointer/keyboard_focus are the surface impls
+   * currently underneath the cursor / holding keyboard focus in this app;
+   * px/py are the cursor position in surface coordinates. */
+  struct wl_seat *wl_seat;
+  struct wl_pointer *wl_pointer;
+  struct wl_keyboard *wl_keyboard;
+  GDKWWindowImplWayland *pointer_focus;
+  GDKWWindowImplWayland *keyboard_focus;
+  gdouble px, py;
+
+  /* M3: per-display keymap; created lazily and filled from the wl_keyboard
+   * keymap event (see gdkkeys-wayland.c). */
+  GdkKeymap *keymap;
 };
 
 struct _GDKWDisplayWaylandClass
@@ -139,6 +156,10 @@ struct _GDKWWindowImplWayland
   xdg_surface *xdg_surface;
   xdg_toplevel *xdg_toplevel;
   struct wl_buffer *wl_buffer;
+
+  /* M3: wmclass from the creation attributes; surfaced to the compositor
+   * as the xdg_toplevel app id the first time the window is shown. */
+  gchar *wmclass;
 
   /* shm backing: the cairo image surface used for drawing is created
    * directly over this buffer (zero-copy presents). */
@@ -249,5 +270,47 @@ void _gdk_wayland_window_impl_teardown (GDKWWindowImplWayland *impl);
 GdkVisual *_gdk_wayland_screen_create_system_visual (void);
 GdkColormap *_gdk_wayland_screen_create_colormap (GdkScreen *screen,
 						  GdkVisual *visual);
+
+/********************************************************
+ * M3: seat input + events + keymap
+ ********************************************************/
+
+/* Per-display keymap, dispatched from core gdk_keymap_get_for_display()
+ * through GdkDisplayClass::keymap.  The xkb keymap arrives asynchronously
+ * via the wl_keyboard keymap event. */
+GType gdkw_keymap_wayland_get_type (void) G_GNUC_CONST;
+GdkKeymap *gdkw_display_wayland_get_keymap (GdkDisplay *display);
+
+/* Fills @impl's map state from the xkb keymap handed over by the
+ * compositor.  Called from the wl_keyboard keymap event listener. */
+void _gdk_wayland_keymap_set_keymap (GDKWDisplayWayland *display,
+				     int format,
+				     int fd,
+				     guint size);
+
+/* Serialises an xkb modifier mask into GDK modifier bits.  Used by the
+ * keyboard and pointer listeners in gdkevents-wayland.c. */
+GdkModifierType _gdk_wayland_keymap_serialize_mods (GdkKeymap *keymap,
+						    guint mask);
+
+/* The active keyboard layout index (group) for KEY_PRESS/RELEASE events. */
+gint _gdk_wayland_keymap_group (GdkKeymap *keymap);
+
+/* The current xkb_state pointer, used by the key listener to update the
+ * modifier state on key presses/releases. */
+struct xkb_state *_gdk_wayland_keymap_get_xkb_state (GdkKeymap *keymap);
+
+/* Wires the Wayland display fd into the GLib main loop (a GSource owned by
+ * gdkevents-wayland.c) and binds the input globals.  Called at the end of
+ * display open after the registry walk; the reverse in display finalize. */
+void _gdk_wayland_events_init (GdkDisplay *display);
+void _gdk_wayland_events_finalize (GdkDisplay *display);
+void _gdk_wayland_seat_init (GDKWDisplayWayland *display,
+			     struct wl_registry *registry,
+			     uint32_t name);
+
+/* Finds the toplevel impl whose surface is @surface; NULL if unknown. */
+GDKWWindowImplWayland *_gdk_wayland_impl_from_surface (
+    GDKWDisplayWayland *display, struct wl_surface *surface);
 
 #endif /* __YDK_GDKP_PRIVATE_WAYLAND_H__ */

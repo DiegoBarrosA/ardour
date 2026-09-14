@@ -158,6 +158,7 @@ void _gdk_keymap_add_virtual_modifiers_compat (GdkKeymap       *keymap,
                                                GdkModifierType *modifiers);
 gboolean _gdk_keymap_key_is_modifier   (GdkKeymap       *keymap,
 					guint            keycode);
+GdkKeymap *gdkw_display_x11_get_keymap (GdkDisplay      *display);
 
 GC _gdk_x11_gc_flush (GdkGC *gc);
 

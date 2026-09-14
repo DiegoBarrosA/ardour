@@ -91,7 +91,10 @@ gdkw_display_wayland_sync (GdkDisplay *display)
 static void
 gdkw_display_wayland_flush (GdkDisplay *display)
 {
-  wl_display_flush (GDKW_DISPLAY_WAYLAND (display)->wl_display);
+  GDKWDisplayWayland *wayland_display = GDKW_DISPLAY_WAYLAND (display);
+
+  _gdk_wayland_display_present_all (wayland_display);
+  wl_display_flush (wayland_display->wl_display);
 }
 
 static void
@@ -122,6 +125,9 @@ gdkw_display_wayland_finalize (GObject *object)
       g_slist_free (display->windows);
       display->windows = NULL;
     }
+
+  /* Tear down the event source and seat / keyboard / pointer proxies. */
+  _gdk_wayland_events_finalize (GDK_DISPLAY_OBJECT (display));
 
   if (display->wl_registry)
     {
@@ -173,6 +179,7 @@ gdkw_display_wayland_class_init (GDKWDisplayWaylandClass *klass)
   display_class->get_default_screen = gdkw_display_wayland_get_default_screen;
   display_class->flush = gdkw_display_wayland_flush;
   display_class->sync = gdkw_display_wayland_sync;
+  display_class->keymap = gdkw_display_wayland_get_keymap;
 }
 
 static void
@@ -272,6 +279,10 @@ wl_registry_global (void *data,
 				&xdg_wm_base_listener, display);
       display->xdg_shell_supported = TRUE;
     }
+  else if (strcmp (interface, "wl_seat") == 0 && !display->wl_seat)
+    {
+      _gdk_wayland_seat_init (display, registry, name);
+    }
 }
 
 static void
@@ -332,6 +343,10 @@ _gdk_wayland_display_open (const gchar *display_name)
   display->default_screen =
     _gdk_wayland_screen_new (GDK_DISPLAY_OBJECT (display),
 			     display->output_width, display->output_height);
+
+  /* Wire up the input event source; seat listeners are registered as the
+   * compositor announces wl_seat globals. */
+  _gdk_wayland_events_init (GDK_DISPLAY_OBJECT (display));
 
   return GDK_DISPLAY_OBJECT (display);
 }
@@ -409,6 +424,9 @@ void
 _gdk_wayland_windowing_window_process_updates_recurse (GdkWindow *window,
 						       GdkRegion *expose_region)
 {
+  /* Expose dispatch is fully handled by the core: the backend hook only
+   * needs to be a passthrough (the x11 backend does the same thing). */
+  _gdk_window_process_updates_recurse (window, expose_region);
 }
 
 void

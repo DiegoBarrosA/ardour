@@ -146,6 +146,7 @@ _gdk_display_x11_class_init (GdkDisplayX11Class * class)
   display_class->get_default_screen = gdkw_display_x11_get_default_screen;
   display_class->flush = gdkw_display_x11_flush;
   display_class->sync = gdkw_display_x11_sync;
+  display_class->keymap = gdkw_display_x11_get_keymap;
 }
 
 static void

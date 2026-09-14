@@ -66,6 +66,8 @@ libydk_sources = [
 
 libydk_wayland_sources = [
     'ydk/wayland/gdkdisplay-wayland.c',
+    'ydk/wayland/gdkevents-wayland.c',
+    'ydk/wayland/gdkkeys-wayland.c',
     'ydk/wayland/gdkmain-wayland.c',
     'ydk/wayland/gdkscreen-wayland.c',
     'ydk/wayland/gdkwindowimpl-wayland.c',
@@ -181,6 +183,7 @@ def configure(conf):
 
     if with_wayland:
         check_pkg('wayland-client', 'WAYLAND')
+        check_pkg('xkbcommon', 'XKBCOMMON')
 
 def build(bld):
     core_sources = list(libydk_sources)
@@ -222,7 +225,7 @@ def build(bld):
             'wayland', libydk_wayland_sources,
             ['.', 'ydk', 'ydk/ydk', 'ydk/wayland/ydk',
              'ydk-pixbuf', 'ydk-pixbuf/ydk-pixbuf'], ['_GNU_SOURCE'],
-            ['GLIB', 'GOBJECT', 'WAYLAND', 'CAIRO', 'PANGO'], [])
+            ['GLIB', 'GOBJECT', 'WAYLAND', 'XKBCOMMON', 'CAIRO', 'PANGO'], [])
 
     ydk_x11_objs = []
     if with_x11:
@@ -342,7 +345,7 @@ def build(bld):
     if with_x11:
         obj.uselib += ['RANDR', 'XINERAMA', 'XI']
     if with_wayland:
-        obj.uselib += ['WAYLAND']
+        obj.uselib += ['WAYLAND', 'XKBCOMMON']
     obj.vnum = VERSION
     if bld.options.prefix:
         obj.install_path = bld.options.prefix + '/lib'
