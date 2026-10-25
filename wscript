@@ -65,11 +65,19 @@ libydk_sources = [
 ]
 
 libydk_wayland_sources = [
+    'ydk/wayland/gdkcursor-wayland.c',
     'ydk/wayland/gdkdisplay-wayland.c',
+    'ydk/wayland/gdkdnd-wayland.c',
+    'ydk/wayland/gdkdrawable-wayland.c',
     'ydk/wayland/gdkevents-wayland.c',
+    'ydk/wayland/gdkfont-wayland.c',
+    'ydk/wayland/gdkgc-wayland.c',
     'ydk/wayland/gdkkeys-wayland.c',
     'ydk/wayland/gdkmain-wayland.c',
+    'ydk/wayland/gdkpixmap-wayland.c',
+    'ydk/wayland/gdkproperty-wayland.c',
     'ydk/wayland/gdkscreen-wayland.c',
+    'ydk/wayland/gdkselection-wayland.c',
     'ydk/wayland/gdkwindowimpl-wayland.c',
     'ydk/wayland/xdg-shell-protocol.c',
 ]
@@ -225,7 +233,8 @@ def build(bld):
             'wayland', libydk_wayland_sources,
             ['.', 'ydk', 'ydk/ydk', 'ydk/wayland/ydk',
              'ydk-pixbuf', 'ydk-pixbuf/ydk-pixbuf'], ['_GNU_SOURCE'],
-            ['GLIB', 'GOBJECT', 'WAYLAND', 'XKBCOMMON', 'CAIRO', 'PANGO'], [])
+            ['GLIB', 'GOBJECT', 'GIO-UNIX', 'WAYLAND', 'XKBCOMMON', 'CAIRO', 'PANGO',
+             'PANGOCAIRO'], [])
 
     ydk_x11_objs = []
     if with_x11:

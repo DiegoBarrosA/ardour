@@ -442,7 +442,7 @@ _gdk_wayland_windowing_after_process_all_updates (void)
 gint
 _gdk_wayland_windowing_get_bits_for_depth (GdkDisplay *display, gint depth)
 {
-  return 32;
+  return depth == 1 ? 1 : 32;
 }
 
 void
@@ -459,18 +459,6 @@ _gdk_wayland_windowing_display_set_sm_client_id (GdkDisplay *display,
 void
 _gdk_wayland_windowing_window_set_composited (GdkWindow *window,
 					      gboolean composited)
-{
-}
-
-void
-_gdk_wayland_windowing_gc_set_clip_region (GdkGC *gc,
-					   const GdkRegion *region,
-					   gboolean reset_origin)
-{
-}
-
-void
-_gdk_wayland_windowing_gc_copy (GdkGC *dst_gc, GdkGC *src_gc)
 {
 }
 

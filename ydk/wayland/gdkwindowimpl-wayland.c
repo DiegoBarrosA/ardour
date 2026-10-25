@@ -37,6 +37,7 @@
 #include "xdg-shell-client.h"
 
 #include "gdkprivate-wayland.h"
+#include "gdkpixmap-wayland.h"
 
 #ifdef GDK_COMPILATION
 #include "gdkalias.h"
@@ -126,11 +127,27 @@ gdkw_window_impl_wayland_create_cairo_surface (GdkDrawable *drawable,
 					       int height)
 {
   GDKWWindowImplWayland *impl = GDKW_WINDOW_IMPL_WAYLAND (drawable);
+  cairo_surface_t *surface;
 
   if (!impl->backing && !ensure_shm_buffer (impl))
     return NULL;
 
-  return cairo_surface_reference (impl->backing);
+  /* A FRESH surface over the same shm bytes.  gdkwindow.c's
+   * gdk_window_ref_cairo_surface() sets a per-window device offset and user
+   * data on whatever this returns; handing out the shared backing would shift
+   * all later drawing through the impl.  (M10: resize_buffer still munmaps
+   * the bytes while such wrapper-cached surfaces may point at them.) */
+  surface = cairo_image_surface_create_for_data (impl->shm_data,
+						 CAIRO_FORMAT_ARGB32,
+						 impl->width, impl->height,
+						 impl->stride);
+  if (cairo_surface_status (surface) != CAIRO_STATUS_SUCCESS)
+    {
+      cairo_surface_destroy (surface);
+      return NULL;
+    }
+
+  return surface;
 }
 
 static cairo_surface_t *
@@ -138,9 +155,11 @@ gdkw_window_impl_wayland_ref_cairo_surface (GdkDrawable *drawable)
 {
   GDKWWindowImplWayland *impl = GDKW_WINDOW_IMPL_WAYLAND (drawable);
 
-  return gdkw_window_impl_wayland_create_cairo_surface (drawable,
-							impl->width,
-							impl->height);
+  /* the shared backing; drawing code (the M5 draw vfuncs) paints on it */
+  if (!impl->backing && !ensure_shm_buffer (impl))
+    return NULL;
+
+  return cairo_surface_reference (impl->backing);
 }
 
 static void
@@ -148,20 +167,13 @@ gdkw_window_impl_wayland_set_cairo_clip (GdkDrawable *drawable, cairo_t *cr)
 {
 }
 
-static GdkImage *
-gdkw_window_impl_wayland_get_image (GdkDrawable *drawable,
-				    gint x,
-				    gint y,
-				    gint width,
-				    gint height)
-{
-  return NULL;
-}
-
 static void
 gdkw_window_impl_wayland_class_init (GDKWWindowImplWaylandClass *klass)
 {
   GdkDrawableClass *drawable_class = GDK_DRAWABLE_CLASS (klass);
+
+  /* create_gc and the draw_* vfuncs, shared with the pixmap impl */
+  _gdk_wayland_drawable_install_vfuncs (drawable_class);
 
   drawable_class->get_depth = gdkw_window_impl_wayland_get_depth;
   drawable_class->get_size = gdkw_window_impl_wayland_get_size;
@@ -170,7 +182,8 @@ gdkw_window_impl_wayland_class_init (GDKWWindowImplWaylandClass *klass)
   drawable_class->get_visual = gdkw_window_impl_wayland_get_visual;
   drawable_class->get_screen = gdkw_window_impl_wayland_get_screen;
   drawable_class->set_cairo_clip = gdkw_window_impl_wayland_set_cairo_clip;
-  drawable_class->get_image = gdkw_window_impl_wayland_get_image;
+  drawable_class->get_image = _gdk_wayland_drawable_get_image;
+  drawable_class->_copy_to_image = _gdk_wayland_drawable_copy_to_image;
   drawable_class->ref_cairo_surface = gdkw_window_impl_wayland_ref_cairo_surface;
   drawable_class->create_cairo_surface =
     gdkw_window_impl_wayland_create_cairo_surface;
@@ -913,6 +926,11 @@ _gdk_wayland_windowing_create_cairo_surface (GdkDrawable *drawable,
 					     int height)
 {
   GDKWWindowImplWayland *impl;
+
+  /* pixmap wrappers reach this through gdk_pixmap_create_cairo_surface */
+  if (GDKW_IS_PIXMAP_IMPL_WAYLAND (drawable))
+    return _gdk_wayland_pixmap_impl_create_cairo_surface (drawable,
+							  width, height);
 
   g_return_val_if_fail (GDKW_IS_WINDOW_IMPL_WAYLAND (drawable), NULL);
 

@@ -83,4 +83,85 @@
 #define IA__gdk_display_open                    _gdk_x11_display_open
 #define _gdk_events_queue                       _gdk_x11_events_queue
 
+/* ydk-wayland M4: cursor, font, selection, drag and property families.
+ * Public names are alias-remapped to IA__ by gdkalias.h, so chain through
+ * IA__; internal (_gdk_*) names are renamed directly.  The dispatchers in
+ * ydk/gdkbackend.c own the canonical names. */
+/* ---- cursor family */
+#define IA__gdk_cursor_new_for_display                   _gdk_x11_cursor_new_for_display
+#define IA__gdk_cursor_new_from_pixmap                   _gdk_x11_cursor_new_from_pixmap
+#define IA__gdk_cursor_new_from_pixbuf                   _gdk_x11_cursor_new_from_pixbuf
+#define IA__gdk_cursor_new_from_name                     _gdk_x11_cursor_new_from_name
+#define _gdk_cursor_destroy                              _gdk_x11_cursor_destroy
+#define IA__gdk_cursor_get_display                       _gdk_x11_cursor_get_display
+#define IA__gdk_cursor_get_image                         _gdk_x11_cursor_get_image
+#define IA__gdk_display_supports_cursor_alpha            _gdk_x11_display_supports_cursor_alpha
+#define IA__gdk_display_supports_cursor_color            _gdk_x11_display_supports_cursor_color
+#define IA__gdk_display_get_default_cursor_size          _gdk_x11_display_get_default_cursor_size
+#define IA__gdk_display_get_maximal_cursor_size          _gdk_x11_display_get_maximal_cursor_size
+/* ---- font family */
+#define IA__gdk_font_get_display                         _gdk_x11_font_get_display
+#define IA__gdk_font_load_for_display                    _gdk_x11_font_load_for_display
+#define IA__gdk_font_from_description_for_display        _gdk_x11_font_from_description_for_display
+#define IA__gdk_fontset_load_for_display                 _gdk_x11_fontset_load_for_display
+#define _gdk_font_destroy                                _gdk_x11_font_destroy
+#define _gdk_font_strlen                                 _gdk_x11_font_strlen
+#define IA__gdk_font_id                                  _gdk_x11_font_id
+#define IA__gdk_font_equal                               _gdk_x11_font_equal
+#define IA__gdk_text_width                               _gdk_x11_text_width
+#define IA__gdk_text_width_wc                            _gdk_x11_text_width_wc
+#define IA__gdk_text_extents                             _gdk_x11_text_extents
+#define IA__gdk_text_extents_wc                          _gdk_x11_text_extents_wc
+/* ---- selection family */
+#define IA__gdk_selection_owner_set_for_display          _gdk_x11_selection_owner_set_for_display
+#define IA__gdk_selection_owner_get_for_display          _gdk_x11_selection_owner_get_for_display
+#define IA__gdk_selection_convert                        _gdk_x11_selection_convert
+#define IA__gdk_selection_property_get                   _gdk_x11_selection_property_get
+#define IA__gdk_selection_send_notify_for_display        _gdk_x11_selection_send_notify_for_display
+#define IA__gdk_text_property_to_text_list_for_display   _gdk_x11_text_property_to_text_list_for_display
+#define IA__gdk_text_property_to_utf8_list_for_display   _gdk_x11_text_property_to_utf8_list_for_display
+#define IA__gdk_free_text_list                           _gdk_x11_free_text_list
+#define IA__gdk_free_compound_text                       _gdk_x11_free_compound_text
+#define IA__gdk_string_to_compound_text_for_display      _gdk_x11_string_to_compound_text_for_display
+#define IA__gdk_utf8_to_compound_text_for_display        _gdk_x11_utf8_to_compound_text_for_display
+/* ---- drag family */
+#define IA__gdk_drag_begin                               _gdk_x11_drag_begin
+#define IA__gdk_drag_get_protocol_for_display            _gdk_x11_drag_get_protocol_for_display
+#define IA__gdk_drag_find_window_for_screen              _gdk_x11_drag_find_window_for_screen
+#define IA__gdk_drag_motion                              _gdk_x11_drag_motion
+#define IA__gdk_drag_drop                                _gdk_x11_drag_drop
+#define IA__gdk_drag_abort                               _gdk_x11_drag_abort
+#define IA__gdk_drag_status                              _gdk_x11_drag_status
+#define IA__gdk_drag_get_selection                       _gdk_x11_drag_get_selection
+#define IA__gdk_drag_drop_succeeded                      _gdk_x11_drag_drop_succeeded
+#define IA__gdk_drop_reply                               _gdk_x11_drop_reply
+#define IA__gdk_drop_finish                              _gdk_x11_drop_finish
+#define IA__gdk_window_register_dnd                      _gdk_x11_window_register_dnd
+/* ---- property family */
+#define IA__gdk_property_get                             _gdk_x11_property_get
+#define IA__gdk_property_change                          _gdk_x11_property_change
+#define IA__gdk_property_delete                          _gdk_x11_property_delete
+#define IA__gdk_atom_intern                              _gdk_x11_atom_intern
+#define IA__gdk_atom_intern_static_string                _gdk_x11_atom_intern_static_string
+#define IA__gdk_atom_name                                _gdk_x11_atom_name
+
+/* ydk-wayland M5: pixmap, GC-screen and GdkImage families (same convention
+ * as M4: public names chain through IA__, internal names are renamed
+ * directly; the dispatchers in ydk/gdkbackend.c own the canonical names).
+ * gdk_image_get_type () and the image/GC types themselves stay X11-owned. */
+#define _gdk_pixmap_impl_get_type                        _gdk_x11_pixmap_impl_get_type
+#define _gdk_pixmap_new                                  _gdk_x11_pixmap_new
+#define _gdk_bitmap_create_from_data                     _gdk_x11_bitmap_create_from_data
+#define _gdk_pixmap_create_from_data                     _gdk_x11_pixmap_create_from_data
+#define IA__gdk_pixmap_foreign_new_for_display           _gdk_x11_pixmap_foreign_new_for_display
+#define IA__gdk_pixmap_foreign_new_for_screen            _gdk_x11_pixmap_foreign_new_for_screen
+#define IA__gdk_pixmap_foreign_new                       _gdk_x11_pixmap_foreign_new
+#define IA__gdk_pixmap_lookup                            _gdk_x11_pixmap_lookup
+#define IA__gdk_pixmap_lookup_for_display                _gdk_x11_pixmap_lookup_for_display
+#define IA__gdk_gc_get_screen                            _gdk_x11_gc_get_screen
+#define _gdk_image_new_for_depth                         _gdk_x11_image_new_for_depth
+#define IA__gdk_image_new_bitmap                         _gdk_x11_image_new_bitmap
+#define IA__gdk_image_get_pixel                          _gdk_x11_image_get_pixel
+#define IA__gdk_image_put_pixel                          _gdk_x11_image_put_pixel
+
 #endif /* __YDK_GDKWINDOWING_X11_H__ */

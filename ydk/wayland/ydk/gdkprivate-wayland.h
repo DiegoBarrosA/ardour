@@ -313,4 +313,71 @@ void _gdk_wayland_seat_init (GDKWDisplayWayland *display,
 GDKWWindowImplWayland *_gdk_wayland_impl_from_surface (
     GDKWDisplayWayland *display, struct wl_surface *surface);
 
+/********************************************************
+ * M4: cursor, font, selection, drag, property (dispatched from
+ * ydk/gdkbackend.c)
+ ********************************************************/
+
+/* ---- cursor (gdk---- cursor-wayland.c) */
+GdkCursor *_gdk_wayland_cursor_new_for_display (GdkDisplay *display, GdkCursorType cursor_type);
+GdkCursor *_gdk_wayland_cursor_new_from_pixmap (GdkPixmap *source, GdkPixmap *mask, const GdkColor *fg, const GdkColor *bg, gint x, gint y);
+GdkCursor *_gdk_wayland_cursor_new_from_pixbuf (GdkDisplay *display, GdkPixbuf *pixbuf, gint x, gint y);
+GdkCursor *_gdk_wayland_cursor_new_from_name (GdkDisplay *display, const gchar *name);
+void _gdk_wayland_cursor_destroy (GdkCursor *cursor);
+GdkDisplay *_gdk_wayland_cursor_get_display (GdkCursor *cursor);
+GdkPixbuf *_gdk_wayland_cursor_get_image (GdkCursor *cursor);
+gboolean _gdk_wayland_display_supports_cursor_alpha (GdkDisplay *display);
+gboolean _gdk_wayland_display_supports_cursor_color (GdkDisplay *display);
+guint _gdk_wayland_display_get_default_cursor_size (GdkDisplay *display);
+void _gdk_wayland_display_get_maximal_cursor_size (GdkDisplay *display, guint *width, guint *height);
+
+/* ---- font (gdk---- font-wayland.c) */
+GdkDisplay *_gdk_wayland_font_get_display (GdkFont *font);
+GdkFont *_gdk_wayland_font_load_for_display (GdkDisplay *display, const gchar *font_name);
+GdkFont *_gdk_wayland_font_from_description_for_display (GdkDisplay *display, PangoFontDescription *font_desc);
+GdkFont *_gdk_wayland_fontset_load_for_display (GdkDisplay *display, const gchar *fontset_name);
+void _gdk_wayland_font_destroy (GdkFont *font);
+gint _gdk_wayland_font_strlen (GdkFont *font, const gchar *str);
+gint _gdk_wayland_font_id (const GdkFont *font);
+gboolean _gdk_wayland_font_equal (const GdkFont *fonta, const GdkFont *fontb);
+gint _gdk_wayland_text_width (GdkFont *font, const gchar *text, gint text_length);
+gint _gdk_wayland_text_width_wc (GdkFont *font, const GdkWChar *text, gint text_length);
+void _gdk_wayland_text_extents (GdkFont *font, const gchar *text, gint text_length, gint *lbearing, gint *rbearing, gint *width, gint *ascent, gint *descent);
+void _gdk_wayland_text_extents_wc (GdkFont *font, const GdkWChar *text, gint text_length, gint *lbearing, gint *rbearing, gint *width, gint *ascent, gint *descent);
+
+/* ---- selection (gdk---- selection-wayland.c) */
+gboolean _gdk_wayland_selection_owner_set_for_display (GdkDisplay *display, GdkWindow *owner, GdkAtom selection, guint32 time, gboolean send_event);
+GdkWindow *_gdk_wayland_selection_owner_get_for_display (GdkDisplay *display, GdkAtom selection);
+void _gdk_wayland_selection_convert (GdkWindow *requestor, GdkAtom selection, GdkAtom target, guint32 time);
+gint _gdk_wayland_selection_property_get (GdkWindow *requestor, guchar **data, GdkAtom *ret_type, gint *ret_format);
+void _gdk_wayland_selection_send_notify_for_display (GdkDisplay *display, GdkNativeWindow requestor, GdkAtom selection, GdkAtom target, GdkAtom property, guint32 time);
+gint _gdk_wayland_text_property_to_text_list_for_display (GdkDisplay *display, GdkAtom encoding, gint format, const guchar *text, gint length, gchar ***list);
+gint _gdk_wayland_text_property_to_utf8_list_for_display (GdkDisplay *display, GdkAtom encoding, gint format, const guchar *text, gint length, gchar ***list);
+void _gdk_wayland_free_text_list (gchar **list);
+void _gdk_wayland_free_compound_text (guchar *ctext);
+gint _gdk_wayland_string_to_compound_text_for_display (GdkDisplay *display, const gchar *str, GdkAtom *encoding, gint *format, guchar **ctext, gint *length);
+gboolean _gdk_wayland_utf8_to_compound_text_for_display (GdkDisplay *display, const gchar *str, GdkAtom *encoding, gint *format, guchar **ctext, gint *length);
+
+/* ---- drag (gdk---- drag-wayland.c) */
+GdkDragContext *_gdk_wayland_drag_begin (GdkWindow *window, GList *targets);
+GdkNativeWindow _gdk_wayland_drag_get_protocol_for_display (GdkDisplay *display, GdkNativeWindow xid, GdkDragProtocol *protocol);
+void _gdk_wayland_drag_find_window_for_screen (GdkDragContext *context, GdkWindow *drag_window, GdkScreen *screen, gint x_root, gint y_root, GdkWindow **dest_window, GdkDragProtocol *protocol);
+gboolean _gdk_wayland_drag_motion (GdkDragContext *context, GdkWindow *dest_window, GdkDragProtocol protocol, gint x_root, gint y_root, GdkDragAction suggested_action, GdkDragAction possible_actions, guint32 time_);
+void _gdk_wayland_drag_drop (GdkDragContext *context, guint32 time_);
+void _gdk_wayland_drag_abort (GdkDragContext *context, guint32 time_);
+void _gdk_wayland_drag_status (GdkDragContext *context, GdkDragAction action, guint32 time_);
+GdkAtom _gdk_wayland_drag_get_selection (GdkDragContext *context);
+gboolean _gdk_wayland_drag_drop_succeeded (GdkDragContext *context);
+void _gdk_wayland_drop_reply (GdkDragContext *context, gboolean ok, guint32 time_);
+void _gdk_wayland_drop_finish (GdkDragContext *context, gboolean success, guint32 time_);
+void _gdk_wayland_window_register_dnd (GdkWindow *window);
+
+/* ---- property (gdk---- property-wayland.c) */
+gboolean _gdk_wayland_property_get (GdkWindow *window, GdkAtom property, GdkAtom type, gulong offset, gulong length, gint pdelete, GdkAtom *actual_property_type, gint *actual_format_type, gint *actual_length, guchar **data);
+void _gdk_wayland_property_change (GdkWindow *window, GdkAtom property, GdkAtom type, gint format, GdkPropMode mode, const guchar *data, gint nelements);
+void _gdk_wayland_property_delete (GdkWindow *window, GdkAtom property);
+GdkAtom _gdk_wayland_atom_intern (const gchar *atom_name, gboolean only_if_exists);
+GdkAtom _gdk_wayland_atom_intern_static_string (const gchar *atom_name);
+gchar *_gdk_wayland_atom_name (GdkAtom atom);
+
 #endif /* __YDK_GDKP_PRIVATE_WAYLAND_H__ */

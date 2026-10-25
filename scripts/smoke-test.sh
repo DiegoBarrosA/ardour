@@ -6,8 +6,10 @@
 # and captures a screenshot with ImageMagick to prove real rendering.
 # Phase 2 connects the demo to a headless Weston compositor over the
 # Wayland backend; since M2 the demo creates a real toplevel and renders
-# into an shm buffer (rc 0).  Backends without window support exit 77,
-# which still proves the display open/roundtrip works.
+# into an shm buffer (rc 0), and since M4 it also runs the cursor, font,
+# selection, drag and property checks ("ydk_demo: M4: PASS"), and since M5
+# the offscreen drawing checks ("ydk_demo: M5: PASS").  Backends without
+# window support exit 77, which still proves the display open/roundtrip works.
 #
 # Exits 0 on success.
 
@@ -55,20 +57,36 @@ set +e
   export WAYLAND_DISPLAY=smoketest
   export GDK_BACKEND=wayland
   ydk-demo
-)
-DEMO_RC=$?
+) 2>&1 | tee "$RUNTIME/wayland-demo.log"
+DEMO_RC=${PIPESTATUS[0]}
 set -e
 
 # 0 = window created and rendered, 77 = connect OK but window unsupported,
 # 78 = connect OK but no primary screen yet, 1 = fail
 if [ "$DEMO_RC" -ne 0 ] && [ "$DEMO_RC" -ne 77 ] && [ "$DEMO_RC" -ne 78 ]; then
   echo "smoke-test: wayland demo failed with rc=$DEMO_RC" >&2
+  pkill -TERM -P "$WESTON_PID" 2>/dev/null || true
   kill "$WESTON_PID" 2>/dev/null || true
   exit 1
 fi
 
+# WESTON_PID is dbus-run-session; take weston down with it so no orphan keeps
+# the caller's stdout pipe open.
+pkill -TERM -P "$WESTON_PID" 2>/dev/null || true
 kill "$WESTON_PID" 2>/dev/null || true
 wait "$WESTON_PID" 2>/dev/null || true
+
+# Since M4 the demo exercises the cursor/font/selection/drag/property
+# families under the Wayland backend and prints a verdict once it got a window.
+if [ "$DEMO_RC" -eq 0 ] && ! grep -q "ydk_demo: M4: PASS" "$RUNTIME/wayland-demo.log"; then
+  echo "smoke-test: wayland demo exited 0 but did not report M4: PASS" >&2
+  exit 1
+fi
+
+if [ "$DEMO_RC" -eq 0 ] && ! grep -q "ydk_demo: M5: PASS" "$RUNTIME/wayland-demo.log"; then
+  echo "smoke-test: wayland demo exited 0 but did not report M5: PASS" >&2
+  exit 1
+fi
 
 echo "smoke-test: wayland phase OK (demo rc=$DEMO_RC)"
 echo "smoke-test: PASS"
