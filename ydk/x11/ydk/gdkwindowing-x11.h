@@ -196,4 +196,30 @@
 #define IA__gdk_screen_get_rgba_colormap       _gdk_x11_screen_get_rgba_colormap
 #define IA__gdk_screen_get_rgba_visual         _gdk_x11_screen_get_rgba_visual
 
+/* ---- ydk-wayland M6: screen functions that were X11-owned, plus the
+ * grab / warp / beep / pending entry points (same convention as M4 and M5:
+ * public names chain through IA__, the dispatchers in ydk/gdkbackend.c own
+ * the canonical names) */
+#define IA__gdk_screen_get_width_mm                     _gdk_x11_screen_get_width_mm
+#define IA__gdk_screen_get_height_mm                    _gdk_x11_screen_get_height_mm
+#define IA__gdk_screen_get_number                       _gdk_x11_screen_get_number
+#define IA__gdk_screen_get_n_monitors                   _gdk_x11_screen_get_n_monitors
+#define IA__gdk_screen_get_primary_monitor              _gdk_x11_screen_get_primary_monitor
+#define IA__gdk_screen_get_monitor_geometry             _gdk_x11_screen_get_monitor_geometry
+#define IA__gdk_screen_get_monitor_width_mm             _gdk_x11_screen_get_monitor_width_mm
+#define IA__gdk_screen_get_monitor_height_mm            _gdk_x11_screen_get_monitor_height_mm
+#define IA__gdk_screen_get_monitor_plug_name            _gdk_x11_screen_get_monitor_plug_name
+#define IA__gdk_screen_is_composited                    _gdk_x11_screen_is_composited
+#define IA__gdk_screen_make_display_name                _gdk_x11_screen_make_display_name
+#define IA__gdk_screen_get_active_window                _gdk_x11_screen_get_active_window
+#define IA__gdk_screen_get_window_stack                 _gdk_x11_screen_get_window_stack
+#define IA__gdk_screen_broadcast_client_message         _gdk_x11_screen_broadcast_client_message
+#define IA__gdk_screen_get_setting                      _gdk_x11_screen_get_setting
+#define IA__gdk_display_pointer_ungrab         _gdk_x11_display_pointer_ungrab
+#define IA__gdk_display_keyboard_ungrab        _gdk_x11_display_keyboard_ungrab
+#define IA__gdk_keyboard_grab                  _gdk_x11_keyboard_grab
+#define IA__gdk_display_warp_pointer           _gdk_x11_display_warp_pointer
+#define IA__gdk_display_beep                   _gdk_x11_display_beep
+#define IA__gdk_events_pending                 _gdk_x11_events_pending
+
 #endif /* __YDK_GDKWINDOWING_X11_H__ */

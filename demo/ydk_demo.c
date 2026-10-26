@@ -9,11 +9,12 @@
  * exits.  Exit codes are meaningful to the harness:
  *
  *   0  window created and drawn (X11 baseline and Wayland since M2); under
- *      GDK_BACKEND=wayland also every M4, M5, M5C and M5V check passed
- *      (see m4_exercise, m5_exercise, m5c_exercise, m5v_exercise)
+ *      GDK_BACKEND=wayland also every M4, M5, M5C, M5V and M6 check passed
+ *      (see m4_exercise, m5_exercise, m5c_exercise, m5v_exercise,
+ *      m6_exercise)
  *   77 skipped: backend has no window support yet
  *   78 skipped: display opened but primary screen unavailable
- *   1  nothing worked (display open failed), an M4 / M5 / M5C / M5V check
+ *   1  nothing worked (display open failed), an M4 / M5 / M5C / M5V / M6 check
  *      failed, or a g_critical / g_error was logged (see fatal_log_handler)
  */
 
@@ -25,6 +26,7 @@
 #include <ydk/gdk.h>
 #include <ydk/gdkcairo.h>
 #include <ydk/gdkkeysyms.h>
+#include <ydk/gdkseat-wayland.h>
 
 #define WINDOW_WIDTH  640
 #define WINDOW_HEIGHT 480
@@ -1283,6 +1285,995 @@ m5v_exercise (void)
   return m5v_failures;
 }
 
+/* ---- M6 exercise ------------------------------------------------------
+ *
+ * Input completeness and the remaining screen functions.  A headless
+ * Weston has no input devices, so protocol events are injected through the
+ * _gdk_wayland_test_* hooks (gdkseat-wayland.h).  Each hook calls the REAL
+ * wl_keyboard / wl_pointer / xdg_toplevel listener, so the translation
+ * layer, the GDK queue, _gdk_windowing_got_event (child proxying, implicit
+ * grabs, crossing events, double clicks), explicit grabs, the key repeat
+ * timer and get_pointer all run for real.  The events are recorded with
+ * their own gdk_event_handler_set () handler (the demo's one is restored at
+ * the end), and the checks look them up by (type, window).
+ *
+ * Geometry (main_window coordinates; the pointer hooks take them):
+ *   main_window  0,0 640x480       child  (100,100) 100x100
+ * so (50,60) is on main only, (150,160) enters the child, (155,165) is
+ * child-relative (55,65).
+ */
+
+static int m6_failures;
+
+#define M6_CHECK(cond, what)						\
+  G_STMT_START {							\
+    if (!(cond))							\
+      {									\
+	g_printerr ("ydk_demo: M6 check failed: %s\n", what);		\
+	m6_failures++;							\
+      }									\
+  } G_STMT_END
+
+#define M6_EQ_INT(got, want, what)					\
+  G_STMT_START {							\
+    long g_ = (long) (got), w_ = (long) (want);				\
+    if (g_ != w_)							\
+      {									\
+	g_printerr ("ydk_demo: M6 check failed: %s: got %ld want %ld\n", \
+		    what, g_, w_);					\
+	m6_failures++;							\
+      }									\
+  } G_STMT_END
+
+/* every hook must report that it delivered the event */
+#define M6_HOOK(call, what)						\
+  G_STMT_START {							\
+    if (!(call))							\
+      {									\
+	g_printerr ("ydk_demo: M6 check failed: %s: hook did not deliver\n", \
+		    what);						\
+	m6_failures++;							\
+      }									\
+  } G_STMT_END
+
+static GQueue m6_events = G_QUEUE_INIT;
+
+static void
+m6_recorder (GdkEvent *event, gpointer data)
+{
+  g_queue_push_tail (&m6_events, gdk_event_copy (event));
+}
+
+static void
+m6_clear (void)
+{
+  GdkEvent *ev;
+
+  while ((ev = g_queue_pop_head (&m6_events)) != NULL)
+    gdk_event_free (ev);
+}
+
+static void
+m6_drain (void)
+{
+  while (g_main_context_iteration (NULL, FALSE))
+    ;
+}
+
+static gboolean
+m6_flag_cb (gpointer data)
+{
+  *(gboolean *) data = TRUE;
+  return FALSE;
+}
+
+/* runs the main loop (timers, the display source) for @ms milliseconds */
+static void
+m6_run_ms (guint ms)
+{
+  gboolean done = FALSE;
+
+  g_timeout_add (ms, m6_flag_cb, &done);
+  while (!done)
+    g_main_context_iteration (NULL, TRUE);
+}
+
+/* first recorded event of @type on @window (NULL window matches any) */
+static GdkEvent *
+m6_find (GdkEventType type, GdkWindow *window)
+{
+  GList *l;
+
+  for (l = m6_events.head; l; l = l->next)
+    {
+      GdkEvent *ev = l->data;
+
+      if (ev->type == type && (window == NULL || ev->any.window == window))
+	return ev;
+    }
+
+  return NULL;
+}
+
+static int
+m6_count (GdkEventType type, GdkWindow *window)
+{
+  GList *l;
+  int n = 0;
+
+  for (l = m6_events.head; l; l = l->next)
+    {
+      GdkEvent *ev = l->data;
+
+      if (ev->type == type && (window == NULL || ev->any.window == window))
+	n++;
+    }
+
+  return n;
+}
+
+/* number of KEY_PRESS events with @keyval */
+static int
+m6_count_keyval (guint keyval)
+{
+  GList *l;
+  int n = 0;
+
+  for (l = m6_events.head; l; l = l->next)
+    {
+      GdkEvent *ev = l->data;
+
+      if (ev->type == GDK_KEY_PRESS && ev->key.keyval == keyval)
+	n++;
+    }
+
+  return n;
+}
+
+/* scroll events on @window, direction in order; returns how many */
+static int
+m6_scrolls (GdkWindow *window, GdkScrollDirection *dirs, int max)
+{
+  GList *l;
+  int n = 0;
+
+  for (l = m6_events.head; l; l = l->next)
+    {
+      GdkEvent *ev = l->data;
+
+      if (ev->type == GDK_SCROLL && ev->any.window == window)
+	{
+	  if (dirs && n < max)
+	    dirs[n] = ev->scroll.direction;
+	  n++;
+	}
+    }
+
+  return n;
+}
+
+/* one wheel or finger frame on the vertical or horizontal axis */
+static void
+m6_scroll_frame (GdkDisplay *d, guint32 source, guint axis, gdouble value,
+		 gint discrete, gboolean has_discrete, gboolean stop)
+{
+  static guint32 t = 70000;
+
+  t += 20;
+  _gdk_wayland_test_pointer_axis_source (d, source);
+  if (value != 0.0)
+    _gdk_wayland_test_pointer_axis (d, t, axis, value);
+  if (has_discrete)
+    _gdk_wayland_test_pointer_axis_discrete (d, axis, discrete);
+  if (stop)
+    _gdk_wayland_test_pointer_axis_stop (d, t, axis);
+}
+
+static void
+m6_keymap_and_focus (GdkDisplay *d)
+{
+  GdkKeymap *keymap;
+  guint kv = 0;
+  GdkEvent *ev;
+
+  M6_HOOK (_gdk_wayland_test_keyboard_keymap (d), "keymap");
+
+  keymap = gdk_keymap_get_for_display (d);
+  M6_CHECK (keymap != NULL, "keymap for display");
+  if (keymap)
+    {
+      /* hardware keycodes are evdev + 8 */
+      gdk_keymap_translate_keyboard_state (keymap, GDKW_TEST_KEY_A + 8, 0, 0,
+					   &kv, NULL, NULL, NULL);
+      M6_EQ_INT (kv, GDK_a, "translate A, no modifiers -> a");
+      gdk_keymap_translate_keyboard_state (keymap, GDKW_TEST_KEY_A + 8,
+					   GDK_SHIFT_MASK, 0,
+					   &kv, NULL, NULL, NULL);
+      M6_EQ_INT (kv, GDK_A, "translate A + Shift -> A");
+      gdk_keymap_translate_keyboard_state (keymap, GDKW_TEST_KEY_A + 8,
+					   GDK_LOCK_MASK, 0,
+					   &kv, NULL, NULL, NULL);
+      M6_EQ_INT (kv, GDK_A, "translate A + Lock -> A");
+      /* the live modifier state must not leak into a translation that
+       * asks for state 0 */
+      M6_HOOK (_gdk_wayland_test_keyboard_modifiers (d, GDK_SHIFT_MASK),
+	       "modifiers shift");
+      gdk_keymap_translate_keyboard_state (keymap, GDKW_TEST_KEY_A + 8, 0, 0,
+					   &kv, NULL, NULL, NULL);
+      M6_EQ_INT (kv, GDK_a, "translate honours its state argument");
+      M6_HOOK (_gdk_wayland_test_keyboard_modifiers (d, 0), "modifiers clear");
+    }
+
+  /* focus */
+  m6_clear ();
+  M6_HOOK (_gdk_wayland_test_keyboard_enter (d, main_window), "kbd enter");
+  m6_drain ();
+  ev = m6_find (GDK_FOCUS_CHANGE, main_window);
+  M6_CHECK (ev != NULL, "focus-in event on main window");
+  if (ev)
+    M6_CHECK (ev->focus_change.in, "focus-in has in == TRUE");
+
+  m6_clear ();
+  M6_HOOK (_gdk_wayland_test_keyboard_leave (d, main_window), "kbd leave");
+  m6_drain ();
+  ev = m6_find (GDK_FOCUS_CHANGE, main_window);
+  M6_CHECK (ev != NULL, "focus-out event on main window");
+  if (ev)
+    M6_CHECK (!ev->focus_change.in, "focus-out has in == FALSE");
+
+  M6_HOOK (_gdk_wayland_test_keyboard_enter (d, main_window), "kbd re-enter");
+  m6_drain ();
+  m6_clear ();
+}
+
+static void
+m6_keys (GdkDisplay *d)
+{
+  GdkEvent *ev;
+
+  /* press and release A */
+  M6_HOOK (_gdk_wayland_test_keyboard_key (d, 1000, GDKW_TEST_KEY_A, TRUE),
+	   "key A press");
+  M6_HOOK (_gdk_wayland_test_keyboard_key (d, 1010, GDKW_TEST_KEY_A, FALSE),
+	   "key A release");
+  m6_drain ();
+  ev = m6_find (GDK_KEY_PRESS, main_window);
+  M6_CHECK (ev != NULL, "KEY_PRESS on main window");
+  if (ev)
+    {
+      M6_EQ_INT (ev->key.keyval, GDK_a, "press keyval");
+      M6_EQ_INT (ev->key.hardware_keycode, GDKW_TEST_KEY_A + 8,
+		 "press hardware_keycode is evdev + 8");
+      M6_EQ_INT (ev->key.time, 1000, "press time");
+      M6_EQ_INT (ev->key.state, 0, "press state");
+      M6_CHECK (ev->key.string && strcmp (ev->key.string, "a") == 0,
+		"press string is \"a\"");
+      M6_CHECK (!ev->key.is_modifier, "A is not a modifier");
+    }
+  ev = m6_find (GDK_KEY_RELEASE, main_window);
+  M6_CHECK (ev != NULL, "KEY_RELEASE on main window");
+  if (ev)
+    {
+      M6_EQ_INT (ev->key.keyval, GDK_a, "release keyval");
+      M6_EQ_INT (ev->key.time, 1010, "release time");
+    }
+  m6_clear ();
+
+  /* modifier state comes from wl_keyboard.modifiers only */
+  M6_HOOK (_gdk_wayland_test_keyboard_modifiers (d, GDK_SHIFT_MASK),
+	   "modifiers shift");
+  M6_HOOK (_gdk_wayland_test_keyboard_key (d, 1100, GDKW_TEST_KEY_A, TRUE),
+	   "shifted A press");
+  M6_HOOK (_gdk_wayland_test_keyboard_key (d, 1110, GDKW_TEST_KEY_A, FALSE),
+	   "shifted A release");
+  m6_drain ();
+  ev = m6_find (GDK_KEY_PRESS, main_window);
+  M6_CHECK (ev != NULL, "shifted KEY_PRESS");
+  if (ev)
+    {
+      M6_EQ_INT (ev->key.keyval, GDK_A, "shifted keyval");
+      M6_CHECK ((ev->key.state & GDK_SHIFT_MASK) != 0,
+		"shifted state carries GDK_SHIFT_MASK");
+      M6_CHECK (ev->key.string && strcmp (ev->key.string, "A") == 0,
+		"shifted string is \"A\"");
+    }
+  M6_HOOK (_gdk_wayland_test_keyboard_modifiers (d, 0), "modifiers clear");
+  m6_clear ();
+
+  /* modifier key */
+  M6_HOOK (_gdk_wayland_test_keyboard_key (d, 1200, GDKW_TEST_KEY_LEFTCTRL, TRUE),
+	   "ctrl press");
+  M6_HOOK (_gdk_wayland_test_keyboard_key (d, 1210, GDKW_TEST_KEY_LEFTCTRL, FALSE),
+	   "ctrl release");
+  m6_drain ();
+  ev = m6_find (GDK_KEY_PRESS, main_window);
+  M6_CHECK (ev != NULL, "Control_L KEY_PRESS");
+  if (ev)
+    {
+      M6_EQ_INT (ev->key.keyval, GDK_Control_L, "Control_L keyval");
+      M6_CHECK (ev->key.is_modifier, "Control_L is_modifier");
+    }
+  m6_clear ();
+
+  /* Escape: the demo's own quit handler is not installed during M6 */
+  M6_HOOK (_gdk_wayland_test_keyboard_key (d, 1300, GDKW_TEST_KEY_ESC, TRUE),
+	   "escape press");
+  M6_HOOK (_gdk_wayland_test_keyboard_key (d, 1310, GDKW_TEST_KEY_ESC, FALSE),
+	   "escape release");
+  m6_drain ();
+  ev = m6_find (GDK_KEY_PRESS, main_window);
+  M6_CHECK (ev != NULL && ev->key.keyval == GDK_Escape, "Escape keyval");
+  m6_clear ();
+}
+
+static void
+m6_repeat (GdkDisplay *d)
+{
+  GDKWTestSeatInfo info;
+  GdkEvent *ev;
+  GList *l;
+  guint32 last;
+  gboolean increasing = TRUE;
+  int n;
+
+  /* rate 50/s, delay 50 ms: repeats at 50, 70, 90 ... ms */
+  M6_HOOK (_gdk_wayland_test_keyboard_repeat_info (d, 50, 50), "repeat_info");
+  m6_clear ();
+  M6_HOOK (_gdk_wayland_test_keyboard_key (d, 2000, GDKW_TEST_KEY_A, TRUE),
+	   "repeat: press A");
+  m6_run_ms (400);
+
+  n = m6_count_keyval (GDK_a) - 1;
+  M6_CHECK (n >= 5 && n <= 20, "repeat: 5..20 extra KEY_PRESS in 400 ms");
+  if (n < 5 || n > 20)
+    g_printerr ("ydk_demo: M6: repeat count was %d\n", n);
+
+  last = 0;
+  for (l = m6_events.head; l; l = l->next)
+    {
+      ev = l->data;
+      if (ev->type != GDK_KEY_PRESS)
+	continue;
+      if (ev->key.keyval != GDK_a)
+	increasing = FALSE;
+      if (last != 0 && ev->key.time <= last)
+	increasing = FALSE;
+      last = ev->key.time;
+    }
+  M6_CHECK (increasing, "repeat: same keyval, strictly increasing time");
+
+  M6_CHECK (_gdk_wayland_test_seat_info (d, &info) &&
+	    info.repeat_key == GDKW_TEST_KEY_A,
+	    "repeat: seat reports KEY_A repeating");
+
+  /* release stops it */
+  M6_HOOK (_gdk_wayland_test_keyboard_key (d, 2500, GDKW_TEST_KEY_A, FALSE),
+	   "repeat: release A");
+  m6_drain ();
+  m6_clear ();
+  m6_run_ms (150);
+  M6_EQ_INT (m6_count (GDK_KEY_PRESS, NULL), 0, "repeat: none after release");
+  M6_CHECK (_gdk_wayland_test_seat_info (d, &info) && info.repeat_key == 0,
+	    "repeat: seat repeat_key cleared by release");
+
+  /* keyboard leave stops it */
+  m6_clear ();
+  M6_HOOK (_gdk_wayland_test_keyboard_key (d, 3000, GDKW_TEST_KEY_A, TRUE),
+	   "repeat: press before leave");
+  m6_run_ms (100);
+  M6_CHECK (m6_count_keyval (GDK_a) >= 2, "repeat: at least one repeat before leave");
+  M6_HOOK (_gdk_wayland_test_keyboard_leave (d, main_window), "repeat: leave");
+  m6_drain ();
+  m6_clear ();
+  m6_run_ms (150);
+  M6_EQ_INT (m6_count (GDK_KEY_PRESS, NULL), 0, "repeat: none after keyboard leave");
+  M6_HOOK (_gdk_wayland_test_keyboard_enter (d, main_window), "repeat: re-enter");
+  m6_drain ();
+
+  /* a new keymap stops it */
+  m6_clear ();
+  M6_HOOK (_gdk_wayland_test_keyboard_key (d, 4000, GDKW_TEST_KEY_A, TRUE),
+	   "repeat: press before keymap");
+  m6_run_ms (100);
+  M6_CHECK (m6_count_keyval (GDK_a) >= 2, "repeat: at least one repeat before keymap");
+  M6_HOOK (_gdk_wayland_test_keyboard_keymap (d), "repeat: second keymap");
+  m6_drain ();
+  m6_clear ();
+  m6_run_ms (150);
+  M6_EQ_INT (m6_count (GDK_KEY_PRESS, NULL), 0, "repeat: none after a keymap change");
+  M6_HOOK (_gdk_wayland_test_keyboard_key (d, 4500, GDKW_TEST_KEY_A, FALSE),
+	   "repeat: release after keymap");
+  m6_drain ();
+
+  /* modifier keys never repeat */
+  m6_clear ();
+  M6_HOOK (_gdk_wayland_test_keyboard_key (d, 5000, GDKW_TEST_KEY_LEFTSHIFT, TRUE),
+	   "repeat: press Shift");
+  m6_run_ms (150);
+  M6_EQ_INT (m6_count (GDK_KEY_PRESS, NULL), 1, "repeat: Shift does not repeat");
+  M6_HOOK (_gdk_wayland_test_keyboard_key (d, 5200, GDKW_TEST_KEY_LEFTSHIFT, FALSE),
+	   "repeat: release Shift");
+  m6_drain ();
+
+  /* rate 0 disables repeat */
+  M6_HOOK (_gdk_wayland_test_keyboard_repeat_info (d, 0, 0), "repeat_info 0");
+  m6_clear ();
+  M6_HOOK (_gdk_wayland_test_keyboard_key (d, 6000, GDKW_TEST_KEY_A, TRUE),
+	   "repeat: press with rate 0");
+  m6_run_ms (150);
+  M6_EQ_INT (m6_count (GDK_KEY_PRESS, NULL), 1, "repeat: rate 0 disables repeat");
+  M6_HOOK (_gdk_wayland_test_keyboard_key (d, 6200, GDKW_TEST_KEY_A, FALSE),
+	   "repeat: release with rate 0");
+  m6_drain ();
+
+  M6_HOOK (_gdk_wayland_test_keyboard_repeat_info (d, 25, 400),
+	   "repeat_info restore");
+  m6_clear ();
+}
+
+static void
+m6_pointer_position (GdkDisplay *d, GdkWindow *child)
+{
+  GdkWindow *w;
+  GdkScreen *scr;
+  gint x, y, wx, wy;
+  GdkModifierType mask;
+  GdkEvent *ev;
+
+  m6_clear ();
+  M6_HOOK (_gdk_wayland_test_pointer_enter (d, main_window, 50, 60),
+	   "pointer enter");
+  m6_drain ();
+  M6_CHECK (m6_find (GDK_ENTER_NOTIFY, main_window) != NULL,
+	    "ENTER_NOTIFY on main window");
+
+  mask = 0;
+  gdk_window_get_pointer (main_window, &x, &y, &mask);
+  M6_CHECK (x == 50 && y == 60, "gdk_window_get_pointer position (50,60)");
+  M6_CHECK ((mask & GDK_BUTTON1_MASK) == 0, "get_pointer mask has no buttons");
+
+  scr = NULL;
+  gdk_display_get_pointer (d, &scr, &x, &y, &mask);
+  M6_CHECK (x == 50 && y == 60, "gdk_display_get_pointer position (50,60)");
+  M6_CHECK (scr == gdk_screen_get_default (), "gdk_display_get_pointer screen");
+
+  w = gdk_display_get_window_at_pointer (d, &wx, &wy);
+  M6_CHECK (w == main_window, "window_at_pointer is main window");
+  M6_CHECK (wx == 50 && wy == 60, "window_at_pointer coordinates (50,60)");
+
+  /* into the child: the first move yields only crossing events */
+  m6_clear ();
+  M6_HOOK (_gdk_wayland_test_pointer_motion (d, 10000, 150, 160), "motion into child");
+  m6_drain ();
+  M6_CHECK (m6_find (GDK_ENTER_NOTIFY, child) != NULL,
+	    "ENTER_NOTIFY on the child");
+
+  m6_clear ();
+  M6_HOOK (_gdk_wayland_test_pointer_motion (d, 10010, 155, 165), "motion in child");
+  m6_drain ();
+  ev = m6_find (GDK_MOTION_NOTIFY, child);
+  M6_CHECK (ev != NULL, "MOTION_NOTIFY on the child");
+  if (ev)
+    {
+      M6_EQ_INT ((long) ev->motion.x, 55, "motion child-relative x");
+      M6_EQ_INT ((long) ev->motion.y, 65, "motion child-relative y");
+      M6_CHECK (ev->motion.device == gdk_device_get_core_pointer (),
+		"motion device is the core pointer");
+      M6_EQ_INT (ev->motion.time, 10010, "motion time");
+    }
+
+  w = gdk_display_get_window_at_pointer (d, &wx, &wy);
+  M6_CHECK (w == child, "window_at_pointer is the child");
+  M6_CHECK (wx == 55 && wy == 65, "window_at_pointer child coordinates (55,65)");
+  m6_clear ();
+}
+
+static void
+m6_buttons (GdkDisplay *d, GdkWindow *child)
+{
+  static const struct
+  {
+    guint evdev;
+    guint gdk;
+    const char *name;
+  } map[] = {
+    { GDKW_TEST_BTN_RIGHT,  3, "BTN_RIGHT -> 3" },
+    { GDKW_TEST_BTN_MIDDLE, 2, "BTN_MIDDLE -> 2" },
+    { GDKW_TEST_BTN_LEFT,   1, "BTN_LEFT -> 1" },
+    { GDKW_TEST_BTN_SIDE,   8, "BTN_SIDE -> 8" }
+  };
+  guint32 t = 20000;
+  GdkWindow *gw = NULL;
+  gboolean oe;
+  GdkEvent *ev;
+  GdkModifierType mask;
+  gint x, y;
+  guint i;
+
+  for (i = 0; i < G_N_ELEMENTS (map); i++)
+    {
+      m6_clear ();
+      M6_HOOK (_gdk_wayland_test_pointer_button (d, t, map[i].evdev, TRUE),
+	       map[i].name);
+      t += 20;
+      M6_HOOK (_gdk_wayland_test_pointer_button (d, t, map[i].evdev, FALSE),
+	       map[i].name);
+      t += 500;
+      m6_drain ();
+      ev = m6_find (GDK_BUTTON_PRESS, child);
+      M6_CHECK (ev != NULL, map[i].name);
+      if (ev)
+	M6_EQ_INT (ev->button.button, map[i].gdk, map[i].name);
+      M6_CHECK (m6_find (GDK_BUTTON_RELEASE, child) != NULL,
+		"button release reaches the child");
+    }
+
+  /* implicit grab, state and release */
+  m6_clear ();
+  M6_HOOK (_gdk_wayland_test_pointer_button (d, t, GDKW_TEST_BTN_LEFT, TRUE),
+	   "left press");
+  m6_drain ();
+  ev = m6_find (GDK_BUTTON_PRESS, child);
+  M6_CHECK (ev != NULL, "left press on child");
+  if (ev)
+    M6_CHECK ((ev->button.state & GDK_BUTTON1_MASK) == 0,
+	      "press state is the state before the press");
+
+  mask = 0;
+  gdk_window_get_pointer (main_window, &x, &y, &mask);
+  M6_CHECK ((mask & GDK_BUTTON1_MASK) != 0, "get_pointer mask has BUTTON1 while down");
+  M6_CHECK (gdk_pointer_grab_info_libgtk_only (d, &gw, &oe) && gw == child,
+	    "implicit grab on the child while the button is down");
+  M6_CHECK (!gdk_pointer_is_grabbed (), "implicit grab is not gdk_pointer_is_grabbed");
+
+  /* Motion outside the child is still delivered to it.  As on X11 the
+   * first move out only yields the crossing events (proxy_pointer_event
+   * uses else-if), so look at the second one. */
+  M6_HOOK (_gdk_wayland_test_pointer_motion (d, t + 8, 300, 300),
+	   "first motion outside while down");
+  m6_drain ();
+  m6_clear ();
+  M6_HOOK (_gdk_wayland_test_pointer_motion (d, t + 10, 305, 305),
+	   "motion outside while down");
+  m6_drain ();
+  ev = m6_find (GDK_MOTION_NOTIFY, child);
+  M6_CHECK (ev != NULL, "motion outside is delivered to the grabbing child");
+  M6_CHECK (m6_find (GDK_MOTION_NOTIFY, main_window) == NULL,
+	    "no motion for main while the implicit grab is active");
+
+  m6_clear ();
+  M6_HOOK (_gdk_wayland_test_pointer_button (d, t + 20, GDKW_TEST_BTN_LEFT, FALSE),
+	   "left release");
+  m6_drain ();
+  ev = m6_find (GDK_BUTTON_RELEASE, child);
+  M6_CHECK (ev != NULL, "left release on child");
+  if (ev)
+    {
+      M6_EQ_INT (ev->button.button, 1, "release button");
+      M6_CHECK ((ev->button.state & GDK_BUTTON1_MASK) != 0,
+		"release state still carries BUTTON1");
+    }
+  M6_CHECK (!gdk_pointer_grab_info_libgtk_only (d, &gw, &oe),
+	    "implicit grab gone after release");
+
+  m6_clear ();
+  M6_HOOK (_gdk_wayland_test_pointer_motion (d, t + 40, 305, 305),
+	   "motion after release");
+  m6_drain ();
+  M6_CHECK (m6_find (GDK_MOTION_NOTIFY, main_window) != NULL,
+	    "motion goes to main after the grab ended");
+  M6_CHECK (m6_find (GDK_MOTION_NOTIFY, child) == NULL,
+	    "no motion for the child after the grab ended");
+  t += 1000;
+
+  /* double and triple click: three presses 100 ms apart, same spot */
+  M6_HOOK (_gdk_wayland_test_pointer_motion (d, t, 155, 165), "motion for clicks");
+  t += 600;
+  m6_clear ();
+  for (i = 0; i < 3; i++)
+    {
+      M6_HOOK (_gdk_wayland_test_pointer_button (d, t, GDKW_TEST_BTN_LEFT, TRUE),
+	       "click press");
+      M6_HOOK (_gdk_wayland_test_pointer_button (d, t + 40, GDKW_TEST_BTN_LEFT, FALSE),
+	       "click release");
+      t += 100;
+      m6_drain ();
+    }
+  M6_CHECK (m6_find (GDK_2BUTTON_PRESS, NULL) != NULL, "GDK_2BUTTON_PRESS generated");
+  M6_CHECK (m6_find (GDK_3BUTTON_PRESS, NULL) != NULL, "GDK_3BUTTON_PRESS generated");
+  m6_clear ();
+}
+
+static void
+m6_scroll (GdkDisplay *d, GdkWindow *child)
+{
+  GdkScrollDirection dirs[8];
+  int n;
+
+  m6_clear ();
+  M6_HOOK (_gdk_wayland_test_pointer_motion (d, 30000, 155, 165), "motion for scroll");
+  m6_drain ();
+  m6_clear ();
+
+  /* wheel, vertical down: nothing before the frame */
+  m6_scroll_frame (d, GDKW_TEST_AXIS_SOURCE_WHEEL, GDKW_TEST_AXIS_VERTICAL,
+		   10.0, 1, TRUE, FALSE);
+  m6_drain ();
+  M6_EQ_INT (m6_scrolls (child, NULL, 0), 0, "scroll: nothing before the frame");
+  M6_HOOK (_gdk_wayland_test_pointer_frame (d), "frame");
+  m6_drain ();
+  n = m6_scrolls (child, dirs, 8);
+  M6_EQ_INT (n, 1, "scroll: wheel down is one event");
+  M6_CHECK (n >= 1 && dirs[0] == GDK_SCROLL_DOWN, "scroll: wheel down");
+  m6_clear ();
+
+  m6_scroll_frame (d, GDKW_TEST_AXIS_SOURCE_WHEEL, GDKW_TEST_AXIS_VERTICAL,
+		   -10.0, -1, TRUE, FALSE);
+  _gdk_wayland_test_pointer_frame (d);
+  m6_drain ();
+  n = m6_scrolls (child, dirs, 8);
+  M6_EQ_INT (n, 1, "scroll: wheel up is one event");
+  M6_CHECK (n >= 1 && dirs[0] == GDK_SCROLL_UP, "scroll: wheel up");
+  m6_clear ();
+
+  m6_scroll_frame (d, GDKW_TEST_AXIS_SOURCE_WHEEL, GDKW_TEST_AXIS_HORIZONTAL,
+		   10.0, 1, TRUE, FALSE);
+  _gdk_wayland_test_pointer_frame (d);
+  m6_drain ();
+  n = m6_scrolls (child, dirs, 8);
+  M6_EQ_INT (n, 1, "scroll: wheel right is one event");
+  M6_CHECK (n >= 1 && dirs[0] == GDK_SCROLL_RIGHT, "scroll: wheel right");
+  m6_clear ();
+
+  m6_scroll_frame (d, GDKW_TEST_AXIS_SOURCE_WHEEL, GDKW_TEST_AXIS_HORIZONTAL,
+		   -10.0, -1, TRUE, FALSE);
+  _gdk_wayland_test_pointer_frame (d);
+  m6_drain ();
+  n = m6_scrolls (child, dirs, 8);
+  M6_EQ_INT (n, 1, "scroll: wheel left is one event");
+  M6_CHECK (n >= 1 && dirs[0] == GDK_SCROLL_LEFT, "scroll: wheel left");
+  m6_clear ();
+
+  /* three steps at once */
+  m6_scroll_frame (d, GDKW_TEST_AXIS_SOURCE_WHEEL, GDKW_TEST_AXIS_VERTICAL,
+		   30.0, 3, TRUE, FALSE);
+  _gdk_wayland_test_pointer_frame (d);
+  m6_drain ();
+  M6_EQ_INT (m6_scrolls (child, NULL, 0), 3, "scroll: discrete 3 is three events");
+  m6_clear ();
+
+  /* finger: 25.0 is two steps with 0.5 carried over */
+  m6_scroll_frame (d, GDKW_TEST_AXIS_SOURCE_FINGER, GDKW_TEST_AXIS_VERTICAL,
+		   25.0, 0, FALSE, FALSE);
+  _gdk_wayland_test_pointer_frame (d);
+  m6_drain ();
+  n = m6_scrolls (child, dirs, 8);
+  M6_EQ_INT (n, 2, "scroll: finger 25.0 is two events");
+  M6_CHECK (n >= 1 && dirs[0] == GDK_SCROLL_DOWN, "scroll: finger down");
+  m6_clear ();
+
+  /* +5.0 completes the carried half step */
+  m6_scroll_frame (d, GDKW_TEST_AXIS_SOURCE_FINGER, GDKW_TEST_AXIS_VERTICAL,
+		   5.0, 0, FALSE, FALSE);
+  _gdk_wayland_test_pointer_frame (d);
+  m6_drain ();
+  M6_EQ_INT (m6_scrolls (child, NULL, 0), 1, "scroll: finger remainder adds up");
+  m6_clear ();
+
+  /* axis_stop drops the remainder: 5.0 + stop is nothing, and a later 5.0
+   * starts from zero */
+  m6_scroll_frame (d, GDKW_TEST_AXIS_SOURCE_FINGER, GDKW_TEST_AXIS_VERTICAL,
+		   5.0, 0, FALSE, TRUE);
+  _gdk_wayland_test_pointer_frame (d);
+  m6_drain ();
+  M6_EQ_INT (m6_scrolls (child, NULL, 0), 0, "scroll: axis_stop frame emits nothing");
+  m6_scroll_frame (d, GDKW_TEST_AXIS_SOURCE_FINGER, GDKW_TEST_AXIS_VERTICAL,
+		   5.0, 0, FALSE, FALSE);
+  _gdk_wayland_test_pointer_frame (d);
+  m6_drain ();
+  M6_EQ_INT (m6_scrolls (child, NULL, 0), 0,
+	     "scroll: remainder was reset by axis_stop");
+  /* leave nothing behind for the next section */
+  m6_scroll_frame (d, GDKW_TEST_AXIS_SOURCE_FINGER, GDKW_TEST_AXIS_VERTICAL,
+		   0.0, 0, FALSE, TRUE);
+  _gdk_wayland_test_pointer_frame (d);
+  m6_drain ();
+  m6_clear ();
+}
+
+static void
+m6_grabs (GdkDisplay *d, GdkWindow *child)
+{
+  const GdkEventMask grab_mask = GDK_BUTTON_PRESS_MASK |
+    GDK_BUTTON_RELEASE_MASK | GDK_POINTER_MOTION_MASK;
+  GdkWindowAttr attr;
+  GdkWindow *w2;
+  GdkEvent *ev;
+  guint32 t = 40000;
+
+  M6_HOOK (_gdk_wayland_test_pointer_motion (d, t, 155, 165), "motion for grabs");
+  m6_drain ();
+
+  /* explicit grab, owner_events FALSE: the press goes to the grab window */
+  M6_EQ_INT (gdk_pointer_grab (main_window, FALSE, grab_mask, NULL, NULL,
+			       GDK_CURRENT_TIME),
+	     GDK_GRAB_SUCCESS, "pointer_grab on main");
+  M6_CHECK (gdk_pointer_is_grabbed (), "pointer is grabbed");
+  m6_clear ();
+  t += 100;
+  M6_HOOK (_gdk_wayland_test_pointer_button (d, t, GDKW_TEST_BTN_LEFT, TRUE),
+	   "grabbed press");
+  M6_HOOK (_gdk_wayland_test_pointer_button (d, t + 20, GDKW_TEST_BTN_LEFT, FALSE),
+	   "grabbed release");
+  m6_drain ();
+  ev = m6_find (GDK_BUTTON_PRESS, main_window);
+  M6_CHECK (ev != NULL, "grabbed press is delivered to the grab window");
+  if (ev)
+    {
+      M6_EQ_INT ((long) ev->button.x, 155, "grabbed press x is main relative");
+      M6_EQ_INT ((long) ev->button.y, 165, "grabbed press y is main relative");
+    }
+  M6_CHECK (m6_find (GDK_BUTTON_PRESS, child) == NULL,
+	    "the child gets no press during the grab");
+  M6_CHECK (gdk_pointer_is_grabbed (), "explicit grab survives the release");
+
+  gdk_pointer_ungrab (GDK_CURRENT_TIME);
+  M6_CHECK (!gdk_pointer_is_grabbed (), "pointer_ungrab ends the grab at once");
+  m6_drain ();
+
+  m6_clear ();
+  t += 600;
+  M6_HOOK (_gdk_wayland_test_pointer_button (d, t, GDKW_TEST_BTN_LEFT, TRUE),
+	   "ungrabbed press");
+  M6_HOOK (_gdk_wayland_test_pointer_button (d, t + 20, GDKW_TEST_BTN_LEFT, FALSE),
+	   "ungrabbed release");
+  m6_drain ();
+  M6_CHECK (m6_find (GDK_BUTTON_PRESS, child) != NULL,
+	    "after ungrab the press goes to the child again");
+  M6_CHECK (m6_find (GDK_BUTTON_PRESS, main_window) == NULL,
+	    "after ungrab main gets no press");
+
+  /* owner_events TRUE: a press over the child still goes to the child */
+  M6_EQ_INT (gdk_pointer_grab (main_window, TRUE, grab_mask, NULL, NULL,
+			       GDK_CURRENT_TIME),
+	     GDK_GRAB_SUCCESS, "pointer_grab owner_events");
+  m6_clear ();
+  t += 600;
+  M6_HOOK (_gdk_wayland_test_pointer_button (d, t, GDKW_TEST_BTN_LEFT, TRUE),
+	   "owner press");
+  M6_HOOK (_gdk_wayland_test_pointer_button (d, t + 20, GDKW_TEST_BTN_LEFT, FALSE),
+	   "owner release");
+  m6_drain ();
+  M6_CHECK (m6_find (GDK_BUTTON_PRESS, child) != NULL,
+	    "owner_events press goes to the child");
+  gdk_pointer_ungrab (GDK_CURRENT_TIME);
+  M6_CHECK (!gdk_pointer_is_grabbed (), "owner_events grab ended");
+  m6_drain ();
+
+  /* a grab on a window that is not mapped */
+  memset (&attr, 0, sizeof attr);
+  attr.window_type = GDK_WINDOW_TOPLEVEL;
+  attr.wclass = GDK_INPUT_OUTPUT;
+  attr.width = 50;
+  attr.height = 50;
+  attr.event_mask = GDK_BUTTON_PRESS_MASK;
+  w2 = gdk_window_new (gdk_get_default_root_window (), &attr, 0);
+  M6_CHECK (w2 != NULL, "second toplevel created");
+  if (w2)
+    {
+      M6_EQ_INT (gdk_pointer_grab (w2, FALSE, GDK_BUTTON_PRESS_MASK, NULL,
+				   NULL, GDK_CURRENT_TIME),
+		 GDK_GRAB_NOT_VIEWABLE, "grab on an unmapped window");
+      M6_CHECK (!gdk_pointer_is_grabbed (), "failed grab leaves no grab");
+      gdk_window_destroy (w2);
+    }
+
+  /* keyboard grab redirects key events */
+  m6_clear ();
+  M6_EQ_INT (gdk_keyboard_grab (child, FALSE, GDK_CURRENT_TIME),
+	     GDK_GRAB_SUCCESS, "keyboard_grab on the child");
+  M6_HOOK (_gdk_wayland_test_keyboard_key (d, 50000, GDKW_TEST_KEY_A, TRUE),
+	   "grabbed key press");
+  M6_HOOK (_gdk_wayland_test_keyboard_key (d, 50010, GDKW_TEST_KEY_A, FALSE),
+	   "grabbed key release");
+  m6_drain ();
+  M6_CHECK (m6_find (GDK_KEY_PRESS, child) != NULL,
+	    "key press is redirected to the keyboard grab window");
+  M6_CHECK (m6_find (GDK_KEY_PRESS, main_window) == NULL,
+	    "main gets no key press during the keyboard grab");
+
+  gdk_keyboard_ungrab (GDK_CURRENT_TIME);
+  m6_clear ();
+  M6_HOOK (_gdk_wayland_test_keyboard_key (d, 50100, GDKW_TEST_KEY_A, TRUE),
+	   "ungrabbed key press");
+  M6_HOOK (_gdk_wayland_test_keyboard_key (d, 50110, GDKW_TEST_KEY_A, FALSE),
+	   "ungrabbed key release");
+  m6_drain ();
+  M6_CHECK (m6_find (GDK_KEY_PRESS, main_window) != NULL,
+	    "after the ungrab key presses go to main again");
+  m6_clear ();
+}
+
+static void
+m6_close (GdkDisplay *d)
+{
+  m6_clear ();
+  M6_HOOK (_gdk_wayland_test_toplevel_close (main_window), "toplevel close");
+  m6_drain ();
+  M6_EQ_INT (m6_count (GDK_DELETE, main_window), 1,
+	     "exactly one GDK_DELETE on the main window");
+  m6_clear ();
+}
+
+static void
+m6_screen (GdkDisplay *d)
+{
+  GdkScreen *screen = gdk_screen_get_default ();
+  GdkRectangle r;
+  GdkWindow *active;
+  GdkEvent *cev;
+  GList *l, *stack;
+  GValue v = { 0, };
+  const gchar *env;
+  gboolean found;
+  gchar *s;
+  gint wmm, hmm;
+
+  M6_EQ_INT (gdk_screen_get_number (screen), 0, "screen number");
+  M6_EQ_INT (gdk_screen_get_n_monitors (screen), 1, "n_monitors");
+  M6_EQ_INT (gdk_screen_get_primary_monitor (screen), 0, "primary monitor");
+
+  memset (&r, 0xff, sizeof r);
+  gdk_screen_get_monitor_geometry (screen, 0, &r);
+  M6_CHECK (r.x == 0 && r.y == 0 &&
+	    r.width == gdk_screen_get_width (screen) &&
+	    r.height == gdk_screen_get_height (screen),
+	    "monitor 0 geometry is the whole screen");
+  M6_EQ_INT (gdk_screen_get_monitor_at_point (screen, 5, 5), 0, "monitor_at_point");
+  M6_EQ_INT (gdk_screen_get_monitor_at_window (screen, main_window), 0,
+	     "monitor_at_window");
+
+  wmm = gdk_screen_get_width_mm (screen);
+  hmm = gdk_screen_get_height_mm (screen);
+  M6_CHECK (wmm > 0 && hmm > 0, "screen size in mm is positive");
+  M6_EQ_INT (gdk_screen_get_monitor_width_mm (screen, 0), wmm,
+	     "monitor 0 width_mm equals the screen's");
+  M6_EQ_INT (gdk_screen_get_monitor_height_mm (screen, 0), hmm,
+	     "monitor 0 height_mm equals the screen's");
+
+  s = gdk_screen_get_monitor_plug_name (screen, 0);
+  M6_CHECK (s != NULL && s[0] != '\0', "monitor plug name");
+  g_free (s);
+
+  M6_CHECK (gdk_screen_is_composited (screen), "screen is composited");
+
+  s = gdk_screen_make_display_name (screen);
+  M6_CHECK (s != NULL, "make_display_name");
+  env = g_getenv ("WAYLAND_DISPLAY");
+  if (s && env)
+    M6_CHECK (strcmp (s, env) == 0, "make_display_name is WAYLAND_DISPLAY");
+  g_free (s);
+
+  /* active window follows keyboard focus */
+  M6_HOOK (_gdk_wayland_test_keyboard_enter (d, main_window), "screen: kbd enter");
+  active = gdk_screen_get_active_window (screen);
+  M6_CHECK (active == main_window, "active window is main after focus in");
+  if (active)
+    g_object_unref (active);
+  M6_HOOK (_gdk_wayland_test_keyboard_leave (d, main_window), "screen: kbd leave");
+  active = gdk_screen_get_active_window (screen);
+  M6_CHECK (active == NULL, "no active window after focus out");
+  if (active)
+    g_object_unref (active);
+  m6_drain ();
+
+  found = FALSE;
+  stack = gdk_screen_get_window_stack (screen);
+  for (l = stack; l; l = l->next)
+    {
+      if (l->data == main_window)
+	found = TRUE;
+      g_object_unref (l->data);
+    }
+  g_list_free (stack);
+  M6_CHECK (found, "window stack contains the main window");
+
+  found = FALSE;
+  stack = gdk_screen_get_toplevel_windows (screen);
+  for (l = stack; l; l = l->next)
+    if (l->data == main_window)
+      found = TRUE;
+  g_list_free (stack);
+  M6_CHECK (found, "toplevel windows contain the main window");
+
+  g_value_init (&v, G_TYPE_INT);
+  M6_CHECK (gdk_screen_get_setting (screen, "gtk-double-click-time", &v) &&
+	    g_value_get_int (&v) == 400, "setting gtk-double-click-time is 400");
+  g_value_unset (&v);
+  g_value_init (&v, G_TYPE_INT);
+  M6_CHECK (!gdk_screen_get_setting (screen, "no-such-setting", &v),
+	    "unknown setting is not found");
+  g_value_unset (&v);
+
+  cev = gdk_event_new (GDK_CLIENT_EVENT);
+  cev->client.window = g_object_ref (main_window);
+  cev->client.message_type = gdk_atom_intern_static_string ("YDK_M6_TEST");
+  cev->client.data_format = 32;
+  gdk_screen_broadcast_client_message (screen, cev);
+  gdk_event_free (cev);
+  M6_CHECK (TRUE, "broadcast_client_message returned");
+}
+
+static int
+m6_exercise (void)
+{
+  GdkDisplay *display = gdk_display_get_default ();
+  GdkWindowAttr attr;
+  GdkWindow *child;
+
+  /* the recorder replaces the demo handler for the duration of M6 */
+  gdk_event_handler_set (m6_recorder, NULL, NULL);
+
+  gdk_window_set_events (main_window,
+			 GDK_EXPOSURE_MASK | GDK_KEY_PRESS_MASK |
+			 GDK_KEY_RELEASE_MASK | GDK_BUTTON_PRESS_MASK |
+			 GDK_BUTTON_RELEASE_MASK | GDK_POINTER_MOTION_MASK |
+			 GDK_ENTER_NOTIFY_MASK | GDK_LEAVE_NOTIFY_MASK |
+			 GDK_FOCUS_CHANGE_MASK | GDK_SCROLL_MASK);
+
+  memset (&attr, 0, sizeof attr);
+  attr.window_type = GDK_WINDOW_CHILD;
+  attr.wclass = GDK_INPUT_OUTPUT;
+  attr.x = 100;
+  attr.y = 100;
+  attr.width = 100;
+  attr.height = 100;
+  attr.event_mask = GDK_BUTTON_PRESS_MASK | GDK_BUTTON_RELEASE_MASK |
+    GDK_POINTER_MOTION_MASK | GDK_ENTER_NOTIFY_MASK |
+    GDK_LEAVE_NOTIFY_MASK | GDK_SCROLL_MASK;
+  child = gdk_window_new (main_window, &attr, GDK_WA_X | GDK_WA_Y);
+  M6_CHECK (child != NULL, "child window created");
+  if (child == NULL)
+    {
+      g_printerr ("ydk_demo: M6: FAIL (%d)\n", m6_failures);
+      gdk_event_handler_set (event_handler, NULL, NULL);
+      return m6_failures ? m6_failures : 1;
+    }
+  gdk_window_show (child);
+
+  /* exercise the wl_pointer v5 grouping whatever the compositor offers */
+  M6_HOOK (_gdk_wayland_test_seat_set_version (display, 5), "seat version");
+  m6_drain ();
+  m6_clear ();
+
+  m6_keymap_and_focus (display);
+  m6_keys (display);
+  m6_repeat (display);
+  m6_pointer_position (display, child);
+  m6_buttons (display, child);
+  m6_scroll (display, child);
+  m6_grabs (display, child);
+  m6_close (display);
+  m6_screen (display);
+
+  /* cleanup */
+  _gdk_wayland_test_pointer_leave (display, main_window);
+  _gdk_wayland_test_keyboard_leave (display, main_window);
+  m6_drain ();
+  m6_clear ();
+  gdk_window_destroy (child);
+  gdk_event_handler_set (event_handler, NULL, NULL);
+  /* the scene was not repainted while the recorder was installed */
+  gdk_window_invalidate_rect (main_window, NULL, TRUE);
+
+  if (m6_failures)
+    g_printerr ("ydk_demo: M6: FAIL (%d)\n", m6_failures);
+  else
+    g_print ("ydk_demo: M6: PASS\n");
+
+  return m6_failures;
+}
+
 int
 main (int argc, char **argv)
 {
@@ -1347,6 +2338,7 @@ main (int argc, char **argv)
       failed |= m5_exercise () != 0;
       failed |= m5c_exercise () != 0;
       failed |= m5v_exercise () != 0;
+      failed |= m6_exercise () != 0;
       if (failed)
 	return 1;
 

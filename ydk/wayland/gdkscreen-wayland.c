@@ -20,7 +20,11 @@
 #include <ydk/gdk.h>
 #include <ydk/gdkscreen.h>
 
+#include <math.h>
+#include <string.h>
+
 #include "gdkprivate-wayland.h"
+#include "gdkseat-wayland.h"
 
 #ifdef GDK_COMPILATION
 #include "gdkalias.h"
@@ -223,4 +227,259 @@ _gdk_wayland_screen_new (GdkDisplay *display,
   screen->root_window = create_root_window (screen);
 
   return GDK_SCREEN (screen);
+}
+/* ---------------------------------------------------------------------------
+ * M6: the remaining public screen functions.  Wayland has one logical screen
+ * and (for now) one monitor; sizes come from wl_output data with fallbacks.
+ * Nothing here logs a critical for an out of range monitor number.
+ * ------------------------------------------------------------------------ */
+
+static gint
+screen_dim_mm (GdkScreen *screen, gint pixels, gint output_mm)
+{
+  gdouble dpi;
+
+  if (output_mm > 0)
+    return output_mm;
+  if (pixels <= 0)
+    return 0;
+
+  dpi = gdk_screen_get_resolution (screen);
+  if (dpi <= 0)
+    dpi = 96.0;
+
+  return MAX (1, (gint) floor (pixels * 25.4 / dpi + 0.5));
+}
+
+static GDKWOutputInfo *
+screen_output_info (GdkScreen *screen)
+{
+  GdkDisplay *display = GDKW_SCREEN_WAYLAND (screen)->display;
+
+  if (display == NULL)
+    return NULL;
+  return _gdk_wayland_display_get_output_info (display);
+}
+
+gint
+_gdk_wayland_screen_get_width_mm (GdkScreen *screen)
+{
+  GDKWOutputInfo *info = screen_output_info (screen);
+
+  return screen_dim_mm (screen, GDKW_SCREEN_WAYLAND (screen)->width,
+                        info ? info->mm_width : 0);
+}
+
+gint
+_gdk_wayland_screen_get_height_mm (GdkScreen *screen)
+{
+  GDKWOutputInfo *info = screen_output_info (screen);
+
+  return screen_dim_mm (screen, GDKW_SCREEN_WAYLAND (screen)->height,
+                        info ? info->mm_height : 0);
+}
+
+gint
+_gdk_wayland_screen_get_number (GdkScreen *screen)
+{
+  return 0;
+}
+
+gint
+_gdk_wayland_screen_get_n_monitors (GdkScreen *screen)
+{
+  return 1;
+}
+
+gint
+_gdk_wayland_screen_get_primary_monitor (GdkScreen *screen)
+{
+  return 0;
+}
+
+void
+_gdk_wayland_screen_get_monitor_geometry (GdkScreen    *screen,
+                                          gint          monitor_num,
+                                          GdkRectangle *dest)
+{
+  if (dest == NULL)
+    return;
+
+  dest->x = 0;
+  dest->y = 0;
+  dest->width = 0;
+  dest->height = 0;
+
+  if (monitor_num == 0 && screen != NULL)
+    {
+      dest->width = GDKW_SCREEN_WAYLAND (screen)->width;
+      dest->height = GDKW_SCREEN_WAYLAND (screen)->height;
+    }
+}
+
+gint
+_gdk_wayland_screen_get_monitor_width_mm (GdkScreen *screen, gint monitor_num)
+{
+  return monitor_num == 0 ? _gdk_wayland_screen_get_width_mm (screen) : -1;
+}
+
+gint
+_gdk_wayland_screen_get_monitor_height_mm (GdkScreen *screen, gint monitor_num)
+{
+  return monitor_num == 0 ? _gdk_wayland_screen_get_height_mm (screen) : -1;
+}
+
+gchar *
+_gdk_wayland_screen_get_monitor_plug_name (GdkScreen *screen, gint monitor_num)
+{
+  GDKWOutputInfo *info;
+
+  if (monitor_num != 0)
+    return NULL;
+
+  info = screen_output_info (screen);
+  if (info != NULL && info->model != NULL && info->model[0] != '\0')
+    return g_strdup (info->model);
+
+  return g_strdup ("WL-1");
+}
+
+gboolean
+_gdk_wayland_screen_is_composited (GdkScreen *screen)
+{
+  return TRUE;
+}
+
+gchar *
+_gdk_wayland_screen_make_display_name (GdkScreen *screen)
+{
+  GdkDisplay *display = GDKW_SCREEN_WAYLAND (screen)->display;
+  GdkDisplayClass *klass;
+  const gchar *name = NULL;
+
+  if (display != NULL)
+    {
+      klass = GDK_DISPLAY_GET_CLASS (display);
+      if (klass->get_display_name != NULL)
+        name = klass->get_display_name (display);
+    }
+
+  return g_strdup (name ? name : "");
+}
+
+GdkWindow *
+_gdk_wayland_screen_get_active_window (GdkScreen *screen)
+{
+  GdkDisplay *display = GDKW_SCREEN_WAYLAND (screen)->display;
+  GDKWSeat *seat;
+  GdkWindow *wrapper;
+
+  if (display == NULL)
+    return NULL;
+
+  seat = _gdk_wayland_display_get_seat (display);
+  if (seat->keyboard_focus == NULL)
+    return NULL;
+
+  wrapper = seat->keyboard_focus->wrapper;
+  if (wrapper == NULL || GDK_WINDOW_DESTROYED (wrapper))
+    return NULL;
+
+  return g_object_ref (wrapper);
+}
+
+GList *
+_gdk_wayland_screen_get_window_stack (GdkScreen *screen)
+{
+  GdkDisplay *display = GDKW_SCREEN_WAYLAND (screen)->display;
+  GList *stack = NULL;
+  GSList *l;
+
+  if (display == NULL)
+    return NULL;
+
+  /* display->windows is prepended on creation, so walking it front to back
+   * and prepending again yields oldest first, i.e. bottom to top */
+  for (l = ((GDKWDisplayWayland *) display)->windows; l != NULL; l = l->next)
+    {
+      GDKWWindowImplWayland *impl = l->data;
+      GdkWindow *wrapper = impl ? impl->wrapper : NULL;
+
+      if (wrapper == NULL || GDK_WINDOW_DESTROYED (wrapper) ||
+          !GDK_WINDOW_IS_MAPPED (wrapper))
+        continue;
+
+      stack = g_list_prepend (stack, g_object_ref (wrapper));
+    }
+
+  return stack;
+}
+
+void
+_gdk_wayland_screen_broadcast_client_message (GdkScreen *screen,
+                                              GdkEvent  *event)
+{
+  /* Wayland has no client messages */
+}
+
+gboolean
+_gdk_wayland_screen_get_setting (GdkScreen   *screen,
+                                 const gchar *name,
+                                 GValue      *value)
+{
+  static const struct
+  {
+    const gchar *name;
+    gint         value;
+  } int_settings[] =
+  {
+    { "gtk-double-click-time",     400 },
+    { "gtk-double-click-distance", 5 },
+    { "gtk-dnd-drag-threshold",    8 },
+    { "gtk-cursor-blink-time",     1200 },
+    { "gtk-timeout-initial",       200 },
+    { "gtk-timeout-repeat",        20 }
+  };
+  static const struct
+  {
+    const gchar *name;
+    gboolean     value;
+  } bool_settings[] =
+  {
+    { "gtk-cursor-blink",      TRUE },
+    { "gtk-enable-animations", TRUE }
+  };
+  GValue tmp = { 0, };
+  gboolean found = FALSE;
+  gboolean ok = FALSE;
+  guint i;
+
+  if (name == NULL || value == NULL)
+    return FALSE;
+
+  for (i = 0; i < G_N_ELEMENTS (int_settings) && !found; i++)
+    if (strcmp (name, int_settings[i].name) == 0)
+      {
+        g_value_init (&tmp, G_TYPE_INT);
+        g_value_set_int (&tmp, int_settings[i].value);
+        found = TRUE;
+      }
+
+  for (i = 0; i < G_N_ELEMENTS (bool_settings) && !found; i++)
+    if (strcmp (name, bool_settings[i].name) == 0)
+      {
+        g_value_init (&tmp, G_TYPE_BOOLEAN);
+        g_value_set_boolean (&tmp, bool_settings[i].value);
+        found = TRUE;
+      }
+
+  if (!found)
+    return FALSE;
+
+  if (G_VALUE_TYPE (value) != 0 &&
+      g_value_type_transformable (G_VALUE_TYPE (&tmp), G_VALUE_TYPE (value)))
+    ok = g_value_transform (&tmp, value);
+
+  g_value_unset (&tmp);
+  return ok;
 }

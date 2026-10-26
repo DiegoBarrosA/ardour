@@ -61,6 +61,9 @@
             cp -r ydk-pixbuf/ydk-pixbuf "$out/include/ydk-pixbuf"
             cp ydk/gdkconfig.h "$out/include/gdkconfig.h"
             cp ydk/gdkconfig.h "$out/include/ydk/gdkconfig.h"
+            # M6: the demo drives the headless input test hooks declared in the
+            # public section of this header
+            cp ydk/wayland/ydk/gdkseat-wayland.h "$out/include/ydk/"
 
             mkdir -p $out/lib/pkgconfig
             cat > $out/lib/pkgconfig/ydk.pc <<'PC'

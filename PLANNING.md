@@ -84,19 +84,80 @@ implementations.
 Verification: demo creates a pixmap, draws via GC ops into it, blits it to
 the window, and reads it back with get_image.
 
-### M6 - Input completeness
+### M6 - Input completeness (DONE)
 
-- keyboard enter/leave -> synthetic GDK_FOCUS_CHANGE events.
-- key repeat synthesis from the `repeat_info` event (retro-fitting into the
-  GSource dispatch / main context).
-- pointer `frame` / `axis_source` events (bind wl_pointer at v5), horizontal
-  scroll axis, `stop` for kinetic scrolling.
-- GDK button 2/3 mapping fix (`translate_button` currently swaps them).
-- real `gdk_window_get_pointer` including modifier mask.
-- `_gdk_windowing_pointer_grab` (menus/popups depend on grabs).
-- `xdg_toplevel_handle_close` -> GDK_DELETE on the wrapper window.
+Seat state lives in one place, `GDKWSeat` (`ydk/wayland/ydk/gdkseat-wayland.h`),
+and every input event is a heap `GdkEvent` that goes through
+`_gdk_windowing_got_event` (the core event engine: child window proxying,
+implicit grabs, crossing events, double and triple clicks).
 
-Verification: demo exercises key, focus, scroll and grab paths.
+- Keyboard enter/leave produce `GDK_FOCUS_CHANGE`; the keymap really loads
+  (`XKB_V1` format, evdev + 8 keycodes); `gdk_keymap_translate_keyboard_state`
+  honours its state and group arguments; modifier state comes only from
+  `wl_keyboard.modifiers`.
+- Key repeat from `repeat_info` (GLib timeout, default 25/400, rate 0
+  disables); stops on release, keyboard leave, keymap change, capability loss
+  and window destruction; modifier keys never repeat.
+- `wl_seat` bound at up to v5; pointer `frame` / `axis_source` /
+  `axis_discrete` / `axis_stop`: wheel steps and finger accumulation, both
+  axes, kinetic stop resets the remainder.
+- Buttons: BTN_LEFT 1, BTN_MIDDLE 2, BTN_RIGHT 3, BTN_SIDE 8, BTN_EXTRA 9,
+  BTN_FORWARD 10, BTN_BACK 11, BTN_TASK 12.
+- `gdk_window_get_pointer`, `gdk_display_get_pointer` and
+  `gdk_display_get_window_at_pointer` report real position and button mask.
+- `gdk_pointer_grab` (validates, records; routing is the core's),
+  `gdk_display_pointer_ungrab`, `gdk_display_keyboard_ungrab`,
+  `gdk_keyboard_grab` (key redirection), `gdk_display_warp_pointer` and
+  `gdk_display_beep` (silent no-ops), `gdk_events_pending`; grabs end when
+  their window is hidden or destroyed.
+- `xdg_toplevel_handle_close` queues `GDK_DELETE`.
+- The 15 remaining X11-bound public screen functions are dispatched
+  (`gdk_screen_get_width_mm` ... `gdk_screen_get_setting`).
+- Fixed on the way: core `gdk_keymap_get_for_display` and
+  `gdk_keymap_translate_keyboard_state` used `GDK_*_CLASS (instance)`
+  (reads the instance as a class struct, crashed on first call);
+  `_gdk_events_queue` blocked in `wl_display_dispatch` and is now
+  non-blocking and forwards X11 displays to `_gdk_x11_events_queue`.
+
+Verification: `m6_exercise` in the demo drives the real listeners through
+the `_gdk_wayland_test_*` hooks (a headless Weston has no input devices) and
+prints `ydk_demo: M6: PASS`; `scripts/smoke-test.sh` requires it.
+
+Known gaps (deliberately left):
+
+- No active pointer grab on Wayland: `confine_to` is recorded but ignored
+  (needs `zwp_pointer_constraints`), the grab cursor is only remembered
+  (M7), warp is impossible.
+- Buttons 8 to 12 are tracked but have no `GDK_BUTTONn_MASK` bit, so the
+  core's implicit grab ends when button 1 is released while 8 is still held.
+- Only the first `wl_seat`, `wl_output` and monitor are used; touch, tablet,
+  `value120` and `axis_relative_direction` (seat v8/v9) are not handled.
+- Input-only window crossings (M9) and real `xdg_popup` grabs (M9).
+- Everything is verified through hooks; a real compositor may order events
+  differently (the pointer `leave` handler ends implicit grabs defensively).
+
+Follow-up audit (M6b) of public symbols that are still X11-owned and cast a
+Wayland object to an X11 one:
+
+- Keymap: `gdk_keymap_get_direction`, `_have_bidi_layouts`,
+  `_get_caps_lock_state`, `_get_entries_for_keyval`, `_get_entries_for_keycode`,
+  `_lookup_key`, `_add_virtual_modifiers`, `_map_virtual_modifiers`,
+  `gdk_keyval_name`, `gdk_keyval_from_name` (GtkEntry realize calls
+  `get_direction`).
+- Display: `gdk_display_get_name` (the class vfunc exists), `_supports_shapes`,
+  `_supports_input_shapes`, `_supports_composite`,
+  `_supports_selection_notification`, `_supports_clipboard_persistence`,
+  `_request_selection_notification`, `_store_clipboard`,
+  `_get_default_group`, `gdk_get_display`, `gdk_notify_startup_complete*`,
+  the client message filters, `gdk_event_send_client_message_for_display`,
+  `gdk_event_get_graphics_expose`.
+- Devices: `gdk_devices_list`, `gdk_display_list_devices`, `gdk_device_*`
+  accessors, `gdk_input_set_extension_events`.
+- Toplevel hints in `gdkwindow-x11.c` (about 55 functions: title, transient,
+  type hint, focus, iconify, maximize, fullscreen, icons, geometry hints,
+  move/resize drags, frame extents, keep above/below, opacity, role, group,
+  `gdk_window_lookup`, foreign windows), `gdk_spawn_on_screen*`,
+  `gdk_test_simulate_*`.  Roughly 100 public functions in all.
 
 ### M7 - Cursors, shapes, fonts
 

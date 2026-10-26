@@ -39,6 +39,7 @@
 #include "xdg-shell-client.h"
 
 #include "gdkprivate-wayland.h"
+#include "gdkseat-wayland.h"
 #include "gdkpixmap-wayland.h"
 
 #ifdef GDK_COMPILATION
@@ -341,6 +342,10 @@ _gdk_wayland_impl_from_surface (GDKWDisplayWayland *display,
 {
   GSList *l;
 
+  /* a NULL surface would match any impl that has no wl_surface yet */
+  if (surface == NULL)
+    return NULL;
+
   for (l = display->windows; l; l = l->next)
     {
       GDKWWindowImplWayland *impl = l->data;
@@ -363,6 +368,11 @@ _gdk_wayland_window_impl_teardown (GDKWWindowImplWayland *impl)
   if (impl->screen)
     {
       display = GDKW_DISPLAY_WAYLAND (gdk_screen_get_display (impl->screen));
+      /* drop dangling seat pointers (focus, key repeat, explicit grab) */
+      if (display)
+	_gdk_wayland_seat_forget_impl
+	  (_gdk_wayland_display_get_seat (GDK_DISPLAY_OBJECT (display)), impl);
+
       if (display && display->windows)
 	display->windows = g_slist_remove (display->windows, impl);
     }
@@ -473,6 +483,22 @@ xdg_toplevel_handle_configure (void *data,
 static void
 xdg_toplevel_handle_close (void *data, struct xdg_toplevel *toplevel)
 {
+  GDKWWindowImplWayland *impl = data;
+  GdkEvent ev;
+
+  if (impl == NULL || impl->wrapper == NULL ||
+      GDK_WINDOW_DESTROYED (impl->wrapper))
+    return;
+
+  /* A stack event is fine here: gdk_event_put () copies it.  The core does
+   * not destroy the window; the application answers GDK_DELETE as it would
+   * a WM_DELETE_WINDOW message. */
+  memset (&ev, 0, sizeof ev);
+  ev.any.type = GDK_DELETE;
+  ev.any.window = impl->wrapper;
+  ev.any.send_event = FALSE;
+
+  gdk_event_put (&ev);
 }
 
 static const struct xdg_toplevel_listener xdg_toplevel_listener = {
@@ -573,12 +599,45 @@ gdk_window_wayland_show (GdkWindow *window, gboolean already_mapped)
   wl_surface_commit (impl->wl_surface);
 }
 
+/* Mirrors _gdk_xgrab_check_unmap () in gdkmain-x11.c: a window that stops
+ * being viewable loses any pointer or keyboard grab that depended on it. */
+static void
+grab_check_unmap (GdkWindow *window)
+{
+  GdkDisplay *display = gdk_drawable_get_display (window);
+  GDKWSeat *seat = _gdk_wayland_display_get_seat (display);
+  gulong serial = _gdk_windowing_window_get_next_serial (display);
+
+  _gdk_display_end_pointer_grab (display, serial, window, TRUE);
+  _gdk_display_pointer_grab_update (display, serial);
+
+  if (display->keyboard_grab.window != NULL &&
+      serial >= display->keyboard_grab.serial)
+    {
+      GdkWindowObject *tmp = GDK_WINDOW_OBJECT (display->keyboard_grab.window);
+
+      while (tmp && tmp != GDK_WINDOW_OBJECT (window))
+	tmp = tmp->parent;
+
+      if (tmp)
+	_gdk_display_unset_has_keyboard_grab (display, TRUE);
+    }
+
+  if (seat->grab.active && seat->grab.native == window)
+    _gdk_wayland_seat_grab_clear (seat);
+
+  /* The focus pointers are NOT cleared here: the compositor sends the leave
+   * events, which the events piece turns into crossing events. */
+}
+
 static void
 gdk_window_wayland_hide (GdkWindow *window)
 {
   GDKWWindowImplWayland *impl;
 
   impl = GDKW_WINDOW_IMPL_WAYLAND (((GdkWindowObject *) window)->impl);
+
+  grab_check_unmap (window);
 
   resize_buffer (impl, impl->width, impl->height);
 
@@ -746,19 +805,22 @@ gdk_window_wayland_get_pointer (GdkWindow *window,
 				GdkModifierType *mask)
 {
   GDKWWindowImplWayland *impl;
-  GDKWDisplayWayland *display;
+  GDKWSeat *seat;
 
   impl = GDKW_WINDOW_IMPL_WAYLAND (((GdkWindowObject *) window)->impl);
-  display = GDKW_DISPLAY_WAYLAND (gdk_screen_get_display (impl->screen));
+  seat = _gdk_wayland_display_get_seat (gdk_screen_get_display (impl->screen));
 
-  if (impl == display->pointer_focus)
+  if (mask)
+    *mask = _gdk_wayland_seat_get_state (seat);
+
+  /* TRUE means the pointer is inside this toplevel; the core then finds the
+   * child window under it itself. */
+  if (impl == seat->pointer_focus)
     {
       if (x)
-	*x = (gint) display->px;
+	*x = (gint) seat->px;
       if (y)
-	*y = (gint) display->py;
-      if (mask)
-	*mask = 0;
+	*y = (gint) seat->py;
       return TRUE;
     }
 
@@ -766,8 +828,6 @@ gdk_window_wayland_get_pointer (GdkWindow *window,
     *x = 0;
   if (y)
     *y = 0;
-  if (mask)
-    *mask = 0;
 
   return FALSE;
 }
@@ -819,6 +879,25 @@ gdk_window_wayland_destroy (GdkWindow *window,
   GDKWWindowImplWayland *impl;
 
   impl = GDKW_WINDOW_IMPL_WAYLAND (((GdkWindowObject *) window)->impl);
+
+  /* Mirrors _gdk_xgrab_check_destroy (): make sure no grab outlives the
+   * native window. */
+  if (impl->screen != NULL)
+    {
+      GdkDisplay *display = gdk_screen_get_display (impl->screen);
+      GdkPointerGrabInfo *grab = _gdk_display_get_last_pointer_grab (display);
+
+      if (grab && grab->native_window == window)
+	{
+	  grab->serial_end = grab->serial_start;
+	  grab->implicit_ungrab = TRUE;
+	}
+
+      if (window == display->keyboard_grab.native_window &&
+	  display->keyboard_grab.window != NULL)
+	_gdk_display_unset_has_keyboard_grab (display, TRUE);
+    }
+
   _gdk_wayland_window_impl_teardown (impl);
 }
 
@@ -936,4 +1015,20 @@ _gdk_wayland_windowing_create_cairo_surface (GdkDrawable *drawable,
 
   return gdkw_window_impl_wayland_create_cairo_surface (drawable,
 							width, height);
+}
+/*************** test hook (M6) ***************/
+
+/* Calls the real xdg_toplevel close listener for @window, so the demo can
+ * check GDK_DELETE delivery without a compositor sending a close. */
+gboolean
+_gdk_wayland_test_toplevel_close (GdkWindow *window)
+{
+  GDKWWindowImplWayland *impl = _gdk_wayland_window_get_impl (window);
+
+  if (impl == NULL || impl->xdg_toplevel == NULL)
+    return FALSE;
+
+  xdg_toplevel_handle_close (impl, impl->xdg_toplevel);
+
+  return TRUE;
 }

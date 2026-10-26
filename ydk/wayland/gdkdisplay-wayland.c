@@ -23,7 +23,10 @@
 
 #include "xdg-shell-client.h"
 
+#include <ydk/gdkinternals.h>
+
 #include "gdkprivate-wayland.h"
+#include "gdkseat-wayland.h"
 
 #ifdef GDK_COMPILATION
 #include "gdkalias.h"
@@ -213,6 +216,23 @@ wl_output_geometry (void *data,
 		    const char *model,
 		    int32_t transform)
 {
+  GDKWDisplayWayland *display = data;
+  GDKWOutputInfo *info =
+    _gdk_wayland_display_get_output_info (GDK_DISPLAY_OBJECT (display));
+
+  /* Only the first wl_output is bound, so there is one record. */
+  info->have_geometry = TRUE;
+  info->x = x;
+  info->y = y;
+  info->mm_width = physical_width;
+  info->mm_height = physical_height;
+  info->subpixel = subpixel;
+  info->transform = transform;
+
+  g_free (info->make);
+  g_free (info->model);
+  info->make = g_strdup (make);
+  info->model = g_strdup (model);
 }
 
 static void
@@ -229,8 +249,16 @@ wl_output_mode (void *data,
    * handling can extend this when window support lands. */
   if (flags & WL_OUTPUT_MODE_CURRENT)
     {
+      GDKWOutputInfo *info =
+	_gdk_wayland_display_get_output_info (GDK_DISPLAY_OBJECT (display));
+
       display->output_width = width;
       display->output_height = height;
+
+      info->have_mode = TRUE;
+      info->width = width;
+      info->height = height;
+      info->refresh = refresh;
     }
 }
 
@@ -281,7 +309,8 @@ wl_registry_global (void *data,
     }
   else if (strcmp (interface, "wl_seat") == 0 && !display->wl_seat)
     {
-      _gdk_wayland_seat_init (display, registry, name);
+      /* the events piece binds at MIN (version, 5) and adds the listener */
+      _gdk_wayland_seat_bind (display, registry, name, version);
     }
 }
 
@@ -381,6 +410,14 @@ _gdk_wayland_windowing_window_beep (GdkWindow *window)
 {
 }
 
+/*************** pointer state, grabs (M6) ***************/
+
+/* Same wraparound comparison as XSERVER_TIME_IS_LATER in gdkdisplay-x11.c */
+#define WTIME_IS_LATER(time1, time2)                              \
+  ( (( time1 > time2 ) && ( time1 - time2 < ((guint32)-1)/2 )) || \
+    (( time1 < time2 ) && ( time2 - time1 > ((guint32)-1)/2 ))    \
+  )
+
 void
 _gdk_wayland_windowing_get_pointer (GdkDisplay *display,
 				    GdkScreen **screen,
@@ -388,14 +425,21 @@ _gdk_wayland_windowing_get_pointer (GdkDisplay *display,
 				    gint *y,
 				    GdkModifierType *mask)
 {
+  GDKWSeat *seat = _gdk_wayland_display_get_seat (display);
+
   if (screen)
-    *screen = NULL;
+    *screen = GDKW_DISPLAY_WAYLAND (display)->default_screen;
+
+  /* px / py survive wl_pointer.leave, so this is also the last known
+   * position when the pointer is outside every surface of ours.  Toplevels
+   * sit at the root origin, so surface coordinates are root coordinates.  A
+   * pointer that was never seen reads (0, 0). */
   if (x)
-    *x = 0;
+    *x = (gint) seat->px;
   if (y)
-    *y = 0;
+    *y = (gint) seat->py;
   if (mask)
-    *mask = 0;
+    *mask = _gdk_wayland_seat_get_state (seat);
 }
 
 GdkWindow *
@@ -405,9 +449,44 @@ _gdk_wayland_windowing_window_at_pointer (GdkDisplay *display,
 					  GdkModifierType *mask,
 					  gboolean get_toplevel)
 {
+  GDKWSeat *seat = _gdk_wayland_display_get_seat (display);
+  GDKWWindowImplWayland *focus = seat->pointer_focus;
+
+  if (mask)
+    *mask = _gdk_wayland_seat_get_state (seat);
+
+  /* Toplevels are the only native windows; the core descends into children
+   * itself, so get_toplevel does not change the answer. */
+  if (focus != NULL && focus->wrapper != NULL &&
+      !GDK_WINDOW_DESTROYED (focus->wrapper))
+    {
+      if (win_x)
+	*win_x = (gint) seat->px;
+      if (win_y)
+	*win_y = (gint) seat->py;
+      return focus->wrapper;
+    }
+
+  if (win_x)
+    *win_x = 0;
+  if (win_y)
+    *win_y = 0;
+
   return NULL;
 }
 
+/* Wayland limits.  There is no active pointer grab: a client only ever sees
+ * pointer events for its own surfaces, and the compositor already routes
+ * motion to the surface that holds a pressed button until it is released.
+ * confine_to is recorded but ignored (it would need zwp_pointer_constraints)
+ * and the grab cursor is only remembered for the cursor milestone.
+ *
+ * The core (gdk_pointer_grab) does the owner_events / event_mask routing, the
+ * crossing events and the GdkPointerGrabInfo list through
+ * _gdk_display_add_pointer_grab () AFTER this returns GDK_GRAB_SUCCESS.  The
+ * implicit grab on button press and its release are done by the core inside
+ * _gdk_windowing_got_event (), so none of that is reimplemented here.  This
+ * hook only validates the request and keeps the backend's own record. */
 GdkGrabStatus
 _gdk_wayland_windowing_pointer_grab (GdkWindow *window,
 				     GdkWindow *native,
@@ -417,7 +496,136 @@ _gdk_wayland_windowing_pointer_grab (GdkWindow *window,
 				     GdkCursor *cursor,
 				     guint32 time_)
 {
-  return GDK_GRAB_FROZEN;
+  GdkDisplay *display;
+  GDKWSeat *seat;
+  GDKWWindowImplWayland *impl;
+
+  impl = _gdk_wayland_window_get_impl (native);
+  if (impl == NULL || GDK_WINDOW_DESTROYED (native) ||
+      !GDK_WINDOW_IS_MAPPED (native) || impl->wl_surface == NULL)
+    return GDK_GRAB_NOT_VIEWABLE;
+
+  display = gdk_drawable_get_display (GDK_DRAWABLE (native));
+  seat = _gdk_wayland_display_get_seat (display);
+
+  if (time_ != GDK_CURRENT_TIME && seat->grab.active &&
+      seat->grab.time != GDK_CURRENT_TIME &&
+      WTIME_IS_LATER (seat->grab.time, time_))
+    return GDK_GRAB_INVALID_TIME;
+
+  _gdk_wayland_seat_grab_clear (seat);
+
+  seat->grab.active = TRUE;
+  seat->grab.window = g_object_ref (window);
+  seat->grab.native = native;
+  seat->grab.owner_events = owner_events;
+  seat->grab.event_mask = event_mask;
+  seat->grab.confine_to = confine_to;
+  seat->grab.cursor = cursor ? gdk_cursor_ref (cursor) : NULL;
+  seat->grab.time = time_;
+  seat->grab.serial = _gdk_wayland_event_serial (display);
+
+  return GDK_GRAB_SUCCESS;
+}
+
+/* gdk_display_pointer_ungrab () */
+void
+_gdk_wayland_display_pointer_ungrab (GdkDisplay *display, guint32 time_)
+{
+  GDKWSeat *seat;
+  GdkPointerGrabInfo *grab;
+
+  if (display == NULL || !GDKW_IS_DISPLAY_WAYLAND (display))
+    return;
+
+  seat = _gdk_wayland_display_get_seat (display);
+
+  if (time_ == GDK_CURRENT_TIME || !seat->grab.active ||
+      seat->grab.time == GDK_CURRENT_TIME ||
+      !WTIME_IS_LATER (seat->grab.time, time_))
+    _gdk_wayland_seat_grab_clear (seat);
+
+  grab = _gdk_display_get_last_pointer_grab (display);
+  if (grab &&
+      (time_ == GDK_CURRENT_TIME ||
+       grab->time == GDK_CURRENT_TIME ||
+       !WTIME_IS_LATER (grab->time, time_)))
+    {
+      gulong serial = _gdk_windowing_window_get_next_serial (display);
+
+      grab->serial_end = serial;
+
+      /* X11 finishes this from an async roundtrip callback.  Here there is no
+       * server round trip, and the update is what emits the UNGRAB crossing
+       * events and frees the grab, so gdk_pointer_is_grabbed () is FALSE as
+       * soon as gdk_pointer_ungrab () returns. */
+      _gdk_display_pointer_grab_update (display, serial);
+    }
+}
+
+/* gdk_display_keyboard_ungrab () */
+void
+_gdk_wayland_display_keyboard_ungrab (GdkDisplay *display, guint32 time_)
+{
+  if (display == NULL || !GDKW_IS_DISPLAY_WAYLAND (display))
+    return;
+
+  if (time_ == GDK_CURRENT_TIME ||
+      display->keyboard_grab.time == GDK_CURRENT_TIME ||
+      !WTIME_IS_LATER (display->keyboard_grab.time, time_))
+    _gdk_display_unset_has_keyboard_grab (display, FALSE);
+}
+
+/* gdk_keyboard_grab ().  The grab is purely client side: the keyboard
+ * focus belongs to the compositor.  The key redirection itself is done by
+ * emit_key () in gdkevents-wayland.c from display->keyboard_grab. */
+GdkGrabStatus
+_gdk_wayland_keyboard_grab (GdkWindow *window,
+			    gboolean owner_events,
+			    guint32 time_)
+{
+  GdkWindow *native;
+  GdkDisplay *display;
+  GDKWWindowImplWayland *impl;
+  gulong serial;
+
+  if (window == NULL || !GDK_IS_WINDOW (window))
+    return GDK_GRAB_NOT_VIEWABLE;
+
+  native = gdk_window_get_toplevel (window);
+
+  /* same leniency as the X11 backend for windows it cannot proxy */
+  impl = _gdk_wayland_window_get_impl (native);
+  if (impl == NULL)
+    return GDK_GRAB_SUCCESS;
+
+  if (GDK_WINDOW_DESTROYED (native))
+    return GDK_GRAB_ALREADY_GRABBED;
+
+  if (!GDK_WINDOW_IS_MAPPED (native) || impl->wl_surface == NULL)
+    return GDK_GRAB_NOT_VIEWABLE;
+
+  display = gdk_drawable_get_display (GDK_DRAWABLE (native));
+  serial = _gdk_windowing_window_get_next_serial (display);
+
+  _gdk_display_set_has_keyboard_grab (display, window, native,
+				      owner_events, serial, time_);
+
+  return GDK_GRAB_SUCCESS;
+}
+
+/* Wayland clients cannot warp the pointer, and there is no beep protocol. */
+void
+_gdk_wayland_display_warp_pointer (GdkDisplay *display,
+				   GdkScreen *screen,
+				   gint x,
+				   gint y)
+{
+}
+
+void
+_gdk_wayland_display_beep (GdkDisplay *display)
+{
 }
 
 void

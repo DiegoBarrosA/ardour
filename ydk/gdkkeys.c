@@ -318,7 +318,7 @@ gdk_keymap_get_for_display (GdkDisplay *display)
 
   /* ydk-wayland: per-backend in GTK2; dispatched via GdkDisplayClass so
    * X11 and Wayland can both provide one. */
-  keymap = GDK_DISPLAY_CLASS (display)->keymap (display);
+  keymap = GDK_DISPLAY_GET_CLASS (display)->keymap (display);
 
   return keymap;
 }
@@ -359,7 +359,7 @@ gdk_keymap_translate_keyboard_state (GdkKeymap       *keymap,
 
   /* ydk-wayland: per-backend in GTK2; dispatched via GdkKeymapClass so
    * X11 and Wayland can both provide one. */
-  return GDK_KEYMAP_CLASS (keymap)->translate_keyboard_state (keymap,
+  return GDK_KEYMAP_GET_CLASS (keymap)->translate_keyboard_state (keymap,
 							      hardware_keycode,
 							      state,
 							      group,

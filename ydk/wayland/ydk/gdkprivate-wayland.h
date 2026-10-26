@@ -85,17 +85,13 @@ struct _GDKWDisplayWayland
   GSList *windows;
   gboolean xdg_shell_supported;
 
-  /* M3: seat + input.  wl_seat is bound v1 (capabilities event, no
-   * release); wl_pointer/wl_keyboard are created/destroyed from the
-   * capabilities callback.  pointer/keyboard_focus are the surface impls
-   * currently underneath the cursor / holding keyboard focus in this app;
-   * px/py are the cursor position in surface coordinates. */
+  /* M3/M6: seat proxies.  wl_seat is bound at up to v5 (gdkevents-wayland.c)
+   * and wl_pointer/wl_keyboard are created/destroyed from the capabilities
+   * callback.  All other seat state (focus, position, buttons, modifiers,
+   * key repeat, grab record) lives in GDKWSeat, see gdkseat-wayland.h. */
   struct wl_seat *wl_seat;
   struct wl_pointer *wl_pointer;
   struct wl_keyboard *wl_keyboard;
-  GDKWWindowImplWayland *pointer_focus;
-  GDKWWindowImplWayland *keyboard_focus;
-  gdouble px, py;
 
   /* M3: per-display keymap; created lazily and filled from the wl_keyboard
    * keymap event (see gdkkeys-wayland.c). */
@@ -346,9 +342,6 @@ struct xkb_state *_gdk_wayland_keymap_get_xkb_state (GdkKeymap *keymap);
  * display open after the registry walk; the reverse in display finalize. */
 void _gdk_wayland_events_init (GdkDisplay *display);
 void _gdk_wayland_events_finalize (GdkDisplay *display);
-void _gdk_wayland_seat_init (GDKWDisplayWayland *display,
-			     struct wl_registry *registry,
-			     uint32_t name);
 
 /* Finds the toplevel impl whose surface is @surface; NULL if unknown. */
 GDKWWindowImplWayland *_gdk_wayland_impl_from_surface (

@@ -10,8 +10,9 @@
 # selection, drag and property checks ("ydk_demo: M4: PASS"), and since M5
 # the offscreen drawing checks ("ydk_demo: M5: PASS"), and since F7 the
 # colormap family checks ("ydk_demo: M5C: PASS"), and since F8 the visual /
-# default-colormap / rgba / gdkrgb checks ("ydk_demo: M5V: PASS") with CRITICAL
-# log messages fatal in the demo.  Backends without
+# default-colormap / rgba / gdkrgb checks ("ydk_demo: M5V: PASS"), and since M6
+# the input and screen checks driven through the headless test hooks
+# ("ydk_demo: M6: PASS"), with CRITICAL log messages fatal in the demo.  Backends without
 # window support exit 77, which still proves the display open/roundtrip works.
 #
 # Exits 0 on success.
@@ -98,6 +99,11 @@ fi
 
 if [ "$DEMO_RC" -eq 0 ] && ! grep -q "ydk_demo: M5V: PASS" "$RUNTIME/wayland-demo.log"; then
   echo "smoke-test: wayland demo exited 0 but did not report M5V: PASS" >&2
+  exit 1
+fi
+
+if [ "$DEMO_RC" -eq 0 ] && ! grep -q "ydk_demo: M6: PASS" "$RUNTIME/wayland-demo.log"; then
+  echo "smoke-test: wayland demo exited 0 but did not report M6: PASS" >&2
   exit 1
 fi
 

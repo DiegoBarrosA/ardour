@@ -31,6 +31,7 @@
 
 #include "gdkprivate-wayland.h"
 #include "gdkpixmap-wayland.h"
+#include "gdkseat-wayland.h"
 
 #ifdef GDK_COMPILATION
 #include "gdkalias.h"
@@ -1377,4 +1378,219 @@ gdk_screen_get_rgba_visual (GdkScreen *screen)
     return _gdk_wayland_screen_get_rgba_visual (screen);
   else
     return _gdk_x11_screen_get_rgba_visual (screen);
+}
+
+/* ---- M6: screen, grab, warp, beep and pending entry points.  The X11
+ * definitions are renamed by x11/ydk/gdkwindowing-x11.h; the Wayland ones
+ * live in gdkscreen-wayland.c, gdkdisplay-wayland.c and gdkevents-wayland.c
+ * (prototypes in gdkseat-wayland.h). */
+extern gint _gdk_x11_screen_get_width_mm (GdkScreen *screen);
+extern gint _gdk_x11_screen_get_height_mm (GdkScreen *screen);
+extern gint _gdk_x11_screen_get_number (GdkScreen *screen);
+extern gint _gdk_x11_screen_get_n_monitors (GdkScreen *screen);
+extern gint _gdk_x11_screen_get_primary_monitor (GdkScreen *screen);
+extern void _gdk_x11_screen_get_monitor_geometry (GdkScreen *screen, gint monitor_num, GdkRectangle *dest);
+extern gint _gdk_x11_screen_get_monitor_width_mm (GdkScreen *screen, gint monitor_num);
+extern gint _gdk_x11_screen_get_monitor_height_mm (GdkScreen *screen, gint monitor_num);
+extern gchar * _gdk_x11_screen_get_monitor_plug_name (GdkScreen *screen, gint monitor_num);
+extern gboolean _gdk_x11_screen_is_composited (GdkScreen *screen);
+extern gchar * _gdk_x11_screen_make_display_name (GdkScreen *screen);
+extern GdkWindow * _gdk_x11_screen_get_active_window (GdkScreen *screen);
+extern GList * _gdk_x11_screen_get_window_stack (GdkScreen *screen);
+extern void _gdk_x11_screen_broadcast_client_message (GdkScreen *screen, GdkEvent *event);
+extern gboolean _gdk_x11_screen_get_setting (GdkScreen *screen, const gchar *name, GValue *value);
+extern void _gdk_x11_display_pointer_ungrab (GdkDisplay *display, guint32 time_);
+extern void _gdk_x11_display_keyboard_ungrab (GdkDisplay *display, guint32 time_);
+extern GdkGrabStatus _gdk_x11_keyboard_grab (GdkWindow *window, gboolean owner_events, guint32 time_);
+extern void _gdk_x11_display_warp_pointer (GdkDisplay *display, GdkScreen *screen, gint x, gint y);
+extern void _gdk_x11_display_beep (GdkDisplay *display);
+extern gboolean _gdk_x11_events_pending (void);
+
+gint
+gdk_screen_get_width_mm (GdkScreen *screen)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    return _gdk_wayland_screen_get_width_mm (screen);
+  else
+    return _gdk_x11_screen_get_width_mm (screen);
+}
+
+gint
+gdk_screen_get_height_mm (GdkScreen *screen)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    return _gdk_wayland_screen_get_height_mm (screen);
+  else
+    return _gdk_x11_screen_get_height_mm (screen);
+}
+
+gint
+gdk_screen_get_number (GdkScreen *screen)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    return _gdk_wayland_screen_get_number (screen);
+  else
+    return _gdk_x11_screen_get_number (screen);
+}
+
+gint
+gdk_screen_get_n_monitors (GdkScreen *screen)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    return _gdk_wayland_screen_get_n_monitors (screen);
+  else
+    return _gdk_x11_screen_get_n_monitors (screen);
+}
+
+gint
+gdk_screen_get_primary_monitor (GdkScreen *screen)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    return _gdk_wayland_screen_get_primary_monitor (screen);
+  else
+    return _gdk_x11_screen_get_primary_monitor (screen);
+}
+
+void
+gdk_screen_get_monitor_geometry (GdkScreen *screen, gint monitor_num, GdkRectangle *dest)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    _gdk_wayland_screen_get_monitor_geometry (screen, monitor_num, dest);
+  else
+    _gdk_x11_screen_get_monitor_geometry (screen, monitor_num, dest);
+}
+
+gint
+gdk_screen_get_monitor_width_mm (GdkScreen *screen, gint monitor_num)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    return _gdk_wayland_screen_get_monitor_width_mm (screen, monitor_num);
+  else
+    return _gdk_x11_screen_get_monitor_width_mm (screen, monitor_num);
+}
+
+gint
+gdk_screen_get_monitor_height_mm (GdkScreen *screen, gint monitor_num)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    return _gdk_wayland_screen_get_monitor_height_mm (screen, monitor_num);
+  else
+    return _gdk_x11_screen_get_monitor_height_mm (screen, monitor_num);
+}
+
+gchar *
+gdk_screen_get_monitor_plug_name (GdkScreen *screen, gint monitor_num)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    return _gdk_wayland_screen_get_monitor_plug_name (screen, monitor_num);
+  else
+    return _gdk_x11_screen_get_monitor_plug_name (screen, monitor_num);
+}
+
+gboolean
+gdk_screen_is_composited (GdkScreen *screen)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    return _gdk_wayland_screen_is_composited (screen);
+  else
+    return _gdk_x11_screen_is_composited (screen);
+}
+
+gchar *
+gdk_screen_make_display_name (GdkScreen *screen)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    return _gdk_wayland_screen_make_display_name (screen);
+  else
+    return _gdk_x11_screen_make_display_name (screen);
+}
+
+GdkWindow *
+gdk_screen_get_active_window (GdkScreen *screen)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    return _gdk_wayland_screen_get_active_window (screen);
+  else
+    return _gdk_x11_screen_get_active_window (screen);
+}
+
+GList *
+gdk_screen_get_window_stack (GdkScreen *screen)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    return _gdk_wayland_screen_get_window_stack (screen);
+  else
+    return _gdk_x11_screen_get_window_stack (screen);
+}
+
+void
+gdk_screen_broadcast_client_message (GdkScreen *screen, GdkEvent *event)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    _gdk_wayland_screen_broadcast_client_message (screen, event);
+  else
+    _gdk_x11_screen_broadcast_client_message (screen, event);
+}
+
+gboolean
+gdk_screen_get_setting (GdkScreen *screen, const gchar *name, GValue *value)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    return _gdk_wayland_screen_get_setting (screen, name, value);
+  else
+    return _gdk_x11_screen_get_setting (screen, name, value);
+}
+
+void
+gdk_display_pointer_ungrab (GdkDisplay *display, guint32 time_)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    _gdk_wayland_display_pointer_ungrab (display, time_);
+  else
+    _gdk_x11_display_pointer_ungrab (display, time_);
+}
+
+void
+gdk_display_keyboard_ungrab (GdkDisplay *display, guint32 time_)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    _gdk_wayland_display_keyboard_ungrab (display, time_);
+  else
+    _gdk_x11_display_keyboard_ungrab (display, time_);
+}
+
+GdkGrabStatus
+gdk_keyboard_grab (GdkWindow *window, gboolean owner_events, guint32 time_)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    return _gdk_wayland_keyboard_grab (window, owner_events, time_);
+  else
+    return _gdk_x11_keyboard_grab (window, owner_events, time_);
+}
+
+void
+gdk_display_warp_pointer (GdkDisplay *display, GdkScreen *screen, gint x, gint y)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    _gdk_wayland_display_warp_pointer (display, screen, x, y);
+  else
+    _gdk_x11_display_warp_pointer (display, screen, x, y);
+}
+
+void
+gdk_display_beep (GdkDisplay *display)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    _gdk_wayland_display_beep (display);
+  else
+    _gdk_x11_display_beep (display);
+}
+
+gboolean
+gdk_events_pending (void)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    return _gdk_wayland_events_pending (gdk_display_get_default ());
+  else
+    return _gdk_x11_events_pending ();
 }
