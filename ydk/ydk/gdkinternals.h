@@ -712,6 +712,12 @@ void _gdk_windowing_exit (void);
 
 extern void (*_gdk_modal_notify)(GdkWindow*, gboolean);
 
+/* ydk-wayland: TRUE when the process runs on the Wayland backend (decided
+ * once from GDK_BACKEND and WAYLAND_DISPLAY).  Defined in gdkbackend.c.  The
+ * X11 objects use it where they must tell who made a buffer and have no
+ * display to ask. */
+gboolean _gdk_backend_is_wayland (void);
+
 G_END_DECLS
 
 #endif /* __GDK_INTERNALS_H__ */

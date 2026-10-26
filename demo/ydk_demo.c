@@ -3403,6 +3403,229 @@ m6b_hints (GdkDisplay *d)
   m6_clear ();
 }
 
+/* ---- X11 handle accessors and X11 only API guards -------------------
+ *
+ * The demo is built without Xlib, so these are declared here instead of
+ * coming from <ydk/gdkx.h>.  The declarations match the ABI of the real
+ * ones (Display * is a pointer, XID is an unsigned long).
+ *
+ * On a Wayland display there is no X server: the handle accessors give NULL
+ * and 0 for every kind of argument, without a CRITICAL (CRITICALs are fatal
+ * in this demo, so a stray one fails the run).  The user time functions use
+ * the time of the newest seat event. */
+extern gpointer gdk_x11_display_get_xdisplay (GdkDisplay *display);
+extern gpointer gdk_x11_drawable_get_xdisplay (GdkDrawable *drawable);
+extern gulong gdk_x11_drawable_get_xid (GdkDrawable *drawable);
+extern GdkDrawable *gdk_x11_window_get_drawable_impl (GdkWindow *window);
+extern gboolean gdk_x11_display_is_x11 (GdkDisplay *display);
+extern void gdk_x11_display_set_cursor_theme (GdkDisplay *display,
+					      const gchar *theme,
+					      const gint size);
+extern void gdk_x11_window_set_user_time (GdkWindow *window, guint32 timestamp);
+extern guint32 gdk_x11_display_get_user_time (GdkDisplay *display);
+extern guint32 gdk_x11_get_server_time (GdkWindow *window);
+
+static void
+m6b_x11_handles (GdkDisplay *d, GdkWindow *child, GdkWindow *unmapped,
+		 GdkPixmap *pix)
+{
+  GdkWindow *root = gdk_get_default_root_window ();
+  GdkWindow *wins[4];
+  const gchar *names[4] = { "main", "child", "unmapped", "root" };
+  GdkDrawable *impl;
+  gint i;
+
+  wins[0] = main_window;
+  wins[1] = child;
+  wins[2] = unmapped;
+  wins[3] = root;
+
+  M6B_CHECK (!gdk_x11_display_is_x11 (d), "is_x11 is FALSE for a Wayland display");
+  M6B_CHECK (!gdk_x11_display_is_x11 (NULL), "is_x11 is FALSE for NULL");
+  M6B_CHECK (gdk_x11_display_get_xdisplay (d) == NULL, "xdisplay of the display is NULL");
+  M6B_CHECK (gdk_x11_display_get_xdisplay (NULL) == NULL, "xdisplay of NULL display is NULL");
+
+  for (i = 0; i < 4; i++)
+    {
+      gchar *what;
+
+      what = g_strdup_printf ("%s window: xid is 0", names[i]);
+      M6B_CHECK (gdk_x11_drawable_get_xid (GDK_DRAWABLE (wins[i])) == 0, what);
+      g_free (what);
+      what = g_strdup_printf ("%s window: drawable xdisplay is NULL", names[i]);
+      M6B_CHECK (gdk_x11_drawable_get_xdisplay (GDK_DRAWABLE (wins[i])) == NULL, what);
+      g_free (what);
+    }
+
+  /* GDK_WINDOW_XDISPLAY (win) is get_xdisplay (get_drawable_impl (win)) */
+  for (i = 0; i < 3; i++)
+    {
+      gchar *what;
+
+      impl = gdk_x11_window_get_drawable_impl (wins[i]);
+      what = g_strdup_printf ("%s window: drawable impl is the window impl", names[i]);
+      M6B_CHECK (impl != NULL && impl == GDK_WINDOW_OBJECT (wins[i])->impl, what);
+      g_free (what);
+      what = g_strdup_printf ("%s window: impl is a Wayland impl", names[i]);
+      M6B_EQ_STR (impl ? G_OBJECT_TYPE_NAME (impl) : "(null)",
+		  "GDKWWindowImplWayland", what);
+      g_free (what);
+      what = g_strdup_printf ("%s window: GDK_WINDOW_XDISPLAY is NULL", names[i]);
+      M6B_CHECK (gdk_x11_drawable_get_xdisplay (impl) == NULL, what);
+      g_free (what);
+      what = g_strdup_printf ("%s window: xid of the impl is 0", names[i]);
+      M6B_CHECK (gdk_x11_drawable_get_xid (impl) == 0, what);
+      g_free (what);
+    }
+
+  /* a pixmap is not a window and has no X resource either */
+  M6B_CHECK (gdk_x11_drawable_get_xid (GDK_DRAWABLE (pix)) == 0, "pixmap xid is 0");
+  M6B_CHECK (gdk_x11_drawable_get_xdisplay (GDK_DRAWABLE (pix)) == NULL,
+	     "pixmap xdisplay is NULL");
+  M6B_CHECK (gdk_x11_window_get_drawable_impl ((GdkWindow *) pix) == NULL,
+	     "drawable impl of a pixmap is NULL");
+
+  M6B_CHECK (gdk_x11_drawable_get_xid (NULL) == 0, "xid of NULL is 0");
+  M6B_CHECK (gdk_x11_drawable_get_xdisplay (NULL) == NULL, "xdisplay of NULL drawable is NULL");
+  M6B_CHECK (gdk_x11_window_get_drawable_impl (NULL) == NULL, "drawable impl of NULL is NULL");
+}
+
+static void
+m6b_x11_times (GdkDisplay *d, GdkWindow *child, GdkWindow *unmapped,
+		GdkPixmap *pix)
+{
+  GdkWindow *root = gdk_get_default_root_window ();
+  GdkWindow *wins[3];
+  const gchar *names[3] = { "main", "child", "unmapped" };
+  guint32 t1 = 91000, t2 = 91234;
+  gint i;
+
+  wins[0] = main_window;
+  wins[1] = child;
+  wins[2] = unmapped;
+
+  /* no CRITICAL, no effect, for every kind of argument */
+  gdk_x11_display_set_cursor_theme (d, "Adwaita", 24);
+  gdk_x11_display_set_cursor_theme (d, NULL, 0);
+  gdk_x11_display_set_cursor_theme (d, "", -1);
+  gdk_x11_display_set_cursor_theme (NULL, "Adwaita", 24);
+  M6B_CHECK (gdk_x11_display_get_xdisplay (d) == NULL,
+	     "set_cursor_theme did not create an X display");
+
+  /* the user time follows the newest seat event */
+  M6B_HOOK (_gdk_wayland_test_pointer_enter (d, main_window, 20, 20), "x11 times enter");
+  m6_drain ();
+  M6B_HOOK (_gdk_wayland_test_pointer_motion (d, t1, 21, 21), "x11 times motion 1");
+  m6_drain ();
+  M6B_EQ_INT (gdk_x11_display_get_user_time (d), t1, "user time follows the seat");
+  for (i = 0; i < 3; i++)
+    {
+      gchar *what = g_strdup_printf ("%s window: server time is the seat time", names[i]);
+
+      M6B_EQ_INT (gdk_x11_get_server_time (wins[i]), t1, what);
+      g_free (what);
+    }
+
+  M6B_HOOK (_gdk_wayland_test_pointer_motion (d, t2, 22, 22), "x11 times motion 2");
+  m6_drain ();
+  M6B_EQ_INT (gdk_x11_display_get_user_time (d), t2, "user time advances with the seat");
+  M6B_EQ_INT (gdk_x11_get_server_time (main_window), t2, "server time advances too");
+
+  /* set_user_time has no effect on Wayland */
+  for (i = 0; i < 3; i++)
+    gdk_x11_window_set_user_time (wins[i], 5);
+  gdk_x11_window_set_user_time (root, 5);
+  gdk_x11_window_set_user_time (NULL, 5);
+  M6B_EQ_INT (gdk_x11_display_get_user_time (d), t2, "set_user_time does not change the user time");
+  M6B_EQ_INT (gdk_x11_get_server_time (main_window), t2, "set_user_time does not change the server time");
+
+  /* arguments without a time */
+  M6B_EQ_INT (gdk_x11_display_get_user_time (NULL), 0, "user time of NULL display is 0");
+  M6B_EQ_INT (gdk_x11_get_server_time (NULL), 0, "server time of NULL window is 0");
+  M6B_EQ_INT (gdk_x11_get_server_time (root), t2,
+	      "server time of the root window is the seat time");
+  M6B_EQ_INT (gdk_x11_get_server_time ((GdkWindow *) pix), 0,
+	      "server time of a pixmap is 0");
+
+  M6B_HOOK (_gdk_wayland_test_pointer_leave (d, main_window), "x11 times leave");
+  m6_drain ();
+  m6_clear ();
+}
+
+/* X atom functions guarded in place in the X11 source.  Atom and XID are
+ * unsigned long. */
+extern gulong gdk_x11_atom_to_xatom (GdkAtom atom);
+extern gulong gdk_x11_atom_to_xatom_for_display (GdkDisplay *display, GdkAtom atom);
+extern GdkAtom gdk_x11_xatom_to_atom (gulong xatom);
+extern GdkAtom gdk_x11_xatom_to_atom_for_display (GdkDisplay *display, gulong xatom);
+extern gulong gdk_x11_get_xatom_by_name (const gchar *atom_name);
+extern gulong gdk_x11_get_xatom_by_name_for_display (GdkDisplay *display, const gchar *atom_name);
+extern const gchar *gdk_x11_get_xatom_name (gulong xatom);
+extern const gchar *gdk_x11_get_xatom_name_for_display (GdkDisplay *display, gulong xatom);
+extern GdkWindow *gdk_x11_window_foreign_new_for_display (GdkDisplay *display, gulong window);
+extern void gdk_x11_free_compound_text (guchar *ctext);
+
+static void
+m6b_x11_atoms (GdkDisplay *d)
+{
+  GdkAtom atom = gdk_atom_intern_static_string ("YDK_M6B_X11_ATOM");
+  GdkAtom enc;
+  gint format, len;
+  guchar *ctext = NULL;
+
+  M6B_EQ_INT (gdk_x11_atom_to_xatom (atom), 0, "atom_to_xatom is None");
+  M6B_EQ_INT (gdk_x11_atom_to_xatom_for_display (d, atom), 0,
+	      "atom_to_xatom_for_display is None");
+  M6B_EQ_INT (gdk_x11_atom_to_xatom (GDK_NONE), 0, "atom_to_xatom of GDK_NONE is None");
+  M6B_CHECK (gdk_x11_xatom_to_atom (69) == GDK_NONE, "xatom_to_atom is GDK_NONE");
+  M6B_CHECK (gdk_x11_xatom_to_atom_for_display (d, 69) == GDK_NONE,
+	     "xatom_to_atom_for_display is GDK_NONE");
+  M6B_EQ_INT (gdk_x11_get_xatom_by_name ("WM_NAME"), 0, "get_xatom_by_name is None");
+  M6B_EQ_INT (gdk_x11_get_xatom_by_name_for_display (d, "WM_NAME"), 0,
+	      "get_xatom_by_name_for_display is None");
+  M6B_EQ_STR (gdk_x11_get_xatom_name (69), "", "get_xatom_name is empty, not NULL");
+  M6B_EQ_STR (gdk_x11_get_xatom_name_for_display (d, 69), "",
+	      "get_xatom_name_for_display is empty, not NULL");
+  M6B_CHECK (gdk_x11_window_foreign_new_for_display (d, 0x400001) == NULL,
+	     "foreign_new_for_display is NULL");
+
+  /* a compound text buffer from the Wayland backend is released with g_free */
+  M6B_CHECK (gdk_utf8_to_compound_text_for_display (d, "m6b", &enc, &format,
+						    &ctext, &len) && ctext != NULL,
+	     "compound text buffer for the free test");
+  gdk_x11_free_compound_text (ctext);
+  gdk_x11_free_compound_text (NULL);
+}
+
+static void
+m6b_x11_api (GdkDisplay *d, GdkWindow *child)
+{
+  GdkWindow *unmapped;
+  GdkPixmap *pix;
+
+  unmapped = m6b_toplevel (64, 48, GDK_STRUCTURE_MASK, NULL, NULL);
+  pix = gdk_pixmap_new (main_window, 8, 8, -1);
+  M6B_CHECK (unmapped != NULL && pix != NULL, "x11 api test objects created");
+  if (unmapped == NULL || pix == NULL)
+    {
+      if (unmapped)
+	gdk_window_destroy (unmapped);
+      if (pix)
+	g_object_unref (pix);
+      return;
+    }
+  M6B_CHECK (!gdk_window_is_visible (unmapped), "the third window is not mapped");
+
+  m6b_x11_handles (d, child, unmapped, pix);
+  m6b_x11_times (d, child, unmapped, pix);
+  m6b_x11_atoms (d);
+
+  g_object_unref (pix);
+  gdk_window_destroy (unmapped);
+  m6_drain ();
+  m6_clear ();
+}
+
 /* ---- gaps from the M6 audit ----------------------------------------- */
 
 static void
@@ -3447,6 +3670,18 @@ m6b_pointer_state (GdkDisplay *d, GdkWindow *child)
   M6B_CHECK (!(mask & GDK_BUTTON1_MASK) && (mask & GDK_SHIFT_MASK),
 	     "release clears BUTTON1 only");
   M6B_HOOK (_gdk_wayland_test_keyboard_modifiers (d, 0), "shift off");
+
+  /* window_at_pointer follows the pointer out of the child, and the move
+   * synthesises the crossing events */
+  m6_clear ();
+  M6B_HOOK (_gdk_wayland_test_pointer_motion (d, t + 30, 10, 10), "motion out");
+  m6_drain ();
+  M6B_CHECK (m6_find (GDK_LEAVE_NOTIFY, child) != NULL,
+	     "moving out of the child leaves it");
+  wx = wy = -1;
+  w = gdk_display_get_window_at_pointer (d, &wx, &wy);
+  M6B_CHECK (w == main_window, "window_at_pointer is main outside the child");
+  M6B_CHECK (wx == 10 && wy == 10, "window_at_pointer main coordinates");
   m6_clear ();
 }
 
@@ -3530,6 +3765,87 @@ m6b_destroy_while_repeating (GdkDisplay *d)
   m6_clear ();
 }
 
+static gboolean
+m6b_seat_grab_active (GdkDisplay *d)
+{
+  GDKWTestSeatInfo info;
+
+  memset (&info, 0, sizeof info);
+  if (!_gdk_wayland_test_seat_info (d, &info))
+    return FALSE;
+  return info.explicit_grab_active;
+}
+
+/* A window that holds an implicit grab (button held) is destroyed.  The
+ * rest of the gesture must not reach the dead window and nothing may
+ * crash; later pointer input must work again. */
+static void
+m6b_destroy_with_implicit_grab (GdkDisplay *d)
+{
+  GdkWindow *w2, *gw = NULL;
+  gboolean oe;
+  GDKWTestSeatInfo info;
+  GList *l;
+  gboolean stale = FALSE;
+  guint32 t = 120000;
+
+  w2 = m6b_toplevel (50, 50, GDK_BUTTON_PRESS_MASK | GDK_BUTTON_RELEASE_MASK |
+		     GDK_POINTER_MOTION_MASK | GDK_ENTER_NOTIFY_MASK |
+		     GDK_LEAVE_NOTIFY_MASK, NULL, NULL);
+  M6B_CHECK (w2 != NULL, "implicit grab window");
+  if (w2 == NULL)
+    return;
+  gdk_window_show (w2);
+  gdk_display_sync (d);
+
+  m6_clear ();
+  M6B_HOOK (_gdk_wayland_test_pointer_enter (d, w2, 20, 20), "enter w2");
+  m6_drain ();
+  M6B_HOOK (_gdk_wayland_test_pointer_button (d, t, GDKW_TEST_BTN_LEFT, TRUE),
+	    "press on w2");
+  m6_drain ();
+  M6B_CHECK (gdk_pointer_grab_info_libgtk_only (d, &gw, &oe) && gw == w2,
+	     "implicit grab is on w2");
+
+  g_object_ref (w2);
+  gdk_window_destroy (w2);
+  m6_drain ();
+  M6B_CHECK (!gdk_pointer_grab_info_libgtk_only (d, &gw, &oe) || gw != w2,
+	     "the destroy dropped the implicit grab on w2");
+  memset (&info, 0, sizeof info);
+  M6B_CHECK (_gdk_wayland_test_seat_info (d, &info) && info.pointer_focus != w2,
+	     "pointer focus no longer points at w2");
+
+  /* the compositor can still send the rest of the gesture for a moment */
+  m6_clear ();
+  _gdk_wayland_test_pointer_motion (d, t + 10, 25, 25);
+  _gdk_wayland_test_pointer_button (d, t + 20, GDKW_TEST_BTN_LEFT, FALSE);
+  m6_drain ();
+  for (l = m6_events.head; l; l = l->next)
+    if (((GdkEvent *) l->data)->any.window == w2)
+      stale = TRUE;
+  M6B_CHECK (!stale, "no event is delivered to the destroyed window");
+  g_object_unref (w2);
+
+  memset (&info, 0, sizeof info);
+  M6B_CHECK (_gdk_wayland_test_seat_info (d, &info) && info.button_mask == 0,
+	     "no button is left pressed in the seat");
+  M6B_CHECK (!gdk_pointer_grab_info_libgtk_only (d, &gw, &oe),
+	     "no grab is left after the release");
+
+  /* pointer input works again */
+  m6_clear ();
+  M6B_HOOK (_gdk_wayland_test_pointer_enter (d, main_window, 5, 5),
+	    "enter main after the destroy");
+  m6_drain ();
+  M6B_HOOK (_gdk_wayland_test_pointer_motion (d, t + 30, 6, 6),
+	    "motion after the destroy");
+  m6_drain ();
+  M6B_CHECK (m6_find (GDK_MOTION_NOTIFY, main_window) != NULL,
+	     "motion still reaches main after the destroy");
+  m6_clear ();
+}
+
 static void
 m6b_destroy_with_grab (GdkDisplay *d)
 {
@@ -3550,14 +3866,19 @@ m6b_destroy_with_grab (GdkDisplay *d)
   M6B_EQ_INT (gdk_pointer_grab (w2, FALSE, grab_mask, NULL, NULL,
 				GDK_CURRENT_TIME),
 	      GDK_GRAB_SUCCESS, "pointer grab on w2");
+  M6B_CHECK (gdk_pointer_is_grabbed (), "pointer grab is reported");
+  M6B_CHECK (m6b_seat_grab_active (d), "seat records the explicit grab");
   gdk_window_destroy (w2);
   m6_drain ();
   M6B_CHECK (!gdk_pointer_is_grabbed (), "the destroy ended the pointer grab");
+  M6B_CHECK (!m6b_seat_grab_active (d), "the destroy released the seat grab");
   M6B_EQ_INT (gdk_pointer_grab (main_window, FALSE, grab_mask, NULL, NULL,
 				GDK_CURRENT_TIME),
 	      GDK_GRAB_SUCCESS, "a new pointer grab works");
+  M6B_CHECK (m6b_seat_grab_active (d), "seat records the second grab");
   gdk_pointer_ungrab (GDK_CURRENT_TIME);
   M6B_CHECK (!gdk_pointer_is_grabbed (), "new pointer grab released");
+  M6B_CHECK (!m6b_seat_grab_active (d), "explicit ungrab released the seat grab");
 
   /* keyboard grab */
   w2 = m6b_toplevel (50, 50, GDK_BUTTON_PRESS_MASK | GDK_KEY_PRESS_MASK,
@@ -3686,10 +4007,12 @@ m6b_exercise (void)
   m6b_keymap (display);
   m6b_display (display);
   m6b_hints (display);
+  m6b_x11_api (display, child);
   m6b_pointer_state (display, child);
   m6b_warp_beep_pending (display);
   m6b_destroy_while_repeating (display);
   m6b_destroy_with_grab (display);
+  m6b_destroy_with_implicit_grab (display);
   m6b_close_display_with_windows (display);
   m6b_locale ();
 
@@ -3736,6 +4059,22 @@ m6b_x11_exercise (void)
   M6B_EQ_INT (gdk_window_get_type_hint (main_window), GDK_WINDOW_TYPE_HINT_NORMAL,
 	      "x11: type hint");
   M6B_CHECK (gdk_window_lookup (0) == NULL, "x11: window_lookup of 0");
+
+  /* the dispatched X11 handle accessors and guards still reach Xlib */
+  M6B_CHECK (gdk_x11_display_is_x11 (d), "x11: is_x11 is TRUE");
+  M6B_CHECK (gdk_x11_display_get_xdisplay (d) != NULL, "x11: xdisplay is not NULL");
+  M6B_CHECK (gdk_x11_drawable_get_xid (GDK_DRAWABLE (main_window)) != 0,
+	     "x11: window xid is not 0");
+  M6B_CHECK (gdk_x11_drawable_get_xdisplay (gdk_x11_window_get_drawable_impl (main_window))
+	     == gdk_x11_display_get_xdisplay (d),
+	     "x11: GDK_WINDOW_XDISPLAY is the display xdisplay");
+  M6B_CHECK (gdk_x11_window_get_drawable_impl (main_window)
+	     == GDK_WINDOW_OBJECT (main_window)->impl,
+	     "x11: drawable impl is the window impl");
+  gdk_x11_display_set_cursor_theme (d, NULL, 0);
+  gdk_x11_window_set_user_time (main_window, 1);
+  (void) gdk_x11_display_get_user_time (d);
+  M6B_CHECK (TRUE, "x11: cursor theme, set_user_time and get_user_time returned");
 
   if (m6b_failures)
     g_printerr ("ydk_demo: M6B-X11: FAIL (%d)\n", m6b_failures);

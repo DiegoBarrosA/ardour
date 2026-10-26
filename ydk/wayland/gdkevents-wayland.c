@@ -1828,6 +1828,7 @@ _gdk_wayland_test_seat_info (GdkDisplay *display, GDKWTestSeatInfo *info)
   info->repeat_key = seat->repeat.key;
   info->repeat_count = seat->repeat.count;
   info->seat_version = seat->seat_version;
+  info->explicit_grab_active = seat->grab.active;
 
   return TRUE;
 }

@@ -312,4 +312,20 @@
 #define IA__gdk_window_lookup_for_display                    _gdk_x11_window_lookup_for_display
 #define IA__gdk_window_lookup                                _gdk_x11_window_lookup
 
+
+/* ---- ydk-wayland M6b: X11 handle accessors and X11 only API guards.
+ * These are public gdk_x11_* names declared in gdkx.h, so the X11 backend
+ * keeps defining them, renamed.  The public names chain through IA__
+ * (gdkalias.h) as for every other dispatched name.  The prefix is
+ * _gdk_x11_x11_ because the public name already contains x11; the
+ * dispatchers in ydk/gdkbackend.c own the canonical names. */
+#define IA__gdk_x11_display_get_xdisplay                     _gdk_x11_x11_display_get_xdisplay
+#define IA__gdk_x11_drawable_get_xdisplay                    _gdk_x11_x11_drawable_get_xdisplay
+#define IA__gdk_x11_drawable_get_xid                         _gdk_x11_x11_drawable_get_xid
+#define IA__gdk_x11_window_get_drawable_impl                 _gdk_x11_x11_window_get_drawable_impl
+#define IA__gdk_x11_display_set_cursor_theme                 _gdk_x11_x11_display_set_cursor_theme
+#define IA__gdk_x11_window_set_user_time                     _gdk_x11_x11_window_set_user_time
+#define IA__gdk_x11_display_get_user_time                    _gdk_x11_x11_display_get_user_time
+#define IA__gdk_x11_get_server_time                          _gdk_x11_x11_get_server_time
+
 #endif /* __YDK_GDKWINDOWING_X11_H__ */

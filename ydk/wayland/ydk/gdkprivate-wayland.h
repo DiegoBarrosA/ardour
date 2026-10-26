@@ -522,4 +522,23 @@ GdkWindow * _gdk_wayland_window_foreign_new_for_display (GdkDisplay *display, Gd
 GdkWindow * _gdk_wayland_window_lookup_for_display (GdkDisplay *display, GdkNativeWindow anid);
 GdkWindow * _gdk_wayland_window_lookup (GdkNativeWindow anid);
 
+/* ---- M6b: X11-only public API guards and handle accessors
+ * (gdkx11-guards-wayland.c, gdkxhandles-wayland.c).  These are the
+ * Wayland halves of gdk_x11_display_set_cursor_theme, gdk_x11_window_set_user_time,
+ * gdk_x11_display_get_user_time, gdk_x11_get_server_time,
+ * gdk_x11_display_get_xdisplay, gdk_x11_drawable_get_xdisplay,
+ * gdk_x11_drawable_get_xid and gdk_x11_window_get_drawable_impl.  The handle
+ * accessors return gpointer and gulong because Xlib is not visible to the
+ * Wayland objects; the dispatcher in gdkbackend.c converts them. */
+void _gdk_wayland_x11_display_set_cursor_theme (GdkDisplay *display, const gchar *theme, const gint size);
+void _gdk_wayland_x11_window_set_user_time (GdkWindow *window, guint32 timestamp);
+guint32 _gdk_wayland_x11_display_get_user_time (GdkDisplay *display);
+guint32 _gdk_wayland_x11_get_server_time (GdkWindow *window);
+gpointer _gdk_wayland_x11_display_get_xdisplay (GdkDisplay *display);
+gpointer _gdk_wayland_x11_drawable_get_xdisplay (GdkDrawable *drawable);
+gulong _gdk_wayland_x11_drawable_get_xid (GdkDrawable *drawable);
+GdkDrawable * _gdk_wayland_x11_window_get_drawable_impl (GdkWindow *window);
+/* New public predicate declared in x11/ydk/gdkx.h: FALSE for a Wayland display. */
+gboolean gdk_x11_display_is_x11 (GdkDisplay *display);
+
 #endif /* __YDK_GDKP_PRIVATE_WAYLAND_H__ */

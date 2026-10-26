@@ -36,6 +36,10 @@
 
 #include "gdkpixmap-x11.h"
 #include "gdkwindow-x11.h"
+#elif defined(GDK_YDK_DISPATCH_OBJ)
+/* gdkbackend.c: only the public gdk_x11_* declarations, for the M6b
+ * dispatchers of the X11 handle accessors and API guards. */
+#include "gdkx.h"
 #endif
 
 #include "gdkalias.h"

@@ -939,8 +939,22 @@ void gdk_free_compound_text (guchar *ctext)
 
 void gdk_x11_free_compound_text (guchar *ctext)
 {
-  if (ctext)
-    XFree (ctext);
+  if (!ctext)
+    return;
+
+  /* On the Wayland backend the buffer was made by the Wayland
+   * implementation (g_malloc, see _gdk_wayland_free_compound_text), not by
+   * Xlib, so release it with g_free.  The process wide backend decides, not
+   * the default display: the display may be gone already.  The dispatched
+   * gdk_free_compound_text cannot be named here: gdkalias.h maps it to this
+   * backend's own copy, which would recurse. */
+  if (_gdk_backend_is_wayland ())
+    {
+      g_free (ctext);
+      return;
+    }
+
+  XFree (ctext);
 }
 
 #define __GDK_SELECTION_X11_C__

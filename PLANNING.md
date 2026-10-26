@@ -169,6 +169,52 @@ dispatcher in `ydk/gdkbackend.c`):
   origin, frame extents, synchronized configure, `gdk_window_destroy_notify`,
   foreign window and lookup stubs.
 
+X11 handle accessors and API guards (8 more, the public `gdk_x11_*` names,
+so they are not part of the 116 above).  ytk reaches them through the
+`GDK_DISPLAY_XDISPLAY`, `GDK_WINDOW_XID` and `GDK_WINDOW_XDISPLAY` macros and
+from `#ifdef GDK_WINDOWING_X11` blocks that also run on Wayland, because
+`gdkconfig.h` defines both windowing macros:
+
+- Handle accessors (`gdkxhandles-wayland.c`): `gdk_x11_display_get_xdisplay`,
+  `gdk_x11_drawable_get_xdisplay`, `gdk_x11_drawable_get_xid`,
+  `gdk_x11_window_get_drawable_impl`.  On Wayland they give NULL, NULL, 0 and
+  the window impl, for every argument including NULL, a pixmap and an unmapped
+  window, with no CRITICAL.  A NULL `Display *` still crashes inside Xlib, so
+  there is a new public predicate, `gdk_x11_display_is_x11 (display)` (declared
+  in `gdkx.h`, defined in `gdkxhandles-wayland.c`; FALSE for NULL and for a
+  Wayland display).  Call it before any Xlib call that takes
+  `GDK_DISPLAY_XDISPLAY`.
+- API guards (`gdkx11-guards-wayland.c`): `gdk_x11_display_set_cursor_theme`
+  and `gdk_x11_window_set_user_time` do nothing.  `gdk_x11_display_get_user_time`
+  and `gdk_x11_get_server_time` return the time of the newest seat event
+  (`GDKWSeat.last_time`), or 0 before any input, for NULL, a pixmap and a
+  window of another backend.  There is no server round trip.
+- Naming: the X11 half is `_gdk_x11_x11_<name>` (the public name already has
+  `x11` in it), the Wayland half `_gdk_wayland_x11_<name>`.  The rename macros
+  are the `IA__gdk_x11_*` block at the end of `gdkwindowing-x11.h`.
+- Build: these names are declared in `gdkx.h`, so `gdkbackend.c` needs Xlib
+  types.  The wscript gives that one object the `X11` uselib and
+  `GDK_YDK_DISPATCH_OBJ`, and `gdkaliasdef-decls.h` then force-includes
+  `gdkx.h` before the first `gdkalias.h` pass.  Without that pass the alias
+  snippet fails with "alias between function and variable is not supported".
+
+Guarded in place in the X11 source, not dispatched (they take a display or an
+atom, and they check `GDK_IS_DISPLAY_X11` first):
+`gdk_x11_window_foreign_new_for_display` (NULL),
+`gdk_x11_atom_to_xatom`, `_for_display` and `gdk_x11_xatom_to_atom`,
+`_for_display` (None / GDK_NONE), `gdk_x11_get_xatom_by_name`, `_for_display`
+(None), `gdk_x11_get_xatom_name`, `_for_display` (the empty string, because
+the documented result is never NULL), and `gdk_x11_free_compound_text`
+(`g_free` on the Wayland backend, `XFree` otherwise; it asks
+`_gdk_backend_is_wayland ()` because the display may be gone already).
+
+> [!warning] Corrected 2026-10-26
+> The note below this list says the 3 in-place guards are in the X11 source
+> because `gdkbackend.c` cannot define an exported alias for names declared in
+> `gdkx.h`.  That is wrong.  It works when the dispatcher object also gets the
+> `gdkx.h` force-include (see Build above).  The 3 stay in place because the
+> guard is enough for them, not because dispatch is impossible.
+
 Stays X11-bound, and why (the list is the allowlist in
 `scripts/audit-x11-symbols.sh`, which fails on any other name):
 
@@ -239,12 +285,14 @@ Verification:
 
 - `scripts/audit-x11-symbols.sh` (run first by `scripts/smoke-test.sh`): the X11
   objects define exactly the 30 allowlisted public symbols, and each of the
-  86 dispatched names is exported once, defined as `IA__<name>` by the
-  dispatcher, and implemented by both backends.
-- `m6b_exercise` in the demo calls all 86 functions through the public API
+  94 dispatched names (the 86 above and the 8 public `gdk_x11_*` names) is
+  exported once, defined as `IA__<name>` by the dispatcher, and implemented by
+  both backends.
+- `m6b_exercise` in the demo calls all 94 functions through the public API
   (`ydk_demo: M6B: PASS`), plus the gaps of the M6 audit: pointer state with a
   button held, warp, beep, `gdk_events_pending`, destroying windows that hold
-  key repeat or grabs, and closing a second display with live windows.  New
+  key repeat or grabs, and closing a second display with live windows.  The 8 `gdk_x11_*` names are called on the main window, a child, an unmapped
+  toplevel, the root window, a pixmap and NULL (`m6b_x11_api`).  New
   hooks: `_gdk_wayland_test_toplevel_info`, `_gdk_wayland_test_toplevel_configure`,
   `_gdk_wayland_test_keyboard_state`, `_gdk_wayland_test_keyboard_keymap_text`.
 - Under X11 the demo calls the dispatched functions too

@@ -33,6 +33,12 @@
 #include "gdkpixmap-wayland.h"
 #include "gdkseat-wayland.h"
 
+/* The M6b dispatchers at the end of this file define gdk_x11_* public API
+ * (Display *, XID).  gdkx.h is force-included for this TU by
+ * ydk/gdkaliasdef-decls.h (GDK_YDK_DISPATCH_OBJ, set in the wscript), before
+ * the first gdkalias.h pass: the per-source alias snippet needs the
+ * IA__gdk_x11_* names declared by then. */
+
 #ifdef GDK_COMPILATION
 #include "gdkalias.h"
 #endif
@@ -836,6 +842,12 @@ gdk_free_text_list (gchar **list)
     _gdk_wayland_free_text_list (list);
   else
     _gdk_x11_free_text_list (list);
+}
+
+gboolean
+_gdk_backend_is_wayland (void)
+{
+  return gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND;
 }
 
 void
@@ -2460,4 +2472,97 @@ gdk_window_lookup (GdkNativeWindow anid)
     return _gdk_wayland_window_lookup (anid);
   else
     return _gdk_x11_window_lookup (anid);
+}
+
+/* ---- M6b: X11 handle accessors and X11 only API guards.
+ *
+ * These are public gdk_x11_* functions (declared in gdkx.h).  The X11
+ * definitions are renamed to _gdk_x11_x11_* by x11/ydk/gdkwindowing-x11.h,
+ * the Wayland ones are _gdk_wayland_x11_* in gdkxhandles-wayland.c and
+ * gdkx11-guards-wayland.c.  gdkalias.h turns the public names below into
+ * IA__ names, which gen_aliases exports as the public symbols.
+ *
+ * On Wayland the handle accessors return NULL and 0: there is no X server,
+ * so there is no Display and no XID.  A NULL Display still crashes inside
+ * Xlib, so callers must test gdk_x11_display_is_x11 () first. */
+
+extern Display     *_gdk_x11_x11_display_get_xdisplay (GdkDisplay *display);
+extern Display     *_gdk_x11_x11_drawable_get_xdisplay (GdkDrawable *drawable);
+extern XID          _gdk_x11_x11_drawable_get_xid (GdkDrawable *drawable);
+extern GdkDrawable *_gdk_x11_x11_window_get_drawable_impl (GdkWindow *window);
+extern void         _gdk_x11_x11_display_set_cursor_theme (GdkDisplay *display, const gchar *theme, const gint size);
+extern void         _gdk_x11_x11_window_set_user_time (GdkWindow *window, guint32 timestamp);
+extern guint32      _gdk_x11_x11_display_get_user_time (GdkDisplay *display);
+extern guint32      _gdk_x11_x11_get_server_time (GdkWindow *window);
+
+Display *
+gdk_x11_display_get_xdisplay (GdkDisplay *display)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    return _gdk_wayland_x11_display_get_xdisplay (display);
+  else
+    return _gdk_x11_x11_display_get_xdisplay (display);
+}
+
+Display *
+gdk_x11_drawable_get_xdisplay (GdkDrawable *drawable)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    return _gdk_wayland_x11_drawable_get_xdisplay (drawable);
+  else
+    return _gdk_x11_x11_drawable_get_xdisplay (drawable);
+}
+
+XID
+gdk_x11_drawable_get_xid (GdkDrawable *drawable)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    return (XID) _gdk_wayland_x11_drawable_get_xid (drawable);
+  else
+    return _gdk_x11_x11_drawable_get_xid (drawable);
+}
+
+GdkDrawable *
+gdk_x11_window_get_drawable_impl (GdkWindow *window)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    return _gdk_wayland_x11_window_get_drawable_impl (window);
+  else
+    return _gdk_x11_x11_window_get_drawable_impl (window);
+}
+
+void
+gdk_x11_display_set_cursor_theme (GdkDisplay *display, const gchar *theme, const gint size)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    _gdk_wayland_x11_display_set_cursor_theme (display, theme, size);
+  else
+    _gdk_x11_x11_display_set_cursor_theme (display, theme, size);
+}
+
+void
+gdk_x11_window_set_user_time (GdkWindow *window, guint32 timestamp)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    _gdk_wayland_x11_window_set_user_time (window, timestamp);
+  else
+    _gdk_x11_x11_window_set_user_time (window, timestamp);
+}
+
+guint32
+gdk_x11_display_get_user_time (GdkDisplay *display)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    return _gdk_wayland_x11_display_get_user_time (display);
+  else
+    return _gdk_x11_x11_display_get_user_time (display);
+}
+
+guint32
+gdk_x11_get_server_time (GdkWindow *window)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    return _gdk_wayland_x11_get_server_time (window);
+  else
+    return _gdk_x11_x11_get_server_time (window);
 }

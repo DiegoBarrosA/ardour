@@ -139,6 +139,7 @@ typedef struct
   guint      repeat_key;        /* evdev code currently auto-repeating, 0 none */
   guint      repeat_count;      /* repeats synthesised since the last press */
   guint      seat_version;      /* wl_seat version the pointer code assumes */
+  gboolean   explicit_grab_active; /* backend record of a gdk_pointer_grab () */
 } GDKWTestSeatInfo;
 
 /* keyboard ---------------------------------------------------------------*/
@@ -547,7 +548,14 @@ static inline void
 _gdk_wayland_seat_forget_impl (GDKWSeat *seat, GDKWWindowImplWayland *impl)
 {
   if (seat->pointer_focus == impl)
-    seat->pointer_focus = NULL;
+    {
+      /* With no focus the button events that finish the gesture are
+       * ignored, so a button held on the dead window would stay pressed
+       * in get_pointer () until the next wl_pointer.enter. */
+      seat->pointer_focus = NULL;
+      seat->button_mask = 0;
+      seat->buttons_down = 0;
+    }
   if (seat->last_pointer_impl == impl)
     seat->last_pointer_impl = NULL;
   if (seat->keyboard_focus == impl)

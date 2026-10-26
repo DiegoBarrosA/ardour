@@ -939,6 +939,10 @@ gdk_x11_window_foreign_new_for_display (GdkDisplay *display,
 
   g_return_val_if_fail (GDK_IS_DISPLAY (display), NULL);
 
+  /* Wayland has no XIDs, so there is no foreign window to wrap. */
+  if (!GDK_IS_DISPLAY_X11 (display))
+    return NULL;
+
   display_x11 = GDK_DISPLAY_X11 (display);
 
   if ((win = gdk_xid_table_lookup_for_display (display, window)) != NULL)

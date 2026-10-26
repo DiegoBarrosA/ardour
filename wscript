@@ -83,6 +83,8 @@ libydk_wayland_sources = [
     'ydk/wayland/gdkvisual-wayland.c',
     'ydk/wayland/gdkwindow-hints-wayland.c',
     'ydk/wayland/gdkwindowimpl-wayland.c',
+    'ydk/wayland/gdkx11-guards-wayland.c',
+    'ydk/wayland/gdkxhandles-wayland.c',
     'ydk/wayland/xdg-shell-protocol.c',
 ]
 
@@ -230,6 +232,14 @@ def build(bld):
          'ydk-pixbuf', 'ydk-pixbuf/ydk-pixbuf'], [],
         ['GLIB', 'GOBJECT', 'PANGO', 'CAIRO', 'PANGOCAIRO',
          'GIO-UNIX', 'WAYLAND'], [])
+
+    # gdkbackend.c defines public gdk_x11_* dispatchers (X11 handle accessors),
+    # so its TU needs gdkx.h before the first gdkalias.h pass; see
+    # ydk/gdkaliasdef-decls.h, and the X11 include path for Display and XID.
+    for o in ydk_core_objs:
+        if o.source[0] == 'ydk/gdkbackend.c':
+            o.defines = list(o.defines) + ['GDK_YDK_DISPATCH_OBJ']
+            o.uselib = list(o.uselib) + ['X11']
 
     ydk_wayland_objs = []
     if with_wayland:

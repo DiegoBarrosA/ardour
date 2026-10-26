@@ -10,7 +10,7 @@
 #      exactly the allowlist below (30 names).  Each one is X11 only on
 #      purpose, or backend neutral, or guarded inside the X11 source.
 #      Any other name is a FAIL.
-#   2. Each of the 86 names dispatched since M6b is exported once from
+#   2. Each of the 94 names dispatched since M6b is exported once from
 #      libydk.so, defined as IA__<name> by the dispatcher object
 #      (gdkbackend.c), and implemented by both backends as
 #      _gdk_x11_<suffix> and _gdk_wayland_<suffix>.
@@ -44,9 +44,8 @@ fi
 # 7 type getters (GObject types whose class is X11 specific by design)
 # 20 backend neutral (plain struct accessors, GObject refcounting, one
 #    empty function, one pure string function)
-# 3 guarded inside the X11 source (declared in gdkx.h, so the dispatcher
-#    object cannot define them; they return NULL or FALSE for a non X11
-#    display)
+# 3 guarded inside the X11 source (they return NULL or FALSE for a non X11
+#    display; the guard is enough, so they are not dispatched)
 ALLOW="
   gdk_colormap_get_type gdk_drag_context_get_type gdk_image_get_type
   gdk_visual_get_type gdk_device_get_type gdk_pixmap_impl_x11_get_type
@@ -61,7 +60,8 @@ ALLOW="
   gdk_net_wm_supports gdk_xid_table_lookup gdk_xid_table_lookup_for_display
 "
 
-# --- the 86 names dispatched by M6b (suffix after gdk_) --------------------
+# --- the 94 names dispatched by M6b (suffix after gdk_; the last 8 are the
+# --- public gdk_x11_* names, so their X11 half is _gdk_x11_x11_*) ---------
 M6B="
   keymap_get_direction keymap_have_bidi_layouts keymap_get_caps_lock_state
   keymap_get_entries_for_keyval keymap_get_entries_for_keycode
@@ -95,6 +95,9 @@ M6B="
   window_enable_synchronized_configure window_configure_finished
   window_destroy_notify window_foreign_new_for_display
   window_lookup_for_display window_lookup
+  x11_display_get_xdisplay x11_drawable_get_xdisplay x11_drawable_get_xid
+  x11_window_get_drawable_impl x11_display_set_cursor_theme
+  x11_window_set_user_time x11_display_get_user_time x11_get_server_time
 "
 
 fail=0
@@ -144,7 +147,7 @@ for suf in $M6B; do
   printf '%s\n' "$x11_defs" | grep -x "IA__$s" >/dev/null && err "X11 object still defines IA__$s"
 done
 echo "audit: checked $n dispatched names"
-[ "$n" -eq 86 ] || err "expected 86 dispatched names, script lists $n"
+[ "$n" -eq 94 ] || err "expected 94 dispatched names, script lists $n"
 
 if [ "$fail" -ne 0 ]; then
   echo "audit-x11-symbols: FAILED" >&2
