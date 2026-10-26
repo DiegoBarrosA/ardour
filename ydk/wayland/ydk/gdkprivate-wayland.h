@@ -270,6 +270,47 @@ void _gdk_wayland_window_impl_teardown (GDKWWindowImplWayland *impl);
 GdkVisual *_gdk_wayland_screen_create_system_visual (void);
 GdkColormap *_gdk_wayland_screen_create_colormap (GdkScreen *screen,
 						  GdkVisual *visual);
+GdkScreen *_gdk_wayland_visual_get_screen (GdkVisual *visual);
+
+/* F7: colormap family (gdkcolor-wayland.c).  The Wayland colormap is a
+ * private GdkColormap subclass; see the file header. */
+GdkColormap *_gdk_wayland_colormap_new_for_screen (GdkScreen *screen, GdkVisual *visual);
+GdkColormap *_gdk_wayland_colormap_new (GdkVisual *visual, gboolean allocate);
+GdkScreen   *_gdk_wayland_colormap_get_screen (GdkColormap *cmap);
+gint         _gdk_wayland_colormap_get_system_size (void);
+void         _gdk_wayland_colormap_change (GdkColormap *colormap, gint ncolors);
+gint         _gdk_wayland_colors_alloc (GdkColormap *colormap, gboolean contiguous,
+					gulong *planes, gint nplanes,
+					gulong *pixels, gint npixels);
+void         _gdk_wayland_colors_free (GdkColormap *colormap, gulong *pixels,
+				       gint npixels, gulong planes);
+void         _gdk_wayland_colormap_free_colors (GdkColormap *colormap,
+						const GdkColor *colors, gint n_colors);
+gint         _gdk_wayland_colormap_alloc_colors (GdkColormap *colormap, GdkColor *colors,
+						 gint n_colors, gboolean writeable,
+						 gboolean best_match, gboolean *success);
+void         _gdk_wayland_colormap_query_color (GdkColormap *colormap, gulong pixel,
+						GdkColor *result);
+gint         _gdk_wayland_color_change (GdkColormap *colormap, GdkColor *color);
+
+/* F8: visual / default-colormap / rgba family (gdkvisual-wayland.c) */
+gint          _gdk_wayland_visual_get_best_depth (void);
+GdkVisualType _gdk_wayland_visual_get_best_type (void);
+GdkVisual    *_gdk_wayland_visual_get_best (void);
+GdkVisual    *_gdk_wayland_visual_get_best_with_depth (gint depth);
+GdkVisual    *_gdk_wayland_visual_get_best_with_type (GdkVisualType visual_type);
+GdkVisual    *_gdk_wayland_visual_get_best_with_both (gint depth,
+						      GdkVisualType visual_type);
+void          _gdk_wayland_query_depths (gint **depths, gint *count);
+void          _gdk_wayland_query_visual_types (GdkVisualType **visual_types,
+					       gint *count);
+GList        *_gdk_wayland_screen_list_visuals (GdkScreen *screen);
+GdkVisual    *_gdk_wayland_screen_get_rgba_visual (GdkScreen *screen);
+GdkColormap  *_gdk_wayland_screen_get_rgba_colormap (GdkScreen *screen);
+GdkColormap  *_gdk_wayland_screen_get_default_colormap (GdkScreen *screen);
+void          _gdk_wayland_screen_set_default_colormap (GdkScreen *screen,
+							GdkColormap *colormap);
+
 
 /********************************************************
  * M3: seat input + events + keymap

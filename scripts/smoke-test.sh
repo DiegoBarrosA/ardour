@@ -8,7 +8,10 @@
 # Wayland backend; since M2 the demo creates a real toplevel and renders
 # into an shm buffer (rc 0), and since M4 it also runs the cursor, font,
 # selection, drag and property checks ("ydk_demo: M4: PASS"), and since M5
-# the offscreen drawing checks ("ydk_demo: M5: PASS").  Backends without
+# the offscreen drawing checks ("ydk_demo: M5: PASS"), and since F7 the
+# colormap family checks ("ydk_demo: M5C: PASS"), and since F8 the visual /
+# default-colormap / rgba / gdkrgb checks ("ydk_demo: M5V: PASS") with CRITICAL
+# log messages fatal in the demo.  Backends without
 # window support exit 77, which still proves the display open/roundtrip works.
 #
 # Exits 0 on success.
@@ -85,6 +88,25 @@ fi
 
 if [ "$DEMO_RC" -eq 0 ] && ! grep -q "ydk_demo: M5: PASS" "$RUNTIME/wayland-demo.log"; then
   echo "smoke-test: wayland demo exited 0 but did not report M5: PASS" >&2
+  exit 1
+fi
+
+if [ "$DEMO_RC" -eq 0 ] && ! grep -q "ydk_demo: M5C: PASS" "$RUNTIME/wayland-demo.log"; then
+  echo "smoke-test: wayland demo exited 0 but did not report M5C: PASS" >&2
+  exit 1
+fi
+
+if [ "$DEMO_RC" -eq 0 ] && ! grep -q "ydk_demo: M5V: PASS" "$RUNTIME/wayland-demo.log"; then
+  echo "smoke-test: wayland demo exited 0 but did not report M5V: PASS" >&2
+  exit 1
+fi
+
+# Since F8 the demo makes CRITICAL and ERROR log messages fatal under both
+# backends (rc 1 with a "FATAL" line); this catches one that was
+# logged but did not stop the run, whatever the exit code.
+if grep -q "CRITICAL" "$RUNTIME/wayland-demo.log"; then
+  echo "smoke-test: wayland phase logged a CRITICAL:" >&2
+  grep "CRITICAL" "$RUNTIME/wayland-demo.log" >&2
   exit 1
 fi
 

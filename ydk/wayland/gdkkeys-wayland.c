@@ -8,7 +8,9 @@
  * and translate keycodes to GDK keyvals/modifiers for the event path.
  */
 
+#ifndef _GNU_SOURCE
 #define _GNU_SOURCE
+#endif
 
 #include "config.h"
 

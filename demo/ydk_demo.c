@@ -9,14 +9,17 @@
  * exits.  Exit codes are meaningful to the harness:
  *
  *   0  window created and drawn (X11 baseline and Wayland since M2); under
- *      GDK_BACKEND=wayland also every M4 and M5 check passed (see
- *      m4_exercise, m5_exercise)
+ *      GDK_BACKEND=wayland also every M4, M5, M5C and M5V check passed
+ *      (see m4_exercise, m5_exercise, m5c_exercise, m5v_exercise)
  *   77 skipped: backend has no window support yet
  *   78 skipped: display opened but primary screen unavailable
- *   1  nothing worked (display open failed), or an M4 / M5 check failed
+ *   1  nothing worked (display open failed), an M4 / M5 / M5C / M5V check
+ *      failed, or a g_critical / g_error was logged (see fatal_log_handler)
  */
 
+#include <stdio.h>
 #include <string.h>
+#include <unistd.h>
 
 #include <glib.h>
 #include <ydk/gdk.h>
@@ -32,6 +35,45 @@ static GMainLoop *main_loop;
 static GdkWindow *main_window;
 static gboolean selection_notify_seen;
 static gboolean selection_notify_refused;
+
+/* ---- fatal CRITICALs ---------------------------------------------------
+ *
+ * A g_return_if_fail on a Wayland path logs a CRITICAL and returns, which
+ * hides the very bugs this demo is meant to catch (a visual or colormap
+ * function reading X11 state, for one).  Any
+ * CRITICAL or ERROR therefore ends the run at once with a clear message
+ * and exit code 1; smoke-test.sh also fails if one shows up in the log.
+ * The X11 baseline run logs none, so the handler is installed for both
+ * backends and the baseline stays comparable.
+ * Lower levels (warning, message, ...) still go to the default handler.
+ */
+
+static void
+fatal_log_handler (const gchar   *log_domain,
+		   GLogLevelFlags log_level,
+		   const gchar   *message,
+		   gpointer       user_data)
+{
+  if (log_level & (G_LOG_LEVEL_CRITICAL | G_LOG_LEVEL_ERROR))
+    {
+      fflush (stdout);
+      g_printerr ("ydk_demo: FATAL: %s-%s **: %s\n",
+		  log_domain ? log_domain : "(none)",
+		  (log_level & G_LOG_LEVEL_ERROR) ? "ERROR" : "CRITICAL",
+		  message ? message : "(null)");
+      /* _exit: gdk state may be inconsistent, do not run atexit handlers */
+      _exit (1);
+    }
+
+  g_log_default_handler (log_domain, log_level, message, user_data);
+}
+
+static void
+install_fatal_criticals (void)
+{
+  g_log_set_always_fatal (G_LOG_LEVEL_CRITICAL | G_LOG_LEVEL_ERROR);
+  g_log_set_default_handler (fatal_log_handler, NULL);
+}
 
 static void
 draw_scene (GdkWindow *window)
@@ -330,7 +372,7 @@ m4_exercise (void)
  * a clip region, a clip origin and a depth-1 clip mask, blits it to the
  * window, and reads everything back with gdk_drawable_get_image and
  * gdk_pixbuf_get_from_drawable.  Colours are hand-set GdkColor.pixel values
- * (0x00RRGGBB): the colormap allocation family is not dispatched yet.
+ * (0x00RRGGBB); the colormap family is covered separately by m5c_exercise.
  */
 
 static int m5_failures;
@@ -687,12 +729,571 @@ m5_exercise (void)
   return m5_failures;
 }
 
+/* ---- M5C exercise -----------------------------------------------------
+ *
+ * The colormap family (gap F7) under GDK_BACKEND=wayland: allocate a colour
+ * through gdk_colormap_alloc_color, use gdk_gc_set_rgb_fg_color to draw a
+ * filled rectangle into a pixmap and read back the exact pixel, then drop
+ * and recreate colormap references (the Wayland colormap is a private
+ * subclass whose finalizer must not run the X11 one).
+ */
+
+static int m5c_failures;
+
+#define M5C_CHECK(cond, what)						\
+  G_STMT_START {							\
+    if (!(cond))							\
+      {									\
+	g_printerr ("ydk_demo: M5C check failed: %s\n", what);		\
+	m5c_failures++;							\
+      }									\
+  } G_STMT_END
+
+static void
+m5c_expect_pixel (GdkImage *img, int x, int y, guint32 want, const char *what)
+{
+  guint32 got = gdk_image_get_pixel (img, x, y) & 0xffffff;
+
+  if (got != want)
+    {
+      g_printerr ("ydk_demo: M5C check failed: %s at (%d,%d): got %06x want %06x\n",
+		  what, x, y, got, want);
+      m5c_failures++;
+    }
+}
+
+/* fills a rectangle through gdk_gc_set_rgb_fg_color and reads it back */
+static void
+m5c_rgb_fill (GdkDrawable *pm, GdkGC *gc, const GdkColor *c, guint32 want,
+	      const char *what)
+{
+  GdkImage *img;
+
+  gdk_gc_set_rgb_fg_color (gc, c);
+  gdk_draw_rectangle (pm, gc, TRUE, 2, 2, 6, 6);
+  img = gdk_drawable_get_image (pm, 0, 0, 16, 16);
+  M5C_CHECK (img != NULL, "get_image after rgb fill");
+  if (img)
+    {
+      m5c_expect_pixel (img, 2, 2, want, what);
+      m5c_expect_pixel (img, 7, 7, want, what);
+      g_object_unref (img);
+    }
+}
+
+static int
+m5c_exercise (void)
+{
+  GdkScreen *screen = gdk_screen_get_default ();
+  GdkColormap *sys, *cm, *cm2;
+  GdkVisual *visual;
+  GdkPixmap *pm;
+  GdkGC *gc;
+  GdkColor c, q, c2;
+  GdkColor arr[2];
+  gboolean ok[2];
+  guint32 depth_hi;
+  int i;
+
+  sys = gdk_drawable_get_colormap (main_window);
+  M5C_CHECK (sys != NULL, "window has a colormap");
+  if (!sys)
+    goto done;
+
+  visual = gdk_colormap_get_visual (sys);
+  M5C_CHECK (visual != NULL, "colormap has a visual");
+  M5C_CHECK (gdk_colormap_get_screen (sys) == screen,
+	     "gdk_colormap_get_screen on the system colormap");
+  M5C_CHECK (gdk_colormap_get_system () == sys ||
+	     gdk_colormap_get_system () != NULL,
+	     "gdk_colormap_get_system");
+  M5C_CHECK (gdk_colormap_get_system_size () == 256,
+	     "gdk_colormap_get_system_size is 256");
+  gdk_colormap_change (sys, 0);
+
+  /* gdk_colormap_alloc_color: 0xffff, 0x8080, 0x0000 -> 0xff, 0x80, 0x00 */
+  depth_hi = (visual->depth >= 32) ? 0xff000000u : 0;
+  c.red = 0xffff; c.green = 0x8080; c.blue = 0x0000; c.pixel = 0xdeadbeef;
+  M5C_CHECK (gdk_colormap_alloc_color (sys, &c, FALSE, TRUE),
+	     "gdk_colormap_alloc_color succeeds");
+  M5C_CHECK (c.pixel == (depth_hi | 0x00ff8000),
+	     "alloc_color pixel is 0x00ff8000");
+
+  /* query_color round trip is exact for 8-bit channels */
+  memset (&q, 0, sizeof q);
+  gdk_colormap_query_color (sys, c.pixel, &q);
+  M5C_CHECK (q.red == 0xffff && q.green == 0x8080 && q.blue == 0x0000,
+	     "query_color round trip");
+  M5C_CHECK (q.pixel == c.pixel, "query_color keeps the pixel");
+
+  /* batch allocation, none left over, then the no-op frees */
+  arr[0].red = 0; arr[0].green = 0; arr[0].blue = 0xffff;
+  arr[1].red = 0x1212; arr[1].green = 0x3434; arr[1].blue = 0x5656;
+  ok[0] = ok[1] = FALSE;
+  M5C_CHECK (gdk_colormap_alloc_colors (sys, arr, 2, FALSE, TRUE, ok) == 0 &&
+	     ok[0] && ok[1], "alloc_colors allocates all");
+  M5C_CHECK ((arr[0].pixel & 0xffffff) == 0x0000ff, "alloc_colors blue pixel");
+  M5C_CHECK ((arr[1].pixel & 0xffffff) == 0x123456, "alloc_colors mixed pixel");
+  gdk_colormap_free_colors (sys, arr, 2);
+
+  /* writable cells do not exist in TrueColor */
+  {
+    gulong pixels[1];
+
+    M5C_CHECK (!gdk_colors_alloc (sys, FALSE, NULL, 0, pixels, 1),
+	       "gdk_colors_alloc fails on TrueColor");
+    gdk_colors_free (sys, pixels, 0, 0);
+  }
+  c2 = c;
+  M5C_CHECK (!gdk_color_change (sys, &c2), "gdk_color_change reports failure");
+
+  /* gdk_gc_set_rgb_fg_color -> filled rectangle -> exact pixel */
+  pm = gdk_pixmap_new (main_window, 16, 16, -1);
+  M5C_CHECK (pm != NULL, "pixmap for the rgb fill");
+  if (pm)
+    {
+      GdkColor black = { 0, 0, 0, 0 };
+
+      gc = gdk_gc_new (pm);
+      M5C_CHECK (gc != NULL, "gc for the rgb fill");
+      if (gc)
+	{
+	  gdk_gc_set_rgb_fg_color (gc, &black);
+	  gdk_draw_rectangle (pm, gc, TRUE, 0, 0, 16, 16);
+	  m5c_rgb_fill (pm, gc, &c, 0x00ff8000, "rgb fg 0xff8000");
+	  m5c_rgb_fill (pm, gc, &arr[1], 0x00123456, "rgb fg 0x123456");
+
+	  /* drop and recreate colormap references: a private colormap, the
+	   * last unref runs the subclass finalizer (not the X11 one) */
+	  for (i = 0; i < 3; i++)
+	    {
+	      cm = gdk_colormap_new (visual, FALSE);
+	      M5C_CHECK (cm != NULL, "gdk_colormap_new");
+	      if (!cm)
+		continue;
+	      M5C_CHECK (gdk_colormap_get_screen (cm) == screen,
+			 "gdk_colormap_get_screen on a new colormap");
+	      M5C_CHECK (gdk_colormap_get_visual (cm) == visual,
+			 "new colormap keeps the visual");
+
+	      g_object_ref (cm);
+	      gdk_gc_set_colormap (gc, cm);
+	      m5c_rgb_fill (pm, gc, &c, 0x00ff8000, "rgb fg with a new colormap");
+
+	      /* the GC drops its ref when the next colormap replaces it */
+	      cm2 = gdk_colormap_new (visual, TRUE);
+	      M5C_CHECK (cm2 != NULL, "gdk_colormap_new (allocate)");
+	      gdk_gc_set_colormap (gc, cm2);
+	      g_object_unref (cm);	/* the extra ref */
+	      g_object_unref (cm);	/* the creator's: finalizes cm */
+	      m5c_rgb_fill (pm, gc, &c, 0x00ff8000, "rgb fg after dropping cm");
+	      g_object_unref (cm2);	/* the GC still holds cm2 */
+	    }
+
+	  /* back to the system colormap, still usable */
+	  gdk_gc_set_colormap (gc, sys);
+	  m5c_rgb_fill (pm, gc, &c, 0x00ff8000, "rgb fg back on the system colormap");
+	  g_object_unref (gc);
+	}
+      g_object_unref (pm);
+    }
+
+  /* the system colormap survives extra ref/unref churn */
+  for (i = 0; i < 4; i++)
+    {
+      g_object_ref (sys);
+      g_object_unref (sys);
+    }
+  M5C_CHECK (gdk_screen_get_system_colormap (screen) == sys,
+	     "system colormap unchanged after ref churn");
+
+done:
+  if (m5c_failures)
+    g_printerr ("ydk_demo: M5C: FAIL (%d)\n", m5c_failures);
+  else
+    g_print ("ydk_demo: M5C: PASS\n");
+
+  return m5c_failures;
+}
+
+/* ---- M5V exercise -----------------------------------------------------
+ *
+ * The visual / default-colormap / rgba / gdkrgb family (gap F8) under
+ * GDK_BACKEND=wayland.  These are the calls that used to segfault because
+ * they read a GdkScreenX11 out of the Wayland screen: gdk_screen_list_visuals
+ * (and through it every gdk_rgb_* entry point that picks a visual),
+ * gdk_screen_get_rgba_colormap and gdk_screen_get_default_colormap.  The
+ * checks assert real values, not just non-NULL.  The colormap bits the audit
+ * listed as untested (gdk_colors_free / gdk_colormap_free_colors with
+ * npixels > 0, query_color rounding, a depth-32 pixmap) are covered at the
+ * end.  CRITICALs are fatal in this process, so a g_return_if_fail on any of
+ * these paths aborts the run instead of scrolling past.
+ */
+
+static int m5v_failures;
+
+#define M5V_CHECK(cond, what)						\
+  G_STMT_START {							\
+    if (!(cond))							\
+      {									\
+	g_printerr ("ydk_demo: M5V check failed: %s\n", what);		\
+	m5v_failures++;							\
+      }									\
+  } G_STMT_END
+
+#define M5V_EQ_HEX(got, want, what)					\
+  G_STMT_START {							\
+    gulong g_ = (gulong) (got), w_ = (gulong) (want);			\
+    if (g_ != w_)							\
+      {									\
+	g_printerr ("ydk_demo: M5V check failed: %s: got %08lx want %08lx\n", \
+		    what, g_, w_);					\
+	m5v_failures++;							\
+      }									\
+  } G_STMT_END
+
+/* reads pixel (x, y) of a drawable with all 32 bits (alpha included) */
+static guint32
+m5v_pixel (GdkDrawable *d, int x, int y)
+{
+  GdkImage *img = gdk_drawable_get_image (d, 0, 0, 16, 16);
+  guint32 p = 0xdeadbeef;
+
+  M5V_CHECK (img != NULL, "get_image for the pixel read");
+  if (img)
+    {
+      p = gdk_image_get_pixel (img, x, y);
+      g_object_unref (img);
+    }
+  return p;
+}
+
+static void
+m5v_visuals (GdkScreen *screen, GdkVisual *sysv, GdkVisual *rgba)
+{
+  GList *list, *l;
+  gint *depths = NULL, count = 0;
+  GdkVisualType *types = NULL;
+  int n_sys = 0, n_rgba = 0, n_true = 0;
+
+  /* system visual: the 24-bit TrueColor one gdkrgb must pick */
+  M5V_CHECK (sysv != NULL, "system visual exists");
+  M5V_CHECK (sysv->depth == 24, "system visual depth is 24");
+  M5V_CHECK (sysv->type == GDK_VISUAL_TRUE_COLOR, "system visual is TrueColor");
+  M5V_CHECK (gdk_visual_get_system () == sysv, "gdk_visual_get_system");
+  M5V_CHECK (gdk_visual_get_screen (sysv) == screen,
+	     "gdk_visual_get_screen (system visual) == screen");
+
+  /* rgba visual: depth 32, same channel layout, stable, owned by the screen */
+  M5V_CHECK (rgba != NULL, "gdk_screen_get_rgba_visual");
+  if (!rgba)
+    return;
+  M5V_CHECK (rgba != sysv, "rgba visual is not the system visual");
+  M5V_CHECK (rgba->depth == 32, "rgba visual depth is 32");
+  M5V_CHECK (rgba->type == GDK_VISUAL_TRUE_COLOR, "rgba visual is TrueColor");
+  M5V_EQ_HEX (rgba->red_mask, sysv->red_mask, "rgba red mask");
+  M5V_EQ_HEX (rgba->green_mask, sysv->green_mask, "rgba green mask");
+  M5V_EQ_HEX (rgba->blue_mask, sysv->blue_mask, "rgba blue mask");
+  M5V_EQ_HEX (rgba->red_mask, 0xff0000, "rgba red mask value");
+  M5V_CHECK (gdk_screen_get_rgba_visual (screen) == rgba,
+	     "rgba visual is stable across calls");
+  M5V_CHECK (gdk_visual_get_screen (rgba) == screen,
+	     "gdk_visual_get_screen (rgba visual) == screen");
+
+  /* gdk_screen_list_visuals: argb first (X11 largest-first order), system second */
+  list = gdk_screen_list_visuals (screen);
+  M5V_CHECK (g_list_length (list) == 2, "gdk_screen_list_visuals has 2 entries");
+  for (l = list; l; l = l->next)
+    {
+      GdkVisual *v = l->data;
+
+      n_sys += (v == sysv);
+      n_rgba += (v == rgba);
+      n_true += (v->type == GDK_VISUAL_TRUE_COLOR);
+    }
+  M5V_CHECK (n_sys == 1, "list_visuals includes the system visual once");
+  M5V_CHECK (n_rgba == 1, "list_visuals includes the rgba visual once");
+  M5V_CHECK (n_true == 2, "list_visuals entries are all TrueColor");
+  M5V_CHECK (list && list->data == rgba, "list_visuals: rgba first");
+  M5V_CHECK (list && list->next && list->next->data == sysv,
+	     "list_visuals: system second");
+  g_list_free (list);
+
+  /* generic gdk_list_visuals () goes through the same screen function */
+  list = gdk_list_visuals ();
+  M5V_CHECK (g_list_length (list) == 2, "gdk_list_visuals has 2 entries");
+  g_list_free (list);
+
+  /* best-visual queries */
+  M5V_CHECK (gdk_visual_get_best_depth () == 32, "best depth is 32");
+  M5V_CHECK (gdk_visual_get_best_type () == GDK_VISUAL_TRUE_COLOR,
+	     "best type is TrueColor");
+  M5V_CHECK (gdk_visual_get_best () == rgba, "gdk_visual_get_best is the rgba visual");
+  M5V_CHECK (gdk_visual_get_best ()->depth == 32, "best visual has depth 32");
+  M5V_CHECK (gdk_visual_get_best_with_depth (24) == sysv, "best with depth 24");
+  M5V_CHECK (gdk_visual_get_best_with_depth (32) == rgba, "best with depth 32");
+  M5V_CHECK (gdk_visual_get_best_with_depth (8) == NULL, "best with depth 8 is NULL");
+  M5V_CHECK (gdk_visual_get_best_with_type (GDK_VISUAL_TRUE_COLOR) == rgba,
+	     "best with type TrueColor");
+  M5V_CHECK (gdk_visual_get_best_with_type (GDK_VISUAL_PSEUDO_COLOR) == NULL,
+	     "best with type PseudoColor is NULL");
+  M5V_CHECK (gdk_visual_get_best_with_both (24, GDK_VISUAL_TRUE_COLOR) == sysv,
+	     "best with 24 + TrueColor");
+  M5V_CHECK (gdk_visual_get_best_with_both (32, GDK_VISUAL_TRUE_COLOR) == rgba,
+	     "best with 32 + TrueColor");
+  M5V_CHECK (gdk_visual_get_best_with_both (24, GDK_VISUAL_STATIC_GRAY) == NULL,
+	     "best with 24 + StaticGray is NULL");
+
+  gdk_query_depths (&depths, &count);
+  M5V_CHECK (count == 2 && depths != NULL, "gdk_query_depths count is 2");
+  if (count == 2 && depths)
+    {
+      M5V_CHECK (depths[0] == 32, "query_depths[0] is 32");
+      M5V_CHECK (depths[1] == 24, "query_depths[1] is 24");
+    }
+  gdk_query_visual_types (&types, &count);
+  M5V_CHECK (count == 1 && types != NULL && types[0] == GDK_VISUAL_TRUE_COLOR,
+	     "gdk_query_visual_types is { TrueColor }");
+}
+
+static void
+m5v_rgb (GdkScreen *screen, GdkVisual *sysv, GdkColormap *sys)
+{
+  GdkColormap *rgb_cmap = gdk_rgb_get_colormap ();
+  GdkPixmap *pm;
+  GdkGC *gc;
+
+  /* gdkrgb picks the system visual: the rgb scorer rates depth 32 as 0 */
+  M5V_CHECK (gdk_rgb_get_visual () == sysv, "gdk_rgb_get_visual is the system visual");
+  M5V_CHECK (gdk_screen_get_rgb_visual (screen) == sysv,
+	     "gdk_screen_get_rgb_visual is the system visual");
+  M5V_CHECK (rgb_cmap != NULL, "gdk_rgb_get_colormap");
+  M5V_CHECK (gdk_screen_get_rgb_colormap (screen) == rgb_cmap,
+	     "gdk_screen_get_rgb_colormap == gdk_rgb_get_colormap");
+  if (rgb_cmap)
+    {
+      M5V_CHECK (gdk_colormap_get_visual (rgb_cmap) == sysv,
+		 "rgb colormap is over the system visual");
+      M5V_CHECK (gdk_colormap_get_screen (rgb_cmap) == screen,
+		 "rgb colormap belongs to the screen");
+    }
+  M5V_CHECK (gdk_rgb_ditherable () == FALSE ||
+	     gdk_rgb_ditherable () == TRUE, "gdk_rgb_ditherable returns");
+
+  /* exact pixel values for a depth-24 TrueColor visual */
+  M5V_EQ_HEX (gdk_rgb_xpixel_from_rgb (0xff8000), 0x00ff8000, "xpixel_from_rgb ff8000");
+  M5V_EQ_HEX (gdk_rgb_xpixel_from_rgb (0x123456), 0x00123456, "xpixel_from_rgb 123456");
+  M5V_EQ_HEX (gdk_rgb_xpixel_from_rgb (0x000000), 0x00000000, "xpixel_from_rgb black");
+  M5V_EQ_HEX (gdk_rgb_xpixel_from_rgb (0xffffff), 0x00ffffff, "xpixel_from_rgb white");
+
+  /* gdk_rgb_gc_set_foreground -> fill -> exact readback */
+  pm = gdk_pixmap_new (main_window, 16, 16, -1);
+  M5V_CHECK (pm != NULL, "pixmap for the rgb gc fill");
+  if (!pm)
+    return;
+  gc = gdk_gc_new (pm);
+  gdk_rgb_gc_set_foreground (gc, 0x123456);
+  gdk_draw_rectangle (pm, gc, TRUE, 0, 0, 16, 16);
+  M5V_EQ_HEX (m5v_pixel (pm, 3, 3) & 0xffffff, 0x123456, "gdk_rgb_gc_set_foreground fill");
+  g_object_unref (gc);
+  g_object_unref (pm);
+
+  (void) sys;
+}
+
+static void
+m5v_default_colormap (GdkScreen *screen, GdkColormap *sys, GdkColormap *rgba_cm)
+{
+  GdkColormap *cm;
+  guint base_rc;
+
+  /* until something sets it, the default colormap is the system one */
+  M5V_CHECK (gdk_screen_get_default_colormap (screen) == sys,
+	     "default colormap starts as the system colormap");
+
+  base_rc = G_OBJECT (rgba_cm)->ref_count;
+  gdk_screen_set_default_colormap (screen, rgba_cm);
+  M5V_CHECK (gdk_screen_get_default_colormap (screen) == rgba_cm,
+	     "set_default_colormap (rgba) round trip");
+  M5V_CHECK (G_OBJECT (rgba_cm)->ref_count == base_rc + 1,
+	     "set_default_colormap takes exactly one reference");
+
+  /* setting the one that is already the default must not drop it */
+  gdk_screen_set_default_colormap (screen, rgba_cm);
+  M5V_CHECK (gdk_screen_get_default_colormap (screen) == rgba_cm,
+	     "set the same default colormap twice");
+  M5V_CHECK (G_OBJECT (rgba_cm)->ref_count == base_rc + 1,
+	     "setting the same default twice keeps one reference");
+
+  /* back to the system colormap, the rgba one gets its reference back */
+  gdk_screen_set_default_colormap (screen, sys);
+  M5V_CHECK (gdk_screen_get_default_colormap (screen) == sys,
+	     "restore the system colormap as default");
+  M5V_CHECK (G_OBJECT (rgba_cm)->ref_count == base_rc,
+	     "replacing the default releases the old reference");
+  gdk_screen_set_default_colormap (screen, sys);
+  M5V_CHECK (gdk_screen_get_default_colormap (screen) == sys,
+	     "set the system colormap twice");
+
+  /* a colormap that only the screen holds is finalized when replaced */
+  cm = gdk_colormap_new (gdk_screen_get_rgba_visual (screen), FALSE);
+  M5V_CHECK (cm != NULL, "gdk_colormap_new (rgba visual)");
+  if (cm)
+    {
+      gdk_screen_set_default_colormap (screen, cm);
+      g_object_unref (cm);
+      M5V_CHECK (gdk_screen_get_default_colormap (screen) == cm,
+		 "the screen keeps the default colormap alive");
+      gdk_screen_set_default_colormap (screen, sys);
+    }
+  M5V_CHECK (gdk_screen_get_default_colormap (screen) == sys,
+	     "default colormap is the system one again");
+}
+
+static void
+m5v_colormap_bits (GdkScreen *screen, GdkColormap *sys, GdkColormap *rgba_cm)
+{
+  GdkColor c, q, arr[3];
+  gboolean ok[3];
+  gulong pixels[3] = { 0x00ff8000, 0x0000ff00, 0x12345678 };
+
+  /* gdk_colors_free with npixels > 0: nothing was ever allocated, so it is
+   * a no-op, and later allocations are not disturbed */
+  gdk_colors_free (sys, pixels, 3, 0);
+  gdk_colors_free (rgba_cm, pixels, 3, 0);
+  c.red = 0xffff; c.green = 0x8080; c.blue = 0;
+  M5V_CHECK (gdk_colormap_alloc_color (sys, &c, FALSE, TRUE),
+	     "alloc_color after colors_free");
+  M5V_EQ_HEX (c.pixel, 0x00ff8000, "alloc_color pixel after colors_free");
+
+  /* gdk_colormap_free_colors with n_colors > 0 on both colormaps */
+  arr[0].red = 0x1234; arr[0].green = 0x5678; arr[0].blue = 0x9abc;
+  arr[1].red = 0;      arr[1].green = 0xffff; arr[1].blue = 0;
+  arr[2].red = 0x00ff; arr[2].green = 0x0100; arr[2].blue = 0x80ff;
+  ok[0] = ok[1] = ok[2] = FALSE;
+  M5V_CHECK (gdk_colormap_alloc_colors (sys, arr, 3, FALSE, TRUE, ok) == 0 &&
+	     ok[0] && ok[1] && ok[2], "alloc_colors allocates all three");
+  M5V_EQ_HEX (arr[0].pixel, 0x0012569a, "non-exact input truncates to 8 bits");
+  M5V_EQ_HEX (arr[1].pixel, 0x0000ff00, "alloc_colors green");
+  M5V_EQ_HEX (arr[2].pixel, 0x00000180, "alloc_colors truncation of 0x00ff/0x0100/0x80ff");
+  gdk_colormap_free_colors (sys, arr, 3);
+  gdk_colormap_free_colors (rgba_cm, arr, 3);
+  M5V_EQ_HEX (arr[0].pixel, 0x0012569a, "free_colors leaves the pixel values alone");
+
+  /* query_color with an input that is not a round 8-bit value: 0x1234 was
+   * truncated to 0x12, which reads back as 0x1212 (255 steps over 65535) */
+  memset (&q, 0, sizeof q);
+  gdk_colormap_query_color (sys, arr[0].pixel, &q);
+  M5V_EQ_HEX (q.red, 0x1212, "query_color red rounding");
+  M5V_EQ_HEX (q.green, 0x5656, "query_color green rounding");
+  M5V_EQ_HEX (q.blue, 0x9a9a, "query_color blue rounding");
+  M5V_EQ_HEX (q.pixel, arr[0].pixel, "query_color keeps the pixel");
+  gdk_colormap_query_color (sys, arr[2].pixel, &q);
+  M5V_EQ_HEX (q.red, 0x0000, "query_color 0x00ff -> channel 0");
+  M5V_EQ_HEX (q.green, 0x0101, "query_color 0x0100 -> channel 1");
+  M5V_EQ_HEX (q.blue, 0x8080, "query_color 0x80ff -> channel 0x80");
+
+  /* the rgba colormap sets the alpha byte, query ignores it */
+  c.red = 0x1234; c.green = 0x5678; c.blue = 0x9abc;
+  M5V_CHECK (gdk_colormap_alloc_color (rgba_cm, &c, FALSE, TRUE),
+	     "alloc_color on the rgba colormap");
+  M5V_EQ_HEX (c.pixel, 0xff12569a, "rgba alloc_color pixel is opaque");
+  gdk_colormap_query_color (rgba_cm, c.pixel, &q);
+  M5V_CHECK (q.red == 0x1212 && q.green == 0x5656 && q.blue == 0x9a9a,
+	     "rgba query_color ignores alpha");
+  M5V_CHECK (gdk_colormap_get_screen (rgba_cm) == screen,
+	     "rgba colormap belongs to the screen");
+}
+
+static void
+m5v_rgba_pixmap (GdkScreen *screen, GdkVisual *rgba, GdkColormap *rgba_cm)
+{
+  GdkPixmap *pm;
+  GdkGC *gc;
+  GdkColor c = { 0, 0xffff, 0x8080, 0x0000 };
+
+  pm = gdk_pixmap_new (main_window, 16, 16, 32);
+  M5V_CHECK (pm != NULL, "depth-32 pixmap");
+  if (!pm)
+    return;
+  M5V_CHECK (gdk_drawable_get_depth (pm) == 32, "pixmap depth is 32");
+
+  gdk_drawable_set_colormap (pm, rgba_cm);
+  M5V_CHECK (gdk_drawable_get_colormap (pm) == rgba_cm, "pixmap takes the rgba colormap");
+  M5V_CHECK (gdk_drawable_get_visual (pm) == rgba, "pixmap visual is the rgba visual");
+  M5V_CHECK (gdk_drawable_get_screen (pm) == screen, "pixmap screen");
+
+  gc = gdk_gc_new (pm);
+  M5V_CHECK (gdk_gc_get_colormap (gc) == rgba_cm, "gc picks up the pixmap colormap");
+
+  /* the rgb API on an rgba colormap: the pixel carries an opaque alpha byte */
+  gdk_gc_set_rgb_fg_color (gc, &c);
+  gdk_draw_rectangle (pm, gc, TRUE, 0, 0, 16, 16);
+  M5V_EQ_HEX (m5v_pixel (pm, 4, 4), 0xffff8000, "rgb fg on a depth-32 pixmap");
+  M5V_EQ_HEX (m5v_pixel (pm, 15, 15), 0xffff8000, "rgb fg on a depth-32 pixmap, far corner");
+
+  /* allocated colour through the colormap, partial overwrite */
+  c.red = 0; c.green = 0; c.blue = 0xffff;
+  M5V_CHECK (gdk_colormap_alloc_color (rgba_cm, &c, FALSE, TRUE), "alloc blue");
+  gdk_gc_set_foreground (gc, &c);
+  gdk_draw_rectangle (pm, gc, TRUE, 4, 4, 4, 4);
+  M5V_EQ_HEX (m5v_pixel (pm, 5, 5), 0xff0000ff, "allocated blue inside");
+  M5V_EQ_HEX (m5v_pixel (pm, 9, 9), 0xffff8000, "orange untouched outside");
+
+  g_object_unref (gc);
+  g_object_unref (pm);
+}
+
+static int
+m5v_exercise (void)
+{
+  GdkScreen *screen = gdk_screen_get_default ();
+  GdkVisual *sysv = gdk_screen_get_system_visual (screen);
+  GdkColormap *sys = gdk_screen_get_system_colormap (screen);
+  GdkVisual *rgba = gdk_screen_get_rgba_visual (screen);
+  GdkColormap *rgba_cm = gdk_screen_get_rgba_colormap (screen);
+
+  m5v_visuals (screen, sysv, rgba);
+
+  M5V_CHECK (rgba_cm != NULL, "gdk_screen_get_rgba_colormap");
+  if (rgba_cm)
+    {
+      M5V_CHECK (gdk_colormap_get_visual (rgba_cm) == rgba,
+		 "rgba colormap is over the rgba visual");
+      M5V_CHECK (rgba_cm != sys, "rgba colormap is not the system colormap");
+      M5V_CHECK (gdk_screen_get_rgba_colormap (screen) == rgba_cm,
+		 "rgba colormap is stable across calls");
+    }
+
+  m5v_rgb (screen, sysv, sys);
+
+  if (rgba_cm)
+    {
+      m5v_default_colormap (screen, sys, rgba_cm);
+      m5v_colormap_bits (screen, sys, rgba_cm);
+      if (rgba)
+	m5v_rgba_pixmap (screen, rgba, rgba_cm);
+    }
+
+  if (m5v_failures)
+    g_printerr ("ydk_demo: M5V: FAIL (%d)\n", m5v_failures);
+  else
+    g_print ("ydk_demo: M5V: PASS\n");
+
+  return m5v_failures;
+}
+
 int
 main (int argc, char **argv)
 {
   GdkWindowAttr attr;
   GdkColor bg;
   GdkScreen *screen;
+  gboolean wayland = g_strcmp0 (g_getenv ("GDK_BACKEND"), "wayland") == 0;
+
+  /* before gdk_init_check, so display open and screen setup are covered too.
+   * The X11 baseline run is clean (checked under Xvfb), so it is fatal too. */
+  install_fatal_criticals ();
 
   if (!gdk_init_check (&argc, &argv))
     {
@@ -736,9 +1337,25 @@ main (int argc, char **argv)
 
   gdk_window_show (main_window);
 
-  if (g_strcmp0 (g_getenv ("GDK_BACKEND"), "wayland") == 0 &&
-      (m4_exercise () != 0 || m5_exercise () != 0))
-    return 1;
+  if (wayland)
+    {
+      /* run every exercise so one failure does not hide the others; each
+       * prints its own PASS or FAIL line */
+      int failed = 0;
+
+      failed |= m4_exercise () != 0;
+      failed |= m5_exercise () != 0;
+      failed |= m5c_exercise () != 0;
+      failed |= m5v_exercise () != 0;
+      if (failed)
+	return 1;
+
+      /* the M5 window checks leave test marks in the window; repaint the
+       * scene so a screenshot can be compared with the X11 baseline */
+      if (g_getenv ("YDK_DEMO_NO_MARKS"))
+	draw_scene (main_window);
+      g_print ("ydk_demo: exercises done\n");
+    }
 
   g_timeout_add (TICK_TIMEOUT_MS, tick_timeout, NULL);
   g_timeout_add (QUIT_TIMEOUT_MS, quit_timeout, NULL);

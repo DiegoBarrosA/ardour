@@ -164,4 +164,36 @@
 #define IA__gdk_image_get_pixel                          _gdk_x11_image_get_pixel
 #define IA__gdk_image_put_pixel                          _gdk_x11_image_put_pixel
 
+/* ---- ydk-wayland F7: colormap family (gdk_colormap_get_type and the
+ * gdk_x11_colormap_* accessors stay X11-owned, not dispatched) */
+#define IA__gdk_colormap_new                   _gdk_x11_colormap_new
+#define IA__gdk_colormap_get_screen            _gdk_x11_colormap_get_screen
+#define IA__gdk_colormap_get_system_size       _gdk_x11_colormap_get_system_size
+#define IA__gdk_colormap_change                _gdk_x11_colormap_change
+#define IA__gdk_colors_alloc                   _gdk_x11_colors_alloc
+#define IA__gdk_colors_free                    _gdk_x11_colors_free
+#define IA__gdk_colormap_free_colors           _gdk_x11_colormap_free_colors
+#define IA__gdk_colormap_alloc_colors          _gdk_x11_colormap_alloc_colors
+#define IA__gdk_colormap_query_color           _gdk_x11_colormap_query_color
+#define IA__gdk_visual_get_screen              _gdk_x11_visual_get_screen
+#define IA__gdk_color_change                   _gdk_x11_color_change
+
+
+/* ---- ydk-wayland F8: visual query, default colormap and rgba family
+ * (gdk_visual_get_type, gdk_x11_screen_lookup_visual, gdkx_visual_get and
+ * gdk_x11_visual_get_xvisual stay X11-owned, not dispatched) */
+#define IA__gdk_visual_get_best_depth          _gdk_x11_visual_get_best_depth
+#define IA__gdk_visual_get_best_type           _gdk_x11_visual_get_best_type
+#define IA__gdk_visual_get_best                _gdk_x11_visual_get_best
+#define IA__gdk_visual_get_best_with_depth     _gdk_x11_visual_get_best_with_depth
+#define IA__gdk_visual_get_best_with_type      _gdk_x11_visual_get_best_with_type
+#define IA__gdk_visual_get_best_with_both      _gdk_x11_visual_get_best_with_both
+#define IA__gdk_query_depths                   _gdk_x11_query_depths
+#define IA__gdk_query_visual_types             _gdk_x11_query_visual_types
+#define IA__gdk_screen_list_visuals            _gdk_x11_screen_list_visuals
+#define IA__gdk_screen_get_default_colormap    _gdk_x11_screen_get_default_colormap
+#define IA__gdk_screen_set_default_colormap    _gdk_x11_screen_set_default_colormap
+#define IA__gdk_screen_get_rgba_colormap       _gdk_x11_screen_get_rgba_colormap
+#define IA__gdk_screen_get_rgba_visual         _gdk_x11_screen_get_rgba_visual
+
 #endif /* __YDK_GDKWINDOWING_X11_H__ */

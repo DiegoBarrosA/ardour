@@ -17,7 +17,9 @@
  * Root windows have no wl_surface and never present.
  */
 
+#ifndef _GNU_SOURCE
 #define _GNU_SOURCE
+#endif
 
 #include "config.h"
 
@@ -925,16 +927,12 @@ _gdk_wayland_windowing_create_cairo_surface (GdkDrawable *drawable,
 					     int width,
 					     int height)
 {
-  GDKWWindowImplWayland *impl;
-
   /* pixmap wrappers reach this through gdk_pixmap_create_cairo_surface */
   if (GDKW_IS_PIXMAP_IMPL_WAYLAND (drawable))
     return _gdk_wayland_pixmap_impl_create_cairo_surface (drawable,
 							  width, height);
 
   g_return_val_if_fail (GDKW_IS_WINDOW_IMPL_WAYLAND (drawable), NULL);
-
-  impl = GDKW_WINDOW_IMPL_WAYLAND (drawable);
 
   return gdkw_window_impl_wayland_create_cairo_surface (drawable,
 							width, height);

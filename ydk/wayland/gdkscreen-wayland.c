@@ -142,17 +142,25 @@ _gdk_wayland_screen_create_system_visual (void)
   return visual;
 }
 
+/* Wayland half of the dispatched gdk_visual_get_screen ().  The hand-built
+ * visual carries no screen back pointer (the X11 one is a GdkVisualPrivate,
+ * this one is a bare GdkVisual) and a Wayland client has one screen, so the
+ * default screen is the answer.  The X11 function would read past the end
+ * of the object. */
+GdkScreen *
+_gdk_wayland_visual_get_screen (GdkVisual *visual)
+{
+  g_return_val_if_fail (GDK_IS_VISUAL (visual), NULL);
+
+  return gdk_screen_get_default ();
+}
+
 GdkColormap *
 _gdk_wayland_screen_create_colormap (GdkScreen *screen, GdkVisual *visual)
 {
-  GdkColormap *colormap;
-
-  colormap = g_object_new (GDK_TYPE_COLORMAP, NULL);
-  colormap->visual = visual;
-  colormap->size = visual->colormap_size;
-  colormap->colors = NULL;
-
-  return colormap;
+  /* A plain GDK_TYPE_COLORMAP is the X11 type: its finalizer dereferences a
+   * NULL private->screen.  Use the Wayland subclass (gdkcolor-wayland.c). */
+  return _gdk_wayland_colormap_new_for_screen (screen, visual);
 }
 
 /* Root window construction mirrors the X11 backend (gdkwindow-x11.c):

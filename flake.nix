@@ -131,7 +131,7 @@
         '';
 
         baseline-diff = pkgs.writeShellScript "ydk-baseline-diff" ''
-          export PATH=${lib.makeBinPath [ pkgs.xorg.xorgserver pkgs.weston pkgs.dbus pkgs.imagemagick ydk-demo ]}:$PATH
+          export PATH=${lib.makeBinPath [ pkgs.xorg.xorgserver pkgs.weston pkgs.dbus pkgs.imagemagick pkgs.coreutils pkgs.util-linux ydk-demo ]}:$PATH
           export LD_LIBRARY_PATH=${lib.makeLibraryPath [ ydk-wayland ]}:$LD_LIBRARY_PATH
           ${pkgs.bash}/bin/bash ${./scripts/baseline-diff.sh}
         '';

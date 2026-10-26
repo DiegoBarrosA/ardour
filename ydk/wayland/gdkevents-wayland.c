@@ -8,7 +8,9 @@
  * keyboard / pointer listeners) into the core event queue.
  */
 
+#ifndef _GNU_SOURCE
 #define _GNU_SOURCE
+#endif
 
 #include "config.h"
 

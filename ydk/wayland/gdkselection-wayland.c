@@ -123,7 +123,7 @@ make_list (const gchar  *text,
 	   const gchar  *to_charset,
 	   gchar      ***list)
 {
-  GPtrArray *strings = g_ptr_array_new ();
+  GPtrArray *strings = g_ptr_array_new_with_free_func (g_free);
   const gchar *p = text;
   gint n_strings;
 
@@ -174,10 +174,7 @@ make_list (const gchar  *text,
       *list = (gchar **) g_ptr_array_free (strings, FALSE);
     }
   else
-    {
-      g_ptr_array_foreach (strings, (GFunc) g_free, NULL);
-      g_ptr_array_free (strings, TRUE);
-    }
+    g_ptr_array_free (strings, TRUE);
 
   return n_strings;
 }

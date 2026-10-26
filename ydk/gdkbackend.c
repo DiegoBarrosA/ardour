@@ -517,6 +517,35 @@ extern GdkImage *_gdk_x11_image_new_bitmap (GdkVisual *visual, gpointer data, gi
 extern guint32 _gdk_x11_image_get_pixel (GdkImage *image, gint x, gint y);
 extern void _gdk_x11_image_put_pixel (GdkImage *image, gint x, gint y, guint32 pixel);
 
+/* ---- F7 externs: colormap family, visual screen */
+extern GdkScreen *_gdk_x11_visual_get_screen (GdkVisual *visual);
+extern GdkColormap *_gdk_x11_colormap_new (GdkVisual *visual, gboolean allocate);
+extern GdkScreen *_gdk_x11_colormap_get_screen (GdkColormap *cmap);
+extern gint _gdk_x11_colormap_get_system_size (void);
+extern void _gdk_x11_colormap_change (GdkColormap *colormap, gint ncolors);
+extern gint _gdk_x11_colors_alloc (GdkColormap *colormap, gboolean contiguous, gulong *planes, gint nplanes, gulong *pixels, gint npixels);
+extern void _gdk_x11_colors_free (GdkColormap *colormap, gulong *pixels, gint npixels, gulong planes);
+extern void _gdk_x11_colormap_free_colors (GdkColormap *colormap, const GdkColor *colors, gint n_colors);
+extern gint _gdk_x11_colormap_alloc_colors (GdkColormap *colormap, GdkColor *colors, gint n_colors, gboolean writeable, gboolean best_match, gboolean *success);
+extern void _gdk_x11_colormap_query_color (GdkColormap *colormap, gulong pixel, GdkColor *result);
+extern gint _gdk_x11_color_change (GdkColormap *colormap, GdkColor *color);
+
+
+/* ---- F8 externs: visual query, default colormap, rgba */
+extern gint _gdk_x11_visual_get_best_depth (void);
+extern GdkVisualType _gdk_x11_visual_get_best_type (void);
+extern GdkVisual *_gdk_x11_visual_get_best (void);
+extern GdkVisual *_gdk_x11_visual_get_best_with_depth (gint depth);
+extern GdkVisual *_gdk_x11_visual_get_best_with_type (GdkVisualType visual_type);
+extern GdkVisual *_gdk_x11_visual_get_best_with_both (gint depth, GdkVisualType visual_type);
+extern void _gdk_x11_query_depths (gint **depths, gint *count);
+extern void _gdk_x11_query_visual_types (GdkVisualType **visual_types, gint *count);
+extern GList *_gdk_x11_screen_list_visuals (GdkScreen *screen);
+extern GdkColormap *_gdk_x11_screen_get_default_colormap (GdkScreen *screen);
+extern void _gdk_x11_screen_set_default_colormap (GdkScreen *screen, GdkColormap *colormap);
+extern GdkColormap *_gdk_x11_screen_get_rgba_colormap (GdkScreen *screen);
+extern GdkVisual *_gdk_x11_screen_get_rgba_visual (GdkScreen *screen);
+
 /* ---- M4 dispatchers: cursor, font, selection, drag, property ----
  *
  * The names defined below expand to IA__gdk_* via gdkalias.h; the exported
@@ -1127,4 +1156,225 @@ gdk_image_put_pixel (GdkImage *image, gint x, gint y, guint32 pixel)
     _gdk_wayland_image_put_pixel (image, x, y, pixel);
   else
     _gdk_x11_image_put_pixel (image, x, y, pixel);
+}
+
+/* ---- F7 dispatchers: colormap ---- */
+
+GdkColormap *
+gdk_colormap_new (GdkVisual *visual, gboolean allocate)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    return _gdk_wayland_colormap_new (visual, allocate);
+  else
+    return _gdk_x11_colormap_new (visual, allocate);
+}
+
+GdkScreen *
+gdk_colormap_get_screen (GdkColormap *cmap)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    return _gdk_wayland_colormap_get_screen (cmap);
+  else
+    return _gdk_x11_colormap_get_screen (cmap);
+}
+
+gint
+gdk_colormap_get_system_size (void)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    return _gdk_wayland_colormap_get_system_size ();
+  else
+    return _gdk_x11_colormap_get_system_size ();
+}
+
+void
+gdk_colormap_change (GdkColormap *colormap, gint ncolors)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    _gdk_wayland_colormap_change (colormap, ncolors);
+  else
+    _gdk_x11_colormap_change (colormap, ncolors);
+}
+
+gint
+gdk_colors_alloc (GdkColormap *colormap, gboolean contiguous, gulong *planes, gint nplanes, gulong *pixels, gint npixels)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    return _gdk_wayland_colors_alloc (colormap, contiguous, planes, nplanes, pixels, npixels);
+  else
+    return _gdk_x11_colors_alloc (colormap, contiguous, planes, nplanes, pixels, npixels);
+}
+
+void
+gdk_colors_free (GdkColormap *colormap, gulong *pixels, gint npixels, gulong planes)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    _gdk_wayland_colors_free (colormap, pixels, npixels, planes);
+  else
+    _gdk_x11_colors_free (colormap, pixels, npixels, planes);
+}
+
+void
+gdk_colormap_free_colors (GdkColormap *colormap, const GdkColor *colors, gint n_colors)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    _gdk_wayland_colormap_free_colors (colormap, colors, n_colors);
+  else
+    _gdk_x11_colormap_free_colors (colormap, colors, n_colors);
+}
+
+gint
+gdk_colormap_alloc_colors (GdkColormap *colormap, GdkColor *colors, gint n_colors, gboolean writeable, gboolean best_match, gboolean *success)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    return _gdk_wayland_colormap_alloc_colors (colormap, colors, n_colors, writeable, best_match, success);
+  else
+    return _gdk_x11_colormap_alloc_colors (colormap, colors, n_colors, writeable, best_match, success);
+}
+
+void
+gdk_colormap_query_color (GdkColormap *colormap, gulong pixel, GdkColor *result)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    _gdk_wayland_colormap_query_color (colormap, pixel, result);
+  else
+    _gdk_x11_colormap_query_color (colormap, pixel, result);
+}
+
+gint
+gdk_color_change (GdkColormap *colormap, GdkColor *color)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    return _gdk_wayland_color_change (colormap, color);
+  else
+    return _gdk_x11_color_change (colormap, color);
+}
+
+GdkScreen *
+gdk_visual_get_screen (GdkVisual *visual)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    return _gdk_wayland_visual_get_screen (visual);
+  else
+    return _gdk_x11_visual_get_screen (visual);
+}
+
+
+/* ---- F8 dispatchers: visual query, default colormap, rgba */
+
+gint
+gdk_visual_get_best_depth (void)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    return _gdk_wayland_visual_get_best_depth ();
+  else
+    return _gdk_x11_visual_get_best_depth ();
+}
+
+GdkVisualType
+gdk_visual_get_best_type (void)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    return _gdk_wayland_visual_get_best_type ();
+  else
+    return _gdk_x11_visual_get_best_type ();
+}
+
+GdkVisual *
+gdk_visual_get_best (void)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    return _gdk_wayland_visual_get_best ();
+  else
+    return _gdk_x11_visual_get_best ();
+}
+
+GdkVisual *
+gdk_visual_get_best_with_depth (gint depth)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    return _gdk_wayland_visual_get_best_with_depth (depth);
+  else
+    return _gdk_x11_visual_get_best_with_depth (depth);
+}
+
+GdkVisual *
+gdk_visual_get_best_with_type (GdkVisualType visual_type)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    return _gdk_wayland_visual_get_best_with_type (visual_type);
+  else
+    return _gdk_x11_visual_get_best_with_type (visual_type);
+}
+
+GdkVisual *
+gdk_visual_get_best_with_both (gint depth, GdkVisualType visual_type)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    return _gdk_wayland_visual_get_best_with_both (depth, visual_type);
+  else
+    return _gdk_x11_visual_get_best_with_both (depth, visual_type);
+}
+
+void
+gdk_query_depths (gint **depths, gint *count)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    _gdk_wayland_query_depths (depths, count);
+  else
+    _gdk_x11_query_depths (depths, count);
+}
+
+void
+gdk_query_visual_types (GdkVisualType **visual_types, gint *count)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    _gdk_wayland_query_visual_types (visual_types, count);
+  else
+    _gdk_x11_query_visual_types (visual_types, count);
+}
+
+GList *
+gdk_screen_list_visuals (GdkScreen *screen)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    return _gdk_wayland_screen_list_visuals (screen);
+  else
+    return _gdk_x11_screen_list_visuals (screen);
+}
+
+GdkColormap *
+gdk_screen_get_default_colormap (GdkScreen *screen)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    return _gdk_wayland_screen_get_default_colormap (screen);
+  else
+    return _gdk_x11_screen_get_default_colormap (screen);
+}
+
+void
+gdk_screen_set_default_colormap (GdkScreen *screen, GdkColormap *colormap)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    _gdk_wayland_screen_set_default_colormap (screen, colormap);
+  else
+    _gdk_x11_screen_set_default_colormap (screen, colormap);
+}
+
+GdkColormap *
+gdk_screen_get_rgba_colormap (GdkScreen *screen)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    return _gdk_wayland_screen_get_rgba_colormap (screen);
+  else
+    return _gdk_x11_screen_get_rgba_colormap (screen);
+}
+
+GdkVisual *
+gdk_screen_get_rgba_visual (GdkScreen *screen)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    return _gdk_wayland_screen_get_rgba_visual (screen);
+  else
+    return _gdk_x11_screen_get_rgba_visual (screen);
 }
