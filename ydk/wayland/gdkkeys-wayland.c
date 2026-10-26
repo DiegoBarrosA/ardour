@@ -24,6 +24,7 @@
 #include <unistd.h>
 
 #include <xkbcommon/xkbcommon.h>
+#include <pango/pango.h>
 
 #include <ydk/gdk.h>
 #include <ydk/gdkkeys.h>
@@ -35,6 +36,19 @@
 #ifdef GDK_COMPILATION
 #include "gdkalias.h"
 #endif
+
+/* M6B PROTOTYPES */
+PangoDirection _gdk_wayland_keymap_get_direction (GdkKeymap *keymap);
+gboolean _gdk_wayland_keymap_have_bidi_layouts (GdkKeymap *keymap);
+gboolean _gdk_wayland_keymap_get_caps_lock_state (GdkKeymap *keymap);
+gboolean _gdk_wayland_keymap_get_entries_for_keyval (GdkKeymap *keymap, guint keyval, GdkKeymapKey **keys, gint *n_keys);
+gboolean _gdk_wayland_keymap_get_entries_for_keycode (GdkKeymap *keymap, guint hardware_keycode, GdkKeymapKey **keys, guint **keyvals, gint *n_entries);
+guint _gdk_wayland_keymap_lookup_key (GdkKeymap *keymap, const GdkKeymapKey *key);
+void _gdk_wayland_keymap_add_virtual_modifiers (GdkKeymap *keymap, GdkModifierType *state);
+gboolean _gdk_wayland_keymap_map_virtual_modifiers (GdkKeymap *keymap, GdkModifierType *state);
+gchar *_gdk_wayland_keyval_name (guint keyval);
+guint _gdk_wayland_keyval_from_name (const gchar *keyval_name);
+void _gdk_wayland_keyval_convert_case (guint symbol, guint *lower, guint *upper);
 
 typedef struct _GdkKeymapWayland GdkKeymapWayland;
 typedef struct _GdkKeymapWaylandClass GdkKeymapWaylandClass;
@@ -54,6 +68,12 @@ struct _GdkKeymapWayland
    * caller's state and group arguments are honoured instead of the live
    * state. */
   struct xkb_state *scratch_state;
+  /* Cached layout directions (PangoDirection), valid bit per layout. */
+  PangoDirection dirs[32];
+  guint32 dirs_valid;
+  /* Real modifier bit (0..7) to virtual GDK masks (SUPER, HYPER, META). */
+  guint modmap[8];
+  gboolean modmap_valid;
 };
 
 struct _GdkKeymapWaylandClass
@@ -108,6 +128,8 @@ gdk_keymap_wayland_init (GdkKeymapWayland *self)
   self->xkb_keymap = NULL;
   self->xkb_state = NULL;
   self->scratch_state = NULL;
+  self->dirs_valid = 0;
+  self->modmap_valid = FALSE;
 }
 
 /* ---- display keymap factory ------------------------------------------ */
@@ -354,6 +376,10 @@ _gdk_wayland_keymap_set_keymap (GDKWDisplayWayland *display,
       self->xkb_keymap = NULL;
     }
 
+  self->dirs_valid = 0;
+  self->modmap_valid = FALSE;
+  memset (self->modmap, 0, sizeof self->modmap);
+
   self->xkb_keymap = xkb_keymap_new_from_string (self->context, text,
 						 XKB_KEYMAP_FORMAT_TEXT_V1,
 						 XKB_KEYMAP_COMPILE_NO_FLAGS);
@@ -568,4 +594,680 @@ _gdk_wayland_keymap_default_text (gsize *length)
     *length = strlen (text);
 
   return text;
+}
+
+/* ---- M6b: public keymap and keyval functions ------------------------- */
+
+/* Return the Wayland keymap for KEYMAP, or for the default keymap when
+ * KEYMAP is NULL.  Return NULL when it is not a Wayland keymap. */
+static GdkKeymapWayland *
+keymap_wayland_for (GdkKeymap *keymap)
+{
+  if (keymap == NULL)
+    keymap = gdk_keymap_get_default ();
+  if (keymap == NULL ||
+      !G_TYPE_CHECK_INSTANCE_TYPE (keymap, gdk_keymap_wayland_get_type ()))
+    return NULL;
+  return (GdkKeymapWayland *) keymap;
+}
+
+static PangoDirection
+layout_direction (GdkKeymapWayland *self, xkb_layout_index_t layout)
+{
+  xkb_keycode_t key, min, max;
+  guint rtl = 0, ltr = 0;
+  PangoDirection dir;
+
+  if (layout >= 32)
+    return PANGO_DIRECTION_NEUTRAL;
+  if (self->dirs_valid & (1u << layout))
+    return self->dirs[layout];
+
+  min = xkb_keymap_min_keycode (self->xkb_keymap);
+  max = xkb_keymap_max_keycode (self->xkb_keymap);
+
+  for (key = min; key <= max; key++)
+    {
+      const xkb_keysym_t *syms;
+      guint32 ch;
+
+      if (layout >= xkb_keymap_num_layouts_for_key (self->xkb_keymap, key))
+	continue;
+      if (xkb_keymap_key_get_syms_by_level (self->xkb_keymap, key, layout,
+					    0, &syms) < 1)
+	continue;
+
+      ch = xkb_keysym_to_utf32 (syms[0]);
+      if (ch == 0)
+	continue;
+
+      switch (pango_unichar_direction (ch))
+	{
+	case PANGO_DIRECTION_RTL:
+	  rtl++;
+	  break;
+	case PANGO_DIRECTION_LTR:
+	  ltr++;
+	  break;
+	default:
+	  break;
+	}
+    }
+
+  if (rtl == 0 && ltr == 0)
+    dir = PANGO_DIRECTION_NEUTRAL;
+  else
+    dir = rtl > ltr ? PANGO_DIRECTION_RTL : PANGO_DIRECTION_LTR;
+
+  self->dirs[layout] = dir;
+  self->dirs_valid |= 1u << layout;
+  return dir;
+}
+
+PangoDirection
+_gdk_wayland_keymap_get_direction (GdkKeymap *keymap)
+{
+  GdkKeymapWayland *self = keymap_wayland_for (keymap);
+  xkb_layout_index_t layout;
+
+  if (self == NULL || self->xkb_keymap == NULL || self->xkb_state == NULL)
+    return PANGO_DIRECTION_NEUTRAL;
+
+  layout = xkb_state_serialize_layout (self->xkb_state,
+				       XKB_STATE_LAYOUT_EFFECTIVE);
+  return layout_direction (self, layout);
+}
+
+gboolean
+_gdk_wayland_keymap_have_bidi_layouts (GdkKeymap *keymap)
+{
+  GdkKeymapWayland *self = keymap_wayland_for (keymap);
+  xkb_layout_index_t i, n;
+  gboolean have_ltr = FALSE, have_rtl = FALSE;
+
+  if (self == NULL || self->xkb_keymap == NULL)
+    return FALSE;
+
+  n = xkb_keymap_num_layouts (self->xkb_keymap);
+  for (i = 0; i < n; i++)
+    {
+      if (layout_direction (self, i) == PANGO_DIRECTION_RTL)
+	have_rtl = TRUE;
+      else
+	have_ltr = TRUE;
+    }
+
+  return have_ltr && have_rtl;
+}
+
+gboolean
+_gdk_wayland_keymap_get_caps_lock_state (GdkKeymap *keymap)
+{
+  GdkKeymapWayland *self = keymap_wayland_for (keymap);
+
+  if (self == NULL || self->xkb_state == NULL)
+    return FALSE;
+
+  return xkb_state_mod_name_is_active (self->xkb_state, XKB_MOD_NAME_CAPS,
+				       XKB_STATE_MODS_LOCKED) > 0;
+}
+
+gboolean
+_gdk_wayland_keymap_get_entries_for_keyval (GdkKeymap     *keymap,
+					    guint          keyval,
+					    GdkKeymapKey **keys,
+					    gint          *n_keys)
+{
+  GdkKeymapWayland *self = keymap_wayland_for (keymap);
+  GArray *array;
+  xkb_keycode_t key, min, max;
+  gint n;
+
+  if (keys)
+    *keys = NULL;
+  if (n_keys)
+    *n_keys = 0;
+
+  if (self == NULL || self->xkb_keymap == NULL)
+    return FALSE;
+
+  array = g_array_new (FALSE, FALSE, sizeof (GdkKeymapKey));
+  min = xkb_keymap_min_keycode (self->xkb_keymap);
+  max = xkb_keymap_max_keycode (self->xkb_keymap);
+
+  for (key = min; key <= max; key++)
+    {
+      xkb_layout_index_t layout, nlayouts;
+
+      nlayouts = xkb_keymap_num_layouts_for_key (self->xkb_keymap, key);
+      for (layout = 0; layout < nlayouts; layout++)
+	{
+	  xkb_level_index_t level, nlevels;
+
+	  nlevels = xkb_keymap_num_levels_for_key (self->xkb_keymap, key,
+						   layout);
+	  for (level = 0; level < nlevels; level++)
+	    {
+	      const xkb_keysym_t *syms;
+	      int nsyms, i;
+
+	      nsyms = xkb_keymap_key_get_syms_by_level (self->xkb_keymap, key,
+							layout, level, &syms);
+	      for (i = 0; i < nsyms; i++)
+		{
+		  if (syms[i] == keyval)
+		    {
+		      GdkKeymapKey k;
+
+		      k.keycode = key;
+		      k.group = (gint) layout;
+		      k.level = (gint) level;
+		      g_array_append_val (array, k);
+		      break;
+		    }
+		}
+	    }
+	}
+    }
+
+  n = (gint) array->len;
+  if (n > 0 && keys)
+    *keys = (GdkKeymapKey *) g_array_free (array, FALSE);
+  else
+    g_array_free (array, TRUE);
+
+  if (n_keys)
+    *n_keys = n;
+
+  return n > 0;
+}
+
+gboolean
+_gdk_wayland_keymap_get_entries_for_keycode (GdkKeymap     *keymap,
+					     guint          hardware_keycode,
+					     GdkKeymapKey **keys,
+					     guint        **keyvals,
+					     gint          *n_entries)
+{
+  GdkKeymapWayland *self = keymap_wayland_for (keymap);
+  GArray *karray, *varray;
+  xkb_layout_index_t layout, nlayouts;
+  gint n;
+
+  if (keys)
+    *keys = NULL;
+  if (keyvals)
+    *keyvals = NULL;
+  if (n_entries)
+    *n_entries = 0;
+
+  if (self == NULL || self->xkb_keymap == NULL ||
+      hardware_keycode < xkb_keymap_min_keycode (self->xkb_keymap) ||
+      hardware_keycode > xkb_keymap_max_keycode (self->xkb_keymap))
+    return FALSE;
+
+  karray = g_array_new (FALSE, FALSE, sizeof (GdkKeymapKey));
+  varray = g_array_new (FALSE, FALSE, sizeof (guint));
+
+  nlayouts = xkb_keymap_num_layouts_for_key (self->xkb_keymap,
+					     hardware_keycode);
+  for (layout = 0; layout < nlayouts; layout++)
+    {
+      xkb_level_index_t level, nlevels;
+
+      nlevels = xkb_keymap_num_levels_for_key (self->xkb_keymap,
+					       hardware_keycode, layout);
+      for (level = 0; level < nlevels; level++)
+	{
+	  const xkb_keysym_t *syms;
+	  int nsyms;
+
+	  nsyms = xkb_keymap_key_get_syms_by_level (self->xkb_keymap,
+						    hardware_keycode, layout,
+						    level, &syms);
+	  if (nsyms > 0)
+	    {
+	      GdkKeymapKey k;
+	      guint v = syms[0];
+
+	      k.keycode = hardware_keycode;
+	      k.group = (gint) layout;
+	      k.level = (gint) level;
+	      g_array_append_val (karray, k);
+	      g_array_append_val (varray, v);
+	    }
+	}
+    }
+
+  n = (gint) karray->len;
+
+  if (keys && n > 0)
+    *keys = (GdkKeymapKey *) g_array_free (karray, FALSE);
+  else
+    g_array_free (karray, TRUE);
+
+  if (keyvals && n > 0)
+    *keyvals = (guint *) g_array_free (varray, FALSE);
+  else
+    g_array_free (varray, TRUE);
+
+  if (n_entries)
+    *n_entries = n;
+
+  return n > 0;
+}
+
+guint
+_gdk_wayland_keymap_lookup_key (GdkKeymap          *keymap,
+				const GdkKeymapKey *key)
+{
+  GdkKeymapWayland *self = keymap_wayland_for (keymap);
+  const xkb_keysym_t *syms;
+
+  if (self == NULL || self->xkb_keymap == NULL || key == NULL ||
+      key->group < 0 || key->level < 0)
+    return 0;
+
+  /* A group beyond the keymap is invalid.  A group that only this key lacks
+   * wraps into range inside xkbcommon, the same as in translate_keyboard_state
+   * (a one layout key like Return answers for every group). */
+  if ((xkb_layout_index_t) key->group >=
+      xkb_keymap_num_layouts (self->xkb_keymap))
+    return 0;
+  if (xkb_keymap_num_layouts_for_key (self->xkb_keymap, key->keycode) == 0)
+    return 0;
+
+  if (xkb_keymap_key_get_syms_by_level (self->xkb_keymap, key->keycode,
+					key->group, key->level, &syms) != 1)
+    return 0;
+
+  return syms[0];
+}
+
+/* Virtual modifier a keysym stands for, or 0. */
+static guint
+virtual_mask_for_keysym (xkb_keysym_t sym)
+{
+  switch (sym)
+    {
+    case XKB_KEY_Super_L:
+    case XKB_KEY_Super_R:
+      return GDK_SUPER_MASK;
+    case XKB_KEY_Hyper_L:
+    case XKB_KEY_Hyper_R:
+      return GDK_HYPER_MASK;
+    case XKB_KEY_Meta_L:
+    case XKB_KEY_Meta_R:
+      return GDK_META_MASK;
+    default:
+      return 0;
+    }
+}
+
+/* Build the real-bit to virtual-modifier table.  Find every key that has a
+ * Super, Hyper or Meta keysym on any layout and level, press it in a scratch
+ * state and see which real modifiers it sets.  Scanning all levels matters:
+ * on a stock pc105 map the Alt key is { Alt_L, Meta_L }, so Meta shares
+ * Mod1 with Alt, as it does on X11. */
+static void
+build_modmap (GdkKeymapWayland *self)
+{
+  struct xkb_state *st;
+  xkb_keycode_t key, min, max;
+  gboolean have_super = FALSE;
+
+  memset (self->modmap, 0, sizeof self->modmap);
+  self->modmap_valid = TRUE;
+
+  if (self->xkb_keymap == NULL)
+    return;
+
+  st = xkb_state_new (self->xkb_keymap);
+  min = xkb_keymap_min_keycode (self->xkb_keymap);
+  max = xkb_keymap_max_keycode (self->xkb_keymap);
+
+  for (key = min; st && key <= max; key++)
+    {
+      guint vmask = 0;
+      xkb_mod_mask_t mods;
+      xkb_layout_index_t layout, n_layouts;
+      guint i;
+
+      n_layouts = xkb_keymap_num_layouts_for_key (self->xkb_keymap, key);
+
+      for (layout = 0; layout < n_layouts; layout++)
+	{
+	  xkb_level_index_t level, n_levels;
+
+	  n_levels = xkb_keymap_num_levels_for_key (self->xkb_keymap, key,
+						    layout);
+	  for (level = 0; level < n_levels; level++)
+	    {
+	      const xkb_keysym_t *syms;
+	      int n, k;
+
+	      n = xkb_keymap_key_get_syms_by_level (self->xkb_keymap, key,
+						    layout, level, &syms);
+	      for (k = 0; k < n; k++)
+		vmask |= virtual_mask_for_keysym (syms[k]);
+	    }
+	}
+
+      if (vmask == 0)
+	continue;
+
+      xkb_state_update_key (st, key, XKB_KEY_DOWN);
+      mods = xkb_state_serialize_mods (st, XKB_STATE_MODS_DEPRESSED);
+      xkb_state_update_key (st, key, XKB_KEY_UP);
+
+      for (i = 0; i < G_N_ELEMENTS (mod_table); i++)
+	{
+	  xkb_mod_index_t idx = xkb_keymap_mod_get_index (self->xkb_keymap,
+							  mod_table[i].name);
+
+	  if (idx == XKB_MOD_INVALID || idx >= 32 || !(mods & (1u << idx)))
+	    continue;
+	  self->modmap[i] |= vmask;
+	  if (vmask & GDK_SUPER_MASK)
+	    have_super = TRUE;
+	}
+    }
+
+  if (st)
+    xkb_state_unref (st);
+
+  /* No Super key found: Mod4 is Super by convention. */
+  if (!have_super)
+    self->modmap[6] |= GDK_SUPER_MASK;
+}
+
+void
+_gdk_wayland_keymap_add_virtual_modifiers (GdkKeymap       *keymap,
+					   GdkModifierType *state)
+{
+  GdkKeymapWayland *self = keymap_wayland_for (keymap);
+  int i;
+
+  if (self == NULL || self->xkb_keymap == NULL || state == NULL)
+    return;
+  if (!self->modmap_valid)
+    build_modmap (self);
+
+  /* Mod1 to Mod5, like GTK2 on X11 (bit 3 is Mod1). */
+  for (i = 3; i < 8; i++)
+    {
+      if ((1 << i) & *state)
+	*state |= self->modmap[i] & (GDK_SUPER_MASK | GDK_HYPER_MASK |
+				     GDK_META_MASK);
+    }
+}
+
+gboolean
+_gdk_wayland_keymap_map_virtual_modifiers (GdkKeymap       *keymap,
+					   GdkModifierType *state)
+{
+  GdkKeymapWayland *self = keymap_wayland_for (keymap);
+  static const guint vmods[] = { GDK_SUPER_MASK, GDK_HYPER_MASK, GDK_META_MASK };
+  gboolean retval = TRUE;
+  guint i, j;
+
+  if (self == NULL || self->xkb_keymap == NULL || state == NULL)
+    return TRUE;
+  if (!self->modmap_valid)
+    build_modmap (self);
+
+  for (j = 0; j < G_N_ELEMENTS (vmods); j++)
+    {
+      if (!(*state & vmods[j]))
+	continue;
+      for (i = 3; i < 8; i++)
+	{
+	  if (!(self->modmap[i] & vmods[j]))
+	    continue;
+	  if (*state & (1 << i))
+	    retval = FALSE;
+	  else
+	    *state |= 1 << i;
+	}
+    }
+
+  return retval;
+}
+
+gchar *
+_gdk_wayland_keyval_name (guint keyval)
+{
+  gchar buf[64];
+  gint len;
+
+  switch (keyval)
+    {
+    case GDK_KEY_Page_Up:
+      return "Page_Up";
+    case GDK_KEY_Page_Down:
+      return "Page_Down";
+    case GDK_KEY_KP_Page_Up:
+      return "KP_Page_Up";
+    case GDK_KEY_KP_Page_Down:
+      return "KP_Page_Down";
+    case 0:
+      return NULL;
+    }
+
+  /* Same as the X11 backend: the whole 0x01000000 range is named Uxxxx. */
+  if (keyval >= 0x01000000 && keyval <= 0x0110ffff)
+    {
+      g_snprintf (buf, sizeof buf, "U%04X", keyval & 0x00ffffff);
+      return (gchar *) g_intern_string (buf);
+    }
+
+  len = xkb_keysym_get_name (keyval, buf, sizeof buf);
+  if (len <= 0 || (buf[0] == '0' && buf[1] == 'x'))
+    return NULL;
+
+  return (gchar *) g_intern_string (buf);
+}
+
+guint
+_gdk_wayland_keyval_from_name (const gchar *keyval_name)
+{
+  g_return_val_if_fail (keyval_name != NULL, 0);
+
+  return xkb_keysym_from_name (keyval_name, XKB_KEYSYM_NO_FLAGS);
+}
+
+
+/* Keysyms where xkbcommon's case mapping differs from Xlib's XConvertCase.
+ * Generated by comparing both over 0..0xffffff.  Sorted by symbol.  Each
+ * row is { symbol, lower, upper }.  Needed so the Wayland results match the
+ * X11 backend (Latin-2/3/4 legacy keysyms, a few Greek and Cyrillic ones). */
+static const struct
+{
+  guint symbol;
+  guint lower;
+  guint upper;
+} case_exceptions[] = {
+  { 0x1a4, 0x1b4, 0x1a4 },
+  { 0x1b4, 0x1b4, 0x1a4 },
+  { 0x1c1, 0x1e1, 0x1c1 },
+  { 0x1c2, 0x1e2, 0x1c2 },
+  { 0x1c4, 0x1e4, 0x1c4 },
+  { 0x1c7, 0x1e7, 0x1c7 },
+  { 0x1c9, 0x1e9, 0x1c9 },
+  { 0x1cb, 0x1eb, 0x1cb },
+  { 0x1cd, 0x1ed, 0x1cd },
+  { 0x1ce, 0x1ee, 0x1ce },
+  { 0x1d3, 0x1f3, 0x1d3 },
+  { 0x1d4, 0x1f4, 0x1d4 },
+  { 0x1d6, 0x1f6, 0x1d6 },
+  { 0x1d7, 0x1f7, 0x1d7 },
+  { 0x1da, 0x1fa, 0x1da },
+  { 0x1dc, 0x1fc, 0x1dc },
+  { 0x1dd, 0x1fd, 0x1dd },
+  { 0x1e1, 0x1e1, 0x1c1 },
+  { 0x1e2, 0x1e2, 0x1c2 },
+  { 0x1e4, 0x1e4, 0x1c4 },
+  { 0x1e7, 0x1e7, 0x1c7 },
+  { 0x1e9, 0x1e9, 0x1c9 },
+  { 0x1eb, 0x1eb, 0x1cb },
+  { 0x1ed, 0x1ed, 0x1cd },
+  { 0x1ee, 0x1ee, 0x1ce },
+  { 0x1f3, 0x1f3, 0x1d3 },
+  { 0x1f4, 0x1f4, 0x1d4 },
+  { 0x1f6, 0x1f6, 0x1d6 },
+  { 0x1f7, 0x1f7, 0x1d7 },
+  { 0x1fa, 0x1fa, 0x1da },
+  { 0x1fc, 0x1fc, 0x1dc },
+  { 0x1fd, 0x1fd, 0x1dd },
+  { 0x2a2, 0x2b2, 0x2a2 },
+  { 0x2a3, 0x2b3, 0x2a3 },
+  { 0x2a4, 0x2b4, 0x2a4 },
+  { 0x2a5, 0x2b5, 0x2a5 },
+  { 0x2a9, 0x2a9, 0x2a9 },
+  { 0x2b2, 0x2b2, 0x2a2 },
+  { 0x2b3, 0x2b3, 0x2a3 },
+  { 0x2b4, 0x2b4, 0x2a4 },
+  { 0x2b5, 0x2b5, 0x2a5 },
+  { 0x2b9, 0x2b9, 0x2b9 },
+  { 0x2c7, 0x2e7, 0x2c7 },
+  { 0x2c8, 0x2e8, 0x2c8 },
+  { 0x2c9, 0x2e9, 0x2c9 },
+  { 0x2ca, 0x2ea, 0x2ca },
+  { 0x2cb, 0x2eb, 0x2cb },
+  { 0x2cc, 0x2ec, 0x2cc },
+  { 0x2cd, 0x2ed, 0x2cd },
+  { 0x2ce, 0x2ee, 0x2ce },
+  { 0x2cf, 0x2ef, 0x2cf },
+  { 0x2d0, 0x2f0, 0x2d0 },
+  { 0x2d1, 0x2f1, 0x2d1 },
+  { 0x2d2, 0x2f2, 0x2d2 },
+  { 0x2d3, 0x2f3, 0x2d3 },
+  { 0x2d4, 0x2f4, 0x2d4 },
+  { 0x2d6, 0x2f6, 0x2d6 },
+  { 0x2d7, 0x2f7, 0x2d7 },
+  { 0x2d9, 0x2f9, 0x2d9 },
+  { 0x2da, 0x2fa, 0x2da },
+  { 0x2db, 0x2fb, 0x2db },
+  { 0x2dc, 0x2fc, 0x2dc },
+  { 0x2e7, 0x2e7, 0x2c7 },
+  { 0x2e8, 0x2e8, 0x2c8 },
+  { 0x2e9, 0x2e9, 0x2c9 },
+  { 0x2ea, 0x2ea, 0x2ca },
+  { 0x2eb, 0x2eb, 0x2cb },
+  { 0x2ec, 0x2ec, 0x2cc },
+  { 0x2ed, 0x2ed, 0x2cd },
+  { 0x2ee, 0x2ee, 0x2ce },
+  { 0x2ef, 0x2ef, 0x2cf },
+  { 0x2f0, 0x2f0, 0x2d0 },
+  { 0x2f1, 0x2f1, 0x2d1 },
+  { 0x2f2, 0x2f2, 0x2d2 },
+  { 0x2f3, 0x2f3, 0x2d3 },
+  { 0x2f4, 0x2f4, 0x2d4 },
+  { 0x2f6, 0x2f6, 0x2d6 },
+  { 0x2f7, 0x2f7, 0x2d7 },
+  { 0x2f9, 0x2f9, 0x2d9 },
+  { 0x2fa, 0x2fa, 0x2da },
+  { 0x2fb, 0x2fb, 0x2db },
+  { 0x2fc, 0x2fc, 0x2dc },
+  { 0x3a4, 0x3b4, 0x3a4 },
+  { 0x3a7, 0x3b7, 0x3a7 },
+  { 0x3a8, 0x3b8, 0x3a8 },
+  { 0x3a9, 0x3b9, 0x3a9 },
+  { 0x3b4, 0x3b4, 0x3a4 },
+  { 0x3b7, 0x3b7, 0x3a7 },
+  { 0x3b8, 0x3b8, 0x3a8 },
+  { 0x3b9, 0x3b9, 0x3a9 },
+  { 0x3c1, 0x3e1, 0x3c1 },
+  { 0x3c2, 0x3e2, 0x3c2 },
+  { 0x3c3, 0x3e3, 0x3c3 },
+  { 0x3c4, 0x3e4, 0x3c4 },
+  { 0x3c5, 0x3e5, 0x3c5 },
+  { 0x3c6, 0x3e6, 0x3c6 },
+  { 0x3c8, 0x3e8, 0x3c8 },
+  { 0x3c9, 0x3e9, 0x3c9 },
+  { 0x3ca, 0x3ea, 0x3ca },
+  { 0x3cb, 0x3eb, 0x3cb },
+  { 0x3cd, 0x3ed, 0x3cd },
+  { 0x3ce, 0x3ee, 0x3ce },
+  { 0x3d0, 0x3f0, 0x3d0 },
+  { 0x3d4, 0x3f4, 0x3d4 },
+  { 0x3d5, 0x3f5, 0x3d5 },
+  { 0x3d6, 0x3f6, 0x3d6 },
+  { 0x3d7, 0x3f7, 0x3d7 },
+  { 0x3d8, 0x3f8, 0x3d8 },
+  { 0x3da, 0x3fa, 0x3da },
+  { 0x3db, 0x3fb, 0x3db },
+  { 0x3dc, 0x3fc, 0x3dc },
+  { 0x3e1, 0x3e1, 0x3c1 },
+  { 0x3e2, 0x3e2, 0x3c2 },
+  { 0x3e3, 0x3e3, 0x3c3 },
+  { 0x3e4, 0x3e4, 0x3c4 },
+  { 0x3e5, 0x3e5, 0x3c5 },
+  { 0x3e6, 0x3e6, 0x3c6 },
+  { 0x3e8, 0x3e8, 0x3c8 },
+  { 0x3e9, 0x3e9, 0x3c9 },
+  { 0x3ea, 0x3ea, 0x3ca },
+  { 0x3eb, 0x3eb, 0x3cb },
+  { 0x3ed, 0x3ed, 0x3cd },
+  { 0x3ee, 0x3ee, 0x3ce },
+  { 0x3f0, 0x3f0, 0x3d0 },
+  { 0x3f4, 0x3f4, 0x3d4 },
+  { 0x3f5, 0x3f5, 0x3d5 },
+  { 0x3f6, 0x3f6, 0x3d6 },
+  { 0x3f7, 0x3f7, 0x3d7 },
+  { 0x3f8, 0x3f8, 0x3d8 },
+  { 0x3fa, 0x3fa, 0x3da },
+  { 0x3fb, 0x3fb, 0x3db },
+  { 0x3fc, 0x3fc, 0x3dc },
+  { 0x7a6, 0x7b6, 0x7a6 },
+  { 0x7aa, 0x7ba, 0x7aa },
+  { 0x7d3, 0x7f3, 0x7d3 },
+  { 0x8f6, 0x8f6, 0x8f6 },
+};
+void
+_gdk_wayland_keyval_convert_case (guint  symbol,
+				  guint *lower,
+				  guint *upper)
+{
+  guint xlower = 0;
+  guint xupper = 0;
+
+  /* Directly encoded 24-bit UCS characters. */
+  if ((symbol & 0xff000000) == 0x01000000)
+    {
+      if (lower)
+	*lower = gdk_unicode_to_keyval (g_unichar_tolower (symbol & 0x00ffffff));
+      if (upper)
+	*upper = gdk_unicode_to_keyval (g_unichar_toupper (symbol & 0x00ffffff));
+      return;
+    }
+
+  if (symbol)
+    {
+      guint lo = 0, hi = G_N_ELEMENTS (case_exceptions);
+
+      xlower = xkb_keysym_to_lower (symbol);
+      xupper = xkb_keysym_to_upper (symbol);
+
+      while (lo < hi)
+	{
+	  guint mid = (lo + hi) / 2;
+
+	  if (case_exceptions[mid].symbol == symbol)
+	    {
+	      xlower = case_exceptions[mid].lower;
+	      xupper = case_exceptions[mid].upper;
+	      break;
+	    }
+	  if (case_exceptions[mid].symbol < symbol)
+	    lo = mid + 1;
+	  else
+	    hi = mid;
+	}
+    }
+
+  if (lower)
+    *lower = xlower;
+  if (upper)
+    *upper = xupper;
 }

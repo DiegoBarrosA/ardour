@@ -67,6 +67,7 @@ libydk_sources = [
 libydk_wayland_sources = [
     'ydk/wayland/gdkcolor-wayland.c',
     'ydk/wayland/gdkcursor-wayland.c',
+    'ydk/wayland/gdkdisplay-misc-wayland.c',
     'ydk/wayland/gdkdisplay-wayland.c',
     'ydk/wayland/gdkdnd-wayland.c',
     'ydk/wayland/gdkdrawable-wayland.c',
@@ -80,6 +81,7 @@ libydk_wayland_sources = [
     'ydk/wayland/gdkscreen-wayland.c',
     'ydk/wayland/gdkselection-wayland.c',
     'ydk/wayland/gdkvisual-wayland.c',
+    'ydk/wayland/gdkwindow-hints-wayland.c',
     'ydk/wayland/gdkwindowimpl-wayland.c',
     'ydk/wayland/xdg-shell-protocol.c',
 ]

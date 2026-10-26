@@ -136,28 +136,171 @@ Known gaps (deliberately left):
 - Everything is verified through hooks; a real compositor may order events
   differently (the pointer `leave` handler ends implicit grabs defensively).
 
-Follow-up audit (M6b) of public symbols that are still X11-owned and cast a
-Wayland object to an X11 one:
+### M6b - Remaining X11-bound public functions, display hardening (DONE)
 
-- Keymap: `gdk_keymap_get_direction`, `_have_bidi_layouts`,
-  `_get_caps_lock_state`, `_get_entries_for_keyval`, `_get_entries_for_keycode`,
-  `_lookup_key`, `_add_virtual_modifiers`, `_map_virtual_modifiers`,
-  `gdk_keyval_name`, `gdk_keyval_from_name` (GtkEntry realize calls
-  `get_direction`).
-- Display: `gdk_display_get_name` (the class vfunc exists), `_supports_shapes`,
-  `_supports_input_shapes`, `_supports_composite`,
-  `_supports_selection_notification`, `_supports_clipboard_persistence`,
-  `_request_selection_notification`, `_store_clipboard`,
-  `_get_default_group`, `gdk_get_display`, `gdk_notify_startup_complete*`,
-  the client message filters, `gdk_event_send_client_message_for_display`,
-  `gdk_event_get_graphics_expose`.
-- Devices: `gdk_devices_list`, `gdk_display_list_devices`, `gdk_device_*`
-  accessors, `gdk_input_set_extension_events`.
-- Toplevel hints in `gdkwindow-x11.c` (about 55 functions: title, transient,
-  type hint, focus, iconify, maximize, fullscreen, icons, geometry hints,
-  move/resize drags, frame extents, keep above/below, opacity, role, group,
-  `gdk_window_lookup`, foreign windows), `gdk_spawn_on_screen*`,
-  `gdk_test_simulate_*`.  Roughly 100 public functions in all.
+Follow-up audit of the public symbols that were still X11-owned and cast a
+Wayland object to an X11 one.  Method: `nm` on every `build/ydk/x11/*.o`
+(public names are the `IA__gdk_*` symbols, minus `IA__gdk_x11_*` and
+`IA__gdkx_*`, which are X11 API by design), `nm -u` on the core and Wayland
+objects, then the body of every candidate.  The result is 116 symbols:
+**86 dispatched** and **30 that stay in the X11 objects on purpose**.
+
+Dispatched (each is `_gdk_wayland_<name>` plus `_gdk_x11_<name>` behind a
+dispatcher in `ydk/gdkbackend.c`):
+
+- Keymap (11, `gdkkeys-wayland.c`): `gdk_keymap_get_direction`,
+  `_have_bidi_layouts`, `_get_caps_lock_state`, `_get_entries_for_keyval`,
+  `_get_entries_for_keycode`, `_lookup_key`, `_add_virtual_modifiers`,
+  `_map_virtual_modifiers`, `gdk_keyval_name`, `gdk_keyval_from_name`,
+  `gdk_keyval_convert_case`.
+- Display (30, `gdkdisplay-misc-wayland.c`): `gdk_display_get_name`, the
+  `supports_*` queries, `request_selection_notification`, `store_clipboard`,
+  `get_default_group`, `gdk_get_display`, `gdk_notify_startup_complete*`, the
+  client message filters, `gdk_event_send_client_message_for_display`,
+  `gdk_event_get_graphics_expose`, `gdk_devices_list`,
+  `gdk_display_list_devices`, `gdk_device_get_history`,
+  `gdk_input_set_extension_events`, `gdk_spawn_*_on_screen*`,
+  `gdk_set_locale`, `gdk_wcstombs`, `gdk_mbstowcs`, `gdk_error_trap_*`,
+  `gdk_get_use_xshm`, `gdk_fontset_load`.
+- Toplevel hints (45, `gdkwindow-hints-wayland.c`): title, role, startup id,
+  transient parent, type hint, modal / skip / urgency hints, size hints,
+  focus, icons, iconify, stick, maximize, fullscreen, keep above / below,
+  group, decorations, functions, opacity, move and resize drags, root
+  origin, frame extents, synchronized configure, `gdk_window_destroy_notify`,
+  foreign window and lookup stubs.
+
+Stays X11-bound, and why (the list is the allowlist in
+`scripts/audit-x11-symbols.sh`, which fails on any other name):
+
+- 7 type getters (`gdk_colormap_get_type`, `gdk_drag_context_get_type`,
+  `gdk_image_get_type`, `gdk_visual_get_type`, `gdk_device_get_type`,
+  `gdk_pixmap_impl_x11_get_type`, `gdk_window_impl_x11_get_type`): GObject
+  types whose class is X11 specific by design.
+- 20 backend neutral (bodies read, no X11 cast, no Xlib):
+  `gdk_drag_context_new/_ref/_unref`, the `gdk_device_*` accessors
+  (`free_history`, `get_axis`, `get_axis_use`, `get_has_cursor`, `get_key`,
+  `get_mode`, `get_name`, `get_n_axes`, `get_n_keys`, `get_source`,
+  `set_axis_use`, `set_key`, `set_source`, `get_state`, `set_mode`),
+  `gdk_set_use_xshm` (empty) and `gdk_utf8_to_string_target` (pure).
+- 3 guarded inside the X11 source: `gdk_net_wm_supports`,
+  `gdk_xid_table_lookup`, `gdk_xid_table_lookup_for_display`.  They are
+  declared in `gdkx.h`, and the build only force-includes the `gdkx.h` alias
+  declarations into X11 objects, so `gdkbackend.c` cannot define an exported
+  alias for them.  Each now returns NULL / FALSE when its display or screen is
+  not an X11 one.
+- The old global `gdk_display` (`Display *`) and `_xwindow_get_shape`.
+
+Discrepancies with the first audit, found by method:
+
+- `gdk_test_simulate_key` / `_button` are defined nowhere:
+  `gdktestutils-x11.c` is not built and `libydk.so` has no `gdk_test_*`
+  export.  Nothing to dispatch.  If ytk needs them later, add both backends in
+  a new milestone.
+- The toplevel hints are 45 functions, not about 55.
+- `gdk_keyval_name`, `_from_name` and `_convert_case` are display-less Xlib
+  table lookups.  They did not crash, but they are Xlib, so they now use
+  xkbcommon.  `convert_case` keeps an exception table to match Xlib 1.8.13 where
+  xkbcommon differs (mostly the Latin-2/3/4 range).
+- `gdk_spawn_*` children got `DISPLAY=<wayland socket>`, which breaks Xlib
+  children.  They now get `WAYLAND_DISPLAY`, from the socket name the display
+  really connected to (`GDKWDisplayWayland.socket_name`), and `DISPLAY` is
+  left alone.
+- After `gdk_set_locale ()` under a non-C locale `gdk_wcstombs` and
+  `gdk_mbstowcs` called `GDK_DISPLAY_XDISPLAY` on the default display: a
+  crash path on Wayland, and ytk calls `gdk_set_locale` at start.
+- `gdk_fontset_load` and `gdk_devices_list` are thin wrappers that called the
+  renamed `_gdk_x11_*` function directly, so on Wayland they reached X11 code.
+
+Display hardening (`gdkdisplay-wayland.c`): `dispose` destroys every
+toplevel while the display is still valid, finalize walks a copy of
+`display->windows`, releases the keymap, and sets
+`GDKWScreenWayland.display` of the (leaked) default screen to NULL, so a
+`GdkWindow` that outlives its display sees `gdk_screen_get_display () ==
+NULL` instead of a dangling pointer.  `gdk_window_wayland_destroy`,
+`_gdk_wayland_window_impl_teardown`, hide and the impl finalize work with a
+NULL display.  `flush` and `sync` return early without a `wl_display`.
+
+Other fixes on the way:
+
+- `gdk_window_wayland_destroy` now ends pointer, keyboard and seat grabs at
+  once (it used to leave an explicit pointer grab alive until the next event).
+- `xdg_toplevel_handle_close` builds a heap event.
+- Titles and app ids are capped below the 4096 byte Wayland message limit.
+- `begin_move_drag` / `begin_resize_drag` need a button that is held now (the
+  last `wl_pointer.button` serial may belong to a release).
+- Size hints keep the requested values; only the value sent is clamped.
+- A transient parent that was not mapped at the child's first configure is
+  sent when the parent maps (`_gdk_wayland_window_hints_mapped`).
+- Meta / Super / Hyper are found on any level and layout, and Mod1 is
+  included in the virtual modifier maps, as in GTK2 on X11 (on a stock pc105
+  map the Alt key is `{ Alt_L, Meta_L }`, so Mod1 gains Meta).
+
+Verification:
+
+- `scripts/audit-x11-symbols.sh` (run first by `scripts/smoke-test.sh`): the X11
+  objects define exactly the 30 allowlisted public symbols, and each of the
+  86 dispatched names is exported once, defined as `IA__<name>` by the
+  dispatcher, and implemented by both backends.
+- `m6b_exercise` in the demo calls all 86 functions through the public API
+  (`ydk_demo: M6B: PASS`), plus the gaps of the M6 audit: pointer state with a
+  button held, warp, beep, `gdk_events_pending`, destroying windows that hold
+  key repeat or grabs, and closing a second display with live windows.  New
+  hooks: `_gdk_wayland_test_toplevel_info`, `_gdk_wayland_test_toplevel_configure`,
+  `_gdk_wayland_test_keyboard_state`, `_gdk_wayland_test_keyboard_keymap_text`.
+- Under X11 the demo calls the dispatched functions too
+  (`ydk_demo: M6B-X11: PASS`), which proves the rename map.
+- `nix run .#valgrind-demo` (`scripts/valgrind-smoke.sh`) runs the Wayland
+  demo under valgrind, separate from the smoke test because it is 20 to 50
+  times slower.  `scripts/valgrind.supp` is empty on purpose and documents
+  the rules for adding entries.  The run is clean now (0 errors, nothing
+  suppressed).  The valgrind step was not run against the old code, so the
+  expected findings (read of freed memory in display finalize with a live
+  window, the uninitialised `GdkColor` in the demo) are unconfirmed.  What was
+  confirmed: with the display `dispose` disabled, the demo's window checks
+  in step C5 fail.
+
+Real versus stubbed:
+
+- Real: keymap and keyval functions (xkbcommon), display name and socket name,
+  default group, device list, spawn environment, multibyte conversion, title /
+  app id / role storage and transmission, transient parent, size hints,
+  maximize / fullscreen / minimize requests and their window state events,
+  interactive move and resize requests, group, decorations, opacity storage.
+- Stubbed and reporting a safe value: shapes, input shapes (FALSE until M7),
+  selection notification and clipboard persistence (FALSE until M8), composite
+  (FALSE), device history, extension events, startup notification, client
+  message send and filters, foreign windows and lookups (NULL), icons
+  (stored, never sent: xdg-shell has no icon request), type hints, keep
+  above / below, sticky, skip taskbar / pager, urgency, modal (stored only),
+  override redirect (until M9).
+- Not observable on Wayland: `GDK_WINDOW_STATE_ICONIFIED`, `_ABOVE`, `_BELOW`,
+  `_STICKY` are never set (the compositor does not report them), and GDK2 has
+  no FOCUSED state, so xdg `activated` is only recorded in the test info.
+
+Known gaps (deliberately left, in addition to the M6 list):
+
+- A compositor initiated resize (a maximize answer, a tiling window manager)
+  changes the shm buffer size but does not update the `GdkWindow` size and does
+  not emit `GDK_CONFIGURE`.  Found while testing maximize; belongs with M10.
+- The default screen is leaked on display close (root window, system visual
+  and colormap with it).  The fix needs a dispose in `gdkscreen-wayland.c`
+  that calls `_gdk_window_destroy (root, TRUE)` like `gdk_screen_x11_dispose`,
+  then an unref in display finalize.
+- `gdk_window_wayland_hide` commits without attaching a NULL buffer, so a
+  hidden window stays visible on a real compositor.
+- `wl_registry.global_remove` is empty: hot-unplugged outputs and seats are
+  not handled.
+- `gdk_window_destroy_notify` unrefs the window like the X11 version.  Nothing
+  on Wayland calls it, so it is only safe for a caller that owns that
+  reference.
+- A child keeps `parent_sent` set if its parent's toplevel is torn down and
+  the parent window is shown again (cannot happen today: a destroyed window
+  is not shown again).
+- Raw `seat->grab.confine_to` needs a weak pointer before M7.
+- `drag_sent` of the move / resize hook depends on a `wl_seat` being present,
+  which the headless Weston does not offer, so the demo does not assert it.
+- Everything is verified against Weston headless and the test hooks; no real
+  seat, tablet or multi-output compositor has been tried.
 
 ### M7 - Cursors, shapes, fonts
 

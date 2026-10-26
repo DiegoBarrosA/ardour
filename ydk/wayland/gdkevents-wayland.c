@@ -1496,33 +1496,20 @@ test_impl (GdkWindow *window)
   return impl;
 }
 
-gboolean
-_gdk_wayland_test_keyboard_keymap (GdkDisplay *display)
+/* Feeds @text (XKB_V1 keymap text) through the real wl_keyboard_keymap
+ * listener, the way a compositor sends it. */
+static gboolean
+test_keymap_send_text (GDKWDisplayWayland *wd, const gchar *text, gsize len)
 {
-  GDKWDisplayWayland *wd = test_display (display);
-  gchar *text;
-  gsize len;
   int fd;
-  gboolean ok;
-
-  if (wd == NULL)
-    return FALSE;
-
-  text = _gdk_wayland_keymap_default_text (&len);
 
   fd = memfd_create ("ydk-test-keymap", MFD_CLOEXEC);
   if (fd < 0)
-    {
-      g_free (text);
-      return FALSE;
-    }
+    return FALSE;
 
   /* len + 1 includes the NUL, like a real compositor */
-  ok = write (fd, text, len + 1) == (ssize_t) (len + 1) &&
-       lseek (fd, 0, SEEK_SET) == 0;
-  g_free (text);
-
-  if (!ok)
+  if (write (fd, text, len + 1) != (ssize_t) (len + 1) ||
+      lseek (fd, 0, SEEK_SET) != 0)
     {
       close (fd);
       return FALSE;
@@ -1533,6 +1520,35 @@ _gdk_wayland_test_keyboard_keymap (GdkDisplay *display)
 		      (uint32_t) (len + 1));
 
   return TRUE;
+}
+
+gboolean
+_gdk_wayland_test_keyboard_keymap (GdkDisplay *display)
+{
+  GDKWDisplayWayland *wd = test_display (display);
+  gchar *text;
+  gsize len;
+  gboolean ok;
+
+  if (wd == NULL)
+    return FALSE;
+
+  text = _gdk_wayland_keymap_default_text (&len);
+  ok = test_keymap_send_text (wd, text, len);
+  g_free (text);
+
+  return ok;
+}
+
+gboolean
+_gdk_wayland_test_keyboard_keymap_text (GdkDisplay *display, const gchar *text)
+{
+  GDKWDisplayWayland *wd = test_display (display);
+
+  if (wd == NULL || text == NULL)
+    return FALSE;
+
+  return test_keymap_send_text (wd, text, strlen (text));
 }
 
 gboolean
@@ -1616,6 +1632,25 @@ _gdk_wayland_test_keyboard_modifiers (GdkDisplay     *display,
 
   mask = _gdk_wayland_keymap_xkb_mods_from_gdk (wd->keymap, gdk_mods);
   wl_keyboard_modifiers (wd, NULL, ++test_serial, mask, 0, 0, 0);
+
+  return TRUE;
+}
+
+gboolean
+_gdk_wayland_test_keyboard_state (GdkDisplay     *display,
+				  GdkModifierType depressed,
+				  GdkModifierType locked,
+				  guint           group)
+{
+  GDKWDisplayWayland *wd = test_display (display);
+  guint dep, lock;
+
+  if (wd == NULL || !keymap_ready (wd))
+    return FALSE;
+
+  dep = _gdk_wayland_keymap_xkb_mods_from_gdk (wd->keymap, depressed);
+  lock = _gdk_wayland_keymap_xkb_mods_from_gdk (wd->keymap, locked);
+  wl_keyboard_modifiers (wd, NULL, ++test_serial, dep, 0, lock, group);
 
   return TRUE;
 }

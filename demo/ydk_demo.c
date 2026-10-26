@@ -9,18 +9,21 @@
  * exits.  Exit codes are meaningful to the harness:
  *
  *   0  window created and drawn (X11 baseline and Wayland since M2); under
- *      GDK_BACKEND=wayland also every M4, M5, M5C, M5V and M6 check passed
- *      (see m4_exercise, m5_exercise, m5c_exercise, m5v_exercise,
- *      m6_exercise)
+ *      GDK_BACKEND=wayland also every M4, M5, M5C, M5V, M6 and M6B check
+ *      passed (see m4_exercise, m5_exercise, m5c_exercise, m5v_exercise,
+ *      m6_exercise, m6b_exercise); under GDK_BACKEND=x11 the dispatched M6b
+ *      functions are checked to still reach X11 (m6b_x11_exercise)
  *   77 skipped: backend has no window support yet
  *   78 skipped: display opened but primary screen unavailable
- *   1  nothing worked (display open failed), an M4 / M5 / M5C / M5V / M6 check
+ *   1  nothing worked (display open failed), an M4 / M5 / M5C / M5V / M6 / M6B check
  *      failed, or a g_critical / g_error was logged (see fatal_log_handler)
  */
 
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/types.h>
+#include <sys/wait.h>
 
 #include <glib.h>
 #include <ydk/gdk.h>
@@ -2274,11 +2277,1480 @@ m6_exercise (void)
   return m6_failures;
 }
 
+/* ---- M6b -----------------------------------------------------------------
+ *
+ * Every public function that M6b moved behind the backend dispatcher: the
+ * keymap and keyval functions, the display level functions, and the toplevel
+ * hints.  Plus the gaps found by the M6 audit (pointer state with a button
+ * held, warp, beep, events_pending, destroying windows that hold input
+ * state, closing a display that still has windows).
+ *
+ * Toplevel hints are observed with _gdk_wayland_test_toplevel_info (), which
+ * reports what the backend last sent to the compositor, and
+ * _gdk_wayland_test_toplevel_configure (), which feeds an xdg_toplevel
+ * configure with chosen states through the real listener.  Keyboard state and
+ * keymap text come from the two hooks added for M6b.  Same style as M6:
+ * every check runs, failures are counted, CRITICAL stays fatal.
+ */
+
+static int m6b_failures;
+
+#define M6B_CHECK(cond, what)						\
+  G_STMT_START {							\
+    if (!(cond))							\
+      {									\
+	g_printerr ("ydk_demo: M6B check failed: %s\n", what);		\
+	m6b_failures++;							\
+      }									\
+  } G_STMT_END
+
+#define M6B_EQ_INT(got, want, what)					\
+  G_STMT_START {							\
+    long g_ = (long) (got), w_ = (long) (want);				\
+    if (g_ != w_)							\
+      {									\
+	g_printerr ("ydk_demo: M6B check failed: %s: got %ld want %ld\n", \
+		    what, g_, w_);					\
+	m6b_failures++;							\
+      }									\
+  } G_STMT_END
+
+#define M6B_EQ_STR(got, want, what)					\
+  G_STMT_START {							\
+    const char *g_ = (got), *w_ = (want);				\
+    if (g_strcmp0 (g_, w_) != 0)					\
+      {									\
+	g_printerr ("ydk_demo: M6B check failed: %s: got \"%s\" want \"%s\"\n", \
+		    what, g_ ? g_ : "(null)", w_ ? w_ : "(null)");	\
+	m6b_failures++;							\
+      }									\
+  } G_STMT_END
+
+#define M6B_HOOK(call, what)						\
+  G_STMT_START {							\
+    if (!(call))							\
+      {									\
+	g_printerr ("ydk_demo: M6B check failed: %s: hook did not deliver\n", \
+		    what);						\
+	m6b_failures++;							\
+      }									\
+  } G_STMT_END
+
+/* exported by libydk but declared only in the private gdkprivate.h */
+extern void gdk_window_destroy_notify (GdkWindow *window);
+
+#define DEMO_WINDOW_DESTROYED(w) (((GdkWindowObject *) (w))->destroyed)
+
+static gboolean
+m6b_info (GdkWindow *w, GDKWTestToplevelInfo *info)
+{
+  memset (info, 0, sizeof *info);
+  return _gdk_wayland_test_toplevel_info (w, info);
+}
+
+static GdkWindow *
+m6b_toplevel (gint w, gint h, gint event_mask, const gchar *wmclass_name,
+	      const gchar *wmclass_class)
+{
+  GdkWindowAttr attr;
+  gint mask = 0;
+
+  memset (&attr, 0, sizeof attr);
+  attr.window_type = GDK_WINDOW_TOPLEVEL;
+  attr.wclass = GDK_INPUT_OUTPUT;
+  attr.width = w;
+  attr.height = h;
+  attr.event_mask = event_mask;
+  if (wmclass_name)
+    {
+      attr.wmclass_name = (gchar *) wmclass_name;
+      attr.wmclass_class = (gchar *) wmclass_class;
+      mask |= GDK_WA_WMCLASS;
+    }
+
+  return gdk_window_new (gdk_get_default_root_window (), &attr, mask);
+}
+
+static GdkFilterReturn
+m6b_dummy_filter (GdkXEvent *xevent, GdkEvent *event, gpointer data)
+{
+  return GDK_FILTER_CONTINUE;
+}
+
+/* ---- keymap ---------------------------------------------------------- */
+
+/* Two layouts: "us"-like latin and a hebrew aleph group, for bidi tests. */
+static const gchar m6b_bidi_keymap[] =
+  "xkb_keymap {\n"
+  "xkb_keycodes \"ydk\" {\n"
+  "  minimum = 8;\n"
+  "  maximum = 255;\n"
+  "  <AC01> = 38;\n"
+  "  <LFSH> = 50;\n"
+  "};\n"
+  "xkb_types \"ydk\" {\n"
+  "  type \"ONE_LEVEL\" {\n"
+  "    modifiers = none;\n"
+  "    map[none] = Level1;\n"
+  "    level_name[Level1] = \"Any\";\n"
+  "  };\n"
+  "  type \"TWO_LEVEL\" {\n"
+  "    modifiers = Shift;\n"
+  "    map[Shift] = Level2;\n"
+  "    level_name[Level1] = \"Base\";\n"
+  "    level_name[Level2] = \"Shift\";\n"
+  "  };\n"
+  "};\n"
+  "xkb_compatibility \"ydk\" {\n"
+  "  interpret Any+AnyOf(all) {\n"
+  "    action = SetMods(modifiers=modMapMods,clearLocks);\n"
+  "  };\n"
+  "};\n"
+  "xkb_symbols \"ydk\" {\n"
+  "  key <AC01> { type = \"TWO_LEVEL\",\n"
+  "    symbols[Group1] = [ a, A ],\n"
+  "    symbols[Group2] = [ hebrew_aleph, hebrew_aleph ] };\n"
+  "  key <LFSH> { [ Shift_L ] };\n"
+  "  modifier_map Shift { <LFSH> };\n"
+  "};\n"
+  "};\n";
+
+static void
+m6b_keymap (GdkDisplay *d)
+{
+  GdkKeymap *keymap;
+  GdkKeymapKey *keys = NULL;
+  guint *keyvals = NULL;
+  gint n = 0, i;
+  gboolean found;
+  GdkModifierType state;
+  GdkKeymapKey key;
+  guint lower, upper;
+  gboolean alt_is_meta;
+
+  M6B_HOOK (_gdk_wayland_test_keyboard_keymap (d), "m6b keymap");
+  m6_drain ();
+  keymap = gdk_keymap_get_for_display (d);
+  M6B_CHECK (keymap != NULL, "keymap for display");
+  if (keymap == NULL)
+    return;
+
+  M6B_EQ_INT (gdk_keymap_get_direction (keymap), PANGO_DIRECTION_LTR,
+	      "default keymap direction is LTR");
+  M6B_CHECK (!gdk_keymap_have_bidi_layouts (keymap),
+	     "default keymap has no bidi layouts");
+
+  /* caps lock follows the live modifier state */
+  M6B_CHECK (!gdk_keymap_get_caps_lock_state (keymap), "caps lock off");
+  M6B_HOOK (_gdk_wayland_test_keyboard_state (d, 0, GDK_LOCK_MASK, 0),
+	    "caps lock on");
+  M6B_CHECK (gdk_keymap_get_caps_lock_state (keymap), "caps lock on after hook");
+  M6B_HOOK (_gdk_wayland_test_keyboard_state (d, 0, 0, 0), "caps lock off hook");
+  M6B_CHECK (!gdk_keymap_get_caps_lock_state (keymap), "caps lock off again");
+
+  /* entries for a keyval; evdev A is 30, hardware keycode 38 */
+  keys = NULL;
+  n = 0;
+  M6B_CHECK (gdk_keymap_get_entries_for_keyval (keymap, GDK_a, &keys, &n) &&
+	     n > 0 && keys != NULL, "entries for GDK_a");
+  found = FALSE;
+  for (i = 0; keys && i < n; i++)
+    if (keys[i].keycode == 38 && keys[i].group == 0 && keys[i].level == 0)
+      found = TRUE;
+  M6B_CHECK (found, "GDK_a is keycode 38 group 0 level 0");
+  g_free (keys);
+
+  keys = NULL;
+  n = 0;
+  M6B_CHECK (gdk_keymap_get_entries_for_keyval (keymap, GDK_A, &keys, &n),
+	     "entries for GDK_A");
+  found = FALSE;
+  for (i = 0; keys && i < n; i++)
+    if (keys[i].keycode == 38 && keys[i].group == 0 && keys[i].level == 1)
+      found = TRUE;
+  M6B_CHECK (found, "GDK_A is keycode 38 group 0 level 1");
+  g_free (keys);
+
+  keys = (GdkKeymapKey *) 0x1;
+  n = 99;
+  M6B_CHECK (!gdk_keymap_get_entries_for_keyval (keymap, GDK_hebrew_aleph,
+						 &keys, &n),
+	     "no entry for hebrew aleph in a latin keymap");
+  M6B_CHECK (keys == NULL && n == 0, "failed lookup clears the outputs");
+
+  /* entries for a keycode */
+  keys = NULL;
+  keyvals = NULL;
+  n = 0;
+  M6B_CHECK (gdk_keymap_get_entries_for_keycode (keymap, 38, &keys, &keyvals,
+						 &n) && n >= 2,
+	     "entries for keycode 38");
+  if (keyvals && n >= 2)
+    {
+      M6B_EQ_INT (keyvals[0], GDK_a, "keycode 38 entry 0 is a");
+      M6B_EQ_INT (keyvals[1], GDK_A, "keycode 38 entry 1 is A");
+    }
+  g_free (keys);
+  g_free (keyvals);
+  M6B_CHECK (!gdk_keymap_get_entries_for_keycode (keymap, 0, NULL, NULL, &n),
+	     "keycode 0 has no entries");
+  M6B_CHECK (!gdk_keymap_get_entries_for_keycode (keymap, 999, NULL, NULL, &n),
+	     "keycode 999 has no entries");
+
+  /* lookup_key */
+  key.keycode = 38;
+  key.group = 0;
+  key.level = 0;
+  M6B_EQ_INT (gdk_keymap_lookup_key (keymap, &key), GDK_a, "lookup 38/0/0");
+  key.level = 1;
+  M6B_EQ_INT (gdk_keymap_lookup_key (keymap, &key), GDK_A, "lookup 38/0/1");
+  key.group = 5;
+  key.level = 0;
+  M6B_EQ_INT (gdk_keymap_lookup_key (keymap, &key), 0, "lookup 38/5/0");
+
+  /* virtual modifiers.  Meta shares Mod1 with Alt only when the Alt key
+   * carries a Meta keysym (a stock pc105 map does), so ask the keymap. */
+  state = GDK_META_MASK;
+  gdk_keymap_map_virtual_modifiers (keymap, &state);
+  alt_is_meta = (state & GDK_MOD1_MASK) != 0;
+
+  state = GDK_MOD4_MASK;
+  gdk_keymap_add_virtual_modifiers (keymap, &state);
+  M6B_CHECK ((state & GDK_SUPER_MASK) && (state & GDK_MOD4_MASK),
+	     "add_virtual_modifiers: Mod4 gains Super");
+  state = GDK_SHIFT_MASK;
+  gdk_keymap_add_virtual_modifiers (keymap, &state);
+  M6B_EQ_INT (state, GDK_SHIFT_MASK, "add_virtual_modifiers: Shift unchanged");
+  state = GDK_MOD1_MASK;
+  gdk_keymap_add_virtual_modifiers (keymap, &state);
+  M6B_CHECK (((state & GDK_META_MASK) != 0) == alt_is_meta,
+	     "add_virtual_modifiers: Mod1 gains Meta only if Alt is Meta");
+  M6B_CHECK (state & GDK_MOD1_MASK, "add_virtual_modifiers keeps Mod1");
+
+  state = GDK_SUPER_MASK;
+  M6B_CHECK (gdk_keymap_map_virtual_modifiers (keymap, &state),
+	     "map_virtual_modifiers: Super maps");
+  M6B_CHECK (state & GDK_MOD4_MASK, "map_virtual_modifiers: Super gains Mod4");
+  state = GDK_SUPER_MASK | GDK_MOD4_MASK;
+  M6B_CHECK (!gdk_keymap_map_virtual_modifiers (keymap, &state),
+	     "map_virtual_modifiers: Super with Mod4 set returns FALSE");
+
+  /* names */
+  M6B_EQ_STR (gdk_keyval_name (GDK_a), "a", "name of a");
+  M6B_EQ_STR (gdk_keyval_name (GDK_Return), "Return", "name of Return");
+  M6B_EQ_STR (gdk_keyval_name (GDK_Page_Up), "Page_Up", "name of Page_Up");
+  M6B_CHECK (gdk_keyval_name (0) == NULL, "name of 0 is NULL");
+  M6B_EQ_STR (gdk_keyval_name (0x10020AC), "U20AC", "name of U+20AC");
+  M6B_EQ_STR (gdk_keyval_name (0x1000041), "U0041",
+	      "name of the low unicode range, same as X11");
+  M6B_EQ_INT (gdk_keyval_from_name ("a"), GDK_a, "from_name a");
+  M6B_EQ_INT (gdk_keyval_from_name ("Return"), GDK_Return, "from_name Return");
+  M6B_EQ_INT (gdk_keyval_from_name ("Page_Up"), GDK_Page_Up,
+	      "from_name Page_Up");
+  M6B_EQ_INT (gdk_keyval_from_name ("U20AC"), 0x10020AC, "from_name U20AC");
+  M6B_EQ_INT (gdk_keyval_from_name ("NoSuchKeysym"), 0,
+	      "from_name of an unknown name is 0, same as X11");
+
+  /* case conversion */
+  gdk_keyval_convert_case (GDK_a, &lower, &upper);
+  M6B_CHECK (lower == GDK_a && upper == GDK_A, "convert_case a");
+  gdk_keyval_convert_case (GDK_eacute, &lower, &upper);
+  M6B_CHECK (lower == GDK_eacute && upper == GDK_Eacute, "convert_case eacute");
+  gdk_keyval_convert_case (GDK_Greek_DELTA, &lower, &upper);
+  M6B_CHECK (lower == GDK_Greek_delta && upper == GDK_Greek_DELTA,
+	     "convert_case Greek_DELTA");
+  gdk_keyval_convert_case (GDK_ssharp, &lower, &upper);
+  M6B_EQ_INT (lower, GDK_ssharp, "ssharp lower is ssharp");
+  gdk_keyval_convert_case (0x1000394, &lower, &upper);
+  /* same as the X11 backend: through gdk_unicode_to_keyval, which prefers
+   * the legacy keysym (Greek_delta) when there is one */
+  M6B_EQ_INT (lower, gdk_unicode_to_keyval (0x3b4), "U+0394 lower is U+03B4");
+  M6B_CHECK (gdk_keyval_is_upper (GDK_A) && !gdk_keyval_is_upper (GDK_a),
+	     "keyval_is_upper agrees");
+  M6B_CHECK (gdk_keyval_is_lower (GDK_a) && !gdk_keyval_is_lower (GDK_A),
+	     "keyval_is_lower agrees");
+  M6B_EQ_INT (gdk_keyval_to_upper (GDK_a), GDK_A, "keyval_to_upper agrees");
+  M6B_EQ_INT (gdk_keyval_to_lower (GDK_A), GDK_a, "keyval_to_lower agrees");
+
+  /* two layouts: latin and hebrew.  Bidi and direction follow the group. */
+  M6B_HOOK (_gdk_wayland_test_keyboard_keymap_text (d, m6b_bidi_keymap),
+	    "two layout keymap");
+  m6_drain ();
+  keymap = gdk_keymap_get_for_display (d);
+  M6B_CHECK (gdk_keymap_have_bidi_layouts (keymap),
+	     "two layout keymap has a bidi layout");
+  M6B_HOOK (_gdk_wayland_test_keyboard_state (d, 0, 0, 1), "group 1");
+  M6B_EQ_INT (gdk_keymap_get_direction (keymap), PANGO_DIRECTION_RTL,
+	      "direction is RTL in the hebrew group");
+  M6B_HOOK (_gdk_wayland_test_keyboard_state (d, 0, 0, 0), "group 0");
+  M6B_EQ_INT (gdk_keymap_get_direction (keymap), PANGO_DIRECTION_LTR,
+	      "direction is LTR in the latin group");
+  /* a one layout key still answers for the second group, no crash */
+  key.keycode = 50;
+  key.group = 1;
+  key.level = 0;
+  (void) gdk_keymap_lookup_key (keymap, &key);
+
+  /* back to the default keymap for the rest of the demo */
+  M6B_HOOK (_gdk_wayland_test_keyboard_keymap (d), "restore keymap");
+  m6_drain ();
+  M6B_HOOK (_gdk_wayland_test_keyboard_state (d, 0, 0, 0), "restore state");
+  m6_clear ();
+}
+
+/* ---- display --------------------------------------------------------- */
+
+static int
+m6b_display_wait_status (GPid pid)
+{
+  int status = -1;
+
+  if (waitpid (pid, &status, 0) < 0)
+    return -1;
+  return WIFEXITED (status) ? WEXITSTATUS (status) : -1;
+}
+
+static void
+m6b_display (GdkDisplay *d)
+{
+  GdkScreen *screen = gdk_screen_get_default ();
+  const gchar *env = g_getenv ("WAYLAND_DISPLAY");
+  gchar *name;
+  GdkWindow *grp, *root;
+  GdkEvent *cev;
+  GList *devs;
+  GdkDevice *core;
+  GdkTimeCoord **events = (GdkTimeCoord **) 0x1;
+  gint n_events = 5;
+  gdouble axes[2] = { -1, -1 };
+  GdkModifierType mask = 0;
+  GdkAtom atom = gdk_atom_intern_static_string ("YDK_M6B_TEST");
+
+  /* name */
+  if (env != NULL)
+    M6B_EQ_STR (gdk_display_get_name (d), env, "display name is WAYLAND_DISPLAY");
+  name = gdk_get_display ();
+  M6B_EQ_STR (name, gdk_display_get_name (d), "gdk_get_display equals the name");
+  g_free (name);
+
+  /* capabilities */
+  M6B_CHECK (!gdk_display_supports_shapes (d), "supports_shapes FALSE");
+  M6B_CHECK (!gdk_display_supports_input_shapes (d), "supports_input_shapes FALSE");
+  M6B_CHECK (!gdk_display_supports_composite (d), "supports_composite FALSE");
+  M6B_CHECK (!gdk_display_supports_selection_notification (d),
+	     "supports_selection_notification FALSE");
+  M6B_CHECK (!gdk_display_supports_clipboard_persistence (d),
+	     "supports_clipboard_persistence FALSE");
+  M6B_CHECK (!gdk_display_request_selection_notification
+	     (d, gdk_atom_intern_static_string ("CLIPBOARD")),
+	     "request_selection_notification FALSE");
+  gdk_display_store_clipboard (d, main_window, GDK_CURRENT_TIME, NULL, 0);
+  gdk_notify_startup_complete ();
+  gdk_notify_startup_complete_with_id ("x");
+  M6B_CHECK (TRUE, "startup and clipboard calls returned");
+
+  /* default group */
+  grp = gdk_display_get_default_group (d);
+  root = gdk_screen_get_root_window (screen);
+  M6B_CHECK (grp != NULL && GDK_IS_WINDOW (grp), "default group is a window");
+  M6B_CHECK (grp == root, "default group is the root window");
+  M6B_CHECK (gdk_display_get_default_group (d) == grp, "default group is stable");
+
+  /* client messages */
+  gdk_add_client_message_filter (atom, m6b_dummy_filter, NULL);
+  gdk_display_add_client_message_filter (d, atom, m6b_dummy_filter, NULL);
+  cev = gdk_event_new (GDK_CLIENT_EVENT);
+  cev->client.window = g_object_ref (main_window);
+  cev->client.message_type = atom;
+  cev->client.data_format = 32;
+  M6B_CHECK (!gdk_event_send_client_message_for_display (d, cev, 1),
+	     "send_client_message_for_display returns FALSE");
+  gdk_event_free (cev);
+  M6B_CHECK (gdk_event_get_graphics_expose (main_window) == NULL,
+	     "no graphics expose event");
+
+  /* devices */
+  core = gdk_display_get_core_pointer (d);
+  devs = gdk_display_list_devices (d);
+  M6B_CHECK (devs != NULL, "display device list is not empty");
+  M6B_CHECK (devs != NULL && devs->data == core, "first device is the core pointer");
+  M6B_CHECK (gdk_devices_list () != NULL && gdk_devices_list ()->data == core,
+	     "gdk_devices_list has the same first device");
+  if (core != NULL)
+    {
+      M6B_EQ_STR (gdk_device_get_name (core), "Core Pointer", "device name");
+      M6B_EQ_INT (core->source, GDK_SOURCE_MOUSE, "device source");
+      M6B_EQ_INT (core->mode, GDK_MODE_SCREEN, "device mode");
+      M6B_CHECK (core->has_cursor, "device has a cursor");
+      M6B_EQ_INT (core->num_axes, 2, "device axes");
+      M6B_CHECK (!gdk_device_get_history (core, main_window, 0, 0, &events,
+					  &n_events),
+		 "device history unsupported");
+      M6B_EQ_INT (n_events, 0, "device history has no events");
+    }
+  gdk_input_set_extension_events (main_window, GDK_POINTER_MOTION_MASK,
+				  GDK_EXTENSION_EVENTS_NONE);
+  gdk_input_set_extension_events (main_window, GDK_POINTER_MOTION_MASK,
+				  GDK_EXTENSION_EVENTS_ALL);
+  gdk_input_set_extension_events (main_window, GDK_POINTER_MOTION_MASK,
+				  GDK_EXTENSION_EVENTS_CURSOR);
+  M6B_HOOK (_gdk_wayland_test_pointer_enter (d, main_window, 50, 60),
+	    "enter for device state");
+  m6_drain ();
+  if (core != NULL)
+    {
+      gdk_device_get_state (core, main_window, axes, &mask);
+      M6B_CHECK (axes[0] == 50 && axes[1] == 60, "device state reports (50,60)");
+    }
+  _gdk_wayland_test_pointer_leave (d, main_window);
+  m6_drain ();
+  m6_clear ();
+
+  /* spawn */
+  {
+    GError *err = NULL;
+    GPid pid = 0;
+    gchar *argv_env[] = { "sh", "-c",
+      "test \"$WAYLAND_DISPLAY\" = \"$YDK_M6B_EXPECT\" && "
+      "test \"${DISPLAY-}\" = \"$YDK_M6B_ORIG\"", NULL };
+    gchar *argv_ok[] = { "sh", "-c", "printf ok", NULL };
+    gint out_fd = -1;
+    gchar buf[16] = { 0 };
+    gssize got;
+
+    g_setenv ("YDK_M6B_EXPECT", gdk_display_get_name (d), TRUE);
+    g_setenv ("YDK_M6B_ORIG", g_getenv ("DISPLAY") ? g_getenv ("DISPLAY") : "",
+	      TRUE);
+
+    M6B_CHECK (gdk_spawn_on_screen (screen, NULL, argv_env, NULL,
+				    G_SPAWN_SEARCH_PATH | G_SPAWN_DO_NOT_REAP_CHILD,
+				    NULL, NULL, &pid, &err),
+	       "spawn_on_screen");
+    if (err)
+      {
+	g_printerr ("ydk_demo: spawn error: %s\n", err->message);
+	g_clear_error (&err);
+      }
+    else
+      M6B_EQ_INT (m6b_display_wait_status (pid), 0,
+		  "spawned child sees WAYLAND_DISPLAY and an untouched DISPLAY");
+
+    pid = 0;
+    M6B_CHECK (gdk_spawn_on_screen_with_pipes (screen, NULL, argv_ok, NULL,
+					       G_SPAWN_SEARCH_PATH | G_SPAWN_DO_NOT_REAP_CHILD,
+					       NULL, NULL, &pid, NULL, &out_fd,
+					       NULL, &err),
+	       "spawn_on_screen_with_pipes");
+    if (err)
+      g_clear_error (&err);
+    else
+      {
+	got = read (out_fd, buf, sizeof buf - 1);
+	M6B_CHECK (got == 2 && strcmp (buf, "ok") == 0, "pipe child printed ok");
+	close (out_fd);
+	m6b_display_wait_status (pid);
+      }
+
+    M6B_CHECK (gdk_spawn_command_line_on_screen (screen, "true", &err),
+	       "spawn_command_line_on_screen");
+    g_clear_error (&err);
+    /* a screen that is not a screen falls back to the default one */
+    M6B_CHECK (gdk_spawn_command_line_on_screen (NULL, "true", &err),
+	       "spawn_command_line_on_screen with a NULL screen");
+    g_clear_error (&err);
+    M6B_CHECK (!gdk_spawn_command_line_on_screen (screen, "", &err) && err != NULL,
+	       "empty command line fails with an error");
+    g_clear_error (&err);
+    M6B_CHECK (!gdk_spawn_command_line_on_screen (screen, NULL, &err) && err != NULL,
+	       "NULL command line fails with an error");
+    g_clear_error (&err);
+    /* the reaped children above are the only ones; wait for stray ones */
+    while (waitpid (-1, NULL, WNOHANG) > 0)
+      ;
+  }
+
+  /* error traps: no X errors, unbalanced pops tolerated */
+  gdk_error_trap_push ();
+  gdk_error_trap_push ();
+  M6B_EQ_INT (gdk_error_trap_pop (), 0, "error_trap_pop 1");
+  M6B_EQ_INT (gdk_error_trap_pop (), 0, "error_trap_pop 2");
+  M6B_EQ_INT (gdk_error_trap_pop (), 0, "unbalanced error_trap_pop is tolerated");
+  M6B_CHECK (!gdk_get_use_xshm (), "no xshm");
+  {
+    GdkFont *f1 = gdk_fontset_load ("fixed");
+    GdkFont *f2 = gdk_fontset_load_for_display (d, "fixed");
+
+    M6B_CHECK ((f1 == NULL) == (f2 == NULL), "fontset_load matches the for_display call");
+    if (f1 && f2)
+      M6B_CHECK (gdk_font_equal (f1, f2), "fontset_load equals fontset_load_for_display");
+    if (f1)
+      gdk_font_unref (f1);
+    if (f2)
+      gdk_font_unref (f2);
+  }
+}
+
+/* locale and multibyte run last: gdk_set_locale () changes the process
+ * locale. */
+static void
+m6b_locale (void)
+{
+  GdkWChar wbuf[32];
+  gchar *s;
+  gint n;
+  gboolean utf8;
+
+  M6B_CHECK (gdk_set_locale () != NULL, "gdk_set_locale returns a name");
+  utf8 = g_get_charset (NULL);
+
+  memset (wbuf, 0, sizeof wbuf);
+  n = gdk_mbstowcs (wbuf, "abc", 31);
+  M6B_EQ_INT (n, 3, "mbstowcs abc");
+  s = gdk_wcstombs (wbuf);
+  M6B_EQ_STR (s, "abc", "wcstombs round trip");
+  g_free (s);
+
+  if (utf8)
+    {
+      const gchar *text = "h\xc3\xa9llo \xe2\x82\xac";
+
+      memset (wbuf, 0, sizeof wbuf);
+      n = gdk_mbstowcs (wbuf, text, 31);
+      M6B_EQ_INT (n, g_utf8_strlen (text, -1), "mbstowcs utf-8 length");
+      s = gdk_wcstombs (wbuf);
+      M6B_EQ_STR (s, text, "wcstombs utf-8 round trip");
+      g_free (s);
+    }
+
+  M6B_EQ_INT (gdk_mbstowcs (NULL, "abc", 4), -1, "mbstowcs NULL dest fails");
+  M6B_EQ_INT (gdk_mbstowcs (wbuf, NULL, 4), -1, "mbstowcs NULL src fails");
+  M6B_CHECK (gdk_wcstombs (NULL) == NULL, "wcstombs NULL fails");
+}
+
+/* ---- toplevel hints -------------------------------------------------- */
+
+static void
+m6b_hints_strings (GdkDisplay *d, GdkWindow *w3, GdkWindow *w4)
+{
+  GDKWTestToplevelInfo info;
+  gchar *longtitle;
+  GdkWindow *w5;
+
+  /* before show on w4: stored, sent at show */
+  gdk_window_set_title (w4, "Pre-show \xc3\xa9 title \xe2\x9c\x93");
+  gdk_window_set_role (w4, "role-w4");
+  gdk_window_set_startup_id (w4, "startup-w4");
+  gdk_window_set_icon_name (w4, "icon-w4");
+  gdk_window_show (w4);
+  gdk_display_sync (d);
+  M6B_CHECK (m6b_info (w4, &info), "w4 has a toplevel after show");
+  M6B_CHECK (info.has_title, "w4 title sent");
+  M6B_EQ_STR (info.title, "Pre-show \xc3\xa9 title \xe2\x9c\x93", "w4 title");
+  M6B_CHECK (info.has_role, "w4 role recorded");
+  M6B_EQ_STR (info.role, "role-w4", "w4 role");
+
+  /* after show on w3 */
+  gdk_window_set_title (w3, "After show \xc3\x9c" "n\xc3\xaf" "code");
+  M6B_CHECK (m6b_info (w3, &info), "w3 info");
+  M6B_EQ_STR (info.title, "After show \xc3\x9c" "n\xc3\xaf" "code", "w3 title");
+
+  /* invalid UTF-8 is repaired, not sent raw */
+  gdk_window_set_title (w3, "bad \xff\xfe title");
+  M6B_CHECK (m6b_info (w3, &info) && g_utf8_validate (info.title, -1, NULL),
+	     "invalid UTF-8 title is made valid");
+
+  /* a very long title must not exceed the Wayland message size */
+  longtitle = g_strnfill (5000, 'a');
+  gdk_window_set_title (w3, longtitle);
+  g_free (longtitle);
+  gdk_display_sync (d);
+  M6B_CHECK (m6b_info (w3, &info), "w3 survives a 5000 byte title");
+  gdk_window_set_title (w3, "w3");
+
+  /* app id: from the wmclass class, else the program class */
+  M6B_CHECK (m6b_info (main_window, &info), "main window info");
+  M6B_EQ_STR (info.app_id, "YdkDemo", "main window app id is its wmclass class");
+  gdk_set_program_class ("YdkDemoClass");
+  w5 = m6b_toplevel (50, 50, 0, NULL, NULL);
+  M6B_CHECK (w5 != NULL, "window without wmclass");
+  if (w5)
+    {
+      gdk_window_show (w5);
+      M6B_CHECK (m6b_info (w5, &info), "w5 info");
+      M6B_EQ_STR (info.app_id, "YdkDemoClass", "app id falls back to the program class");
+      gdk_window_destroy (w5);
+    }
+}
+
+static void
+m6b_hints_transient (GdkDisplay *d, GdkWindow *w3)
+{
+  GDKWTestToplevelInfo info;
+  GdkWindow *w6;
+
+  gdk_window_set_transient_for (w3, main_window);
+  M6B_CHECK (m6b_info (w3, &info) && info.transient_for == main_window,
+	     "transient_for main window");
+  gdk_window_set_transient_for (w3, NULL);
+  M6B_CHECK (m6b_info (w3, &info) && info.transient_for == NULL,
+	     "NULL clears the transient parent");
+
+  gdk_window_set_transient_for (w3, w3);
+  M6B_CHECK (m6b_info (w3, &info) && info.transient_for == NULL,
+	     "a window is not its own parent");
+
+  /* a cycle: main -> w3 is fine, w3 -> main must be refused */
+  gdk_window_set_transient_for (main_window, w3);
+  gdk_window_set_transient_for (w3, main_window);
+  M6B_CHECK (m6b_info (w3, &info) && info.transient_for == NULL,
+	     "a transient cycle is refused");
+  gdk_window_set_transient_for (main_window, NULL);
+
+  /* a parent that is not shown yet is stored and sent after both map */
+  w6 = m6b_toplevel (60, 60, 0, NULL, NULL);
+  M6B_CHECK (w6 != NULL, "unshown parent");
+  if (w6)
+    {
+      gdk_window_set_transient_for (w3, w6);
+      M6B_CHECK (m6b_info (w3, &info) && info.transient_for == w6,
+		 "unshown parent is stored");
+      gdk_window_show (w6);
+      gdk_display_sync (d);
+      gdk_display_sync (d);
+      M6B_CHECK (m6b_info (w3, &info) && info.transient_for == w6,
+		 "parent still set after the parent maps");
+      gdk_window_set_transient_for (w3, NULL);
+      gdk_window_destroy (w6);
+    }
+
+  /* a parent of the wrong kind is ignored */
+  gdk_window_set_transient_for (w3, gdk_get_default_root_window ());
+  M6B_CHECK (m6b_info (w3, &info) && info.transient_for == NULL,
+	     "the root window is not a transient parent");
+}
+
+static void
+m6b_hints_flags (GdkDisplay *d, GdkWindow *w3, GdkWindow *w4)
+{
+  GdkWMDecoration decor = 0;
+  GdkWindow *win[2];
+  GdkWindowAttr attr;
+  GdkWindow *child;
+  int i;
+
+  M6B_EQ_INT (gdk_window_get_type_hint (w3), GDK_WINDOW_TYPE_HINT_NORMAL,
+	      "default type hint is NORMAL");
+  gdk_window_set_type_hint (w3, GDK_WINDOW_TYPE_HINT_DIALOG);
+  M6B_EQ_INT (gdk_window_get_type_hint (w3), GDK_WINDOW_TYPE_HINT_DIALOG,
+	      "type hint round trip");
+  gdk_window_set_type_hint (w3, GDK_WINDOW_TYPE_HINT_NORMAL);
+
+  M6B_CHECK (!gdk_window_get_decorations (w3, &decor),
+	     "no decorations before set_decorations");
+  gdk_window_set_decorations (w3, GDK_DECOR_BORDER | GDK_DECOR_TITLE);
+  M6B_CHECK (gdk_window_get_decorations (w3, &decor), "decorations after set");
+  M6B_EQ_INT (decor, GDK_DECOR_BORDER | GDK_DECOR_TITLE, "decorations value");
+
+  /* shown and unshown, they must all be accepted silently */
+  win[0] = w3;
+  win[1] = w4;
+  for (i = 0; i < 2; i++)
+    {
+      gdk_window_set_modal_hint (win[i], TRUE);
+      gdk_window_set_modal_hint (win[i], FALSE);
+      gdk_window_set_skip_taskbar_hint (win[i], TRUE);
+      gdk_window_set_skip_pager_hint (win[i], TRUE);
+      gdk_window_set_urgency_hint (win[i], TRUE);
+      gdk_window_set_urgency_hint (win[i], FALSE);
+      gdk_window_set_accept_focus (win[i], TRUE);
+      gdk_window_set_focus_on_map (win[i], FALSE);
+      gdk_window_set_override_redirect (win[i], FALSE);
+      gdk_window_set_keep_above (win[i], TRUE);
+      gdk_window_set_keep_above (win[i], FALSE);
+      gdk_window_set_keep_below (win[i], TRUE);
+      gdk_window_set_keep_below (win[i], FALSE);
+      gdk_window_stick (win[i]);
+      gdk_window_unstick (win[i]);
+      gdk_window_set_functions (win[i], GDK_FUNC_ALL);
+      gdk_window_set_opacity (win[i], 0.5);
+      gdk_window_set_opacity (win[i], 2.0);
+      gdk_window_set_opacity (win[i], -1.0);
+    }
+
+  /* windows that do not fit: silent no-ops, never a critical */
+  memset (&attr, 0, sizeof attr);
+  attr.window_type = GDK_WINDOW_CHILD;
+  attr.wclass = GDK_INPUT_OUTPUT;
+  attr.width = 20;
+  attr.height = 20;
+  child = gdk_window_new (main_window, &attr, 0);
+  if (child)
+    {
+      gdk_window_set_title (child, "child");
+      gdk_window_set_transient_for (child, main_window);
+      gdk_window_set_type_hint (child, GDK_WINDOW_TYPE_HINT_DIALOG);
+      gdk_window_maximize (child);
+      gdk_window_set_group (child, main_window);
+      M6B_EQ_INT (gdk_window_get_type_hint (child), GDK_WINDOW_TYPE_HINT_NORMAL,
+		  "a child window has the default type hint");
+      gdk_window_destroy (child);
+    }
+  gdk_window_set_title (gdk_get_default_root_window (), "root");
+  gdk_window_set_title (NULL, "nothing");
+  gdk_window_set_type_hint (NULL, GDK_WINDOW_TYPE_HINT_DIALOG);
+  M6B_EQ_INT (gdk_window_get_type_hint (NULL), GDK_WINDOW_TYPE_HINT_NORMAL,
+	      "type hint of NULL");
+  gdk_window_maximize (NULL);
+  gdk_window_iconify (NULL);
+  gdk_window_focus (NULL, GDK_CURRENT_TIME);
+  M6B_CHECK (TRUE, "hint calls on unfit windows returned");
+  (void) d;
+}
+
+static void
+m6b_hints_geometry (GdkWindow *w3)
+{
+  GDKWTestToplevelInfo info;
+  GdkGeometry g;
+
+  memset (&g, 0, sizeof g);
+  g.min_width = 100;
+  g.min_height = 80;
+  g.max_width = 400;
+  g.max_height = 300;
+  gdk_window_set_geometry_hints (w3, &g, GDK_HINT_MIN_SIZE | GDK_HINT_MAX_SIZE);
+  M6B_CHECK (m6b_info (w3, &info), "geometry info");
+  M6B_EQ_INT (info.min_width, 100, "min_width");
+  M6B_EQ_INT (info.min_height, 80, "min_height");
+  M6B_EQ_INT (info.max_width, 400, "max_width");
+  M6B_EQ_INT (info.max_height, 300, "max_height");
+
+  /* a min above the max is clamped */
+  g.min_width = 500;
+  g.min_height = 500;
+  g.max_width = 300;
+  g.max_height = 300;
+  gdk_window_set_geometry_hints (w3, &g, GDK_HINT_MIN_SIZE | GDK_HINT_MAX_SIZE);
+  m6b_info (w3, &info);
+  M6B_EQ_INT (info.min_width, 300, "min clamped to the max (width)");
+  M6B_EQ_INT (info.min_height, 300, "min clamped to the max (height)");
+
+  /* the clamp is not permanent: a larger max restores the requested min */
+  g.max_width = 800;
+  g.max_height = 800;
+  gdk_window_set_geometry_hints (w3, &g, GDK_HINT_MAX_SIZE);
+  m6b_info (w3, &info);
+  M6B_EQ_INT (info.min_width, 500, "a larger max restores the requested min");
+  M6B_EQ_INT (info.max_width, 800, "max after restore");
+
+  /* a mask with only MAX_SIZE keeps the old min */
+  g.min_width = 100;
+  g.min_height = 80;
+  gdk_window_set_geometry_hints (w3, &g, GDK_HINT_MIN_SIZE);
+  g.max_width = 400;
+  g.max_height = 300;
+  g.min_width = 1;
+  g.min_height = 1;
+  gdk_window_set_geometry_hints (w3, &g, GDK_HINT_MAX_SIZE);
+  m6b_info (w3, &info);
+  M6B_EQ_INT (info.min_width, 100, "MAX_SIZE only keeps the min width");
+  M6B_EQ_INT (info.min_height, 80, "MAX_SIZE only keeps the min height");
+  M6B_EQ_INT (info.max_width, 400, "MAX_SIZE only sets the max width");
+
+  /* the old API gives the same result */
+  gdk_window_set_geometry_hints (w3, NULL, 0);
+  gdk_window_set_hints (w3, 0, 0, 100, 80, 400, 300,
+			GDK_HINT_MIN_SIZE | GDK_HINT_MAX_SIZE);
+  m6b_info (w3, &info);
+  M6B_CHECK (info.min_width == 100 && info.min_height == 80 &&
+	     info.max_width == 400 && info.max_height == 300,
+	     "set_hints gives the same four numbers");
+
+  /* clear */
+  gdk_window_set_geometry_hints (w3, NULL, 0);
+  m6b_info (w3, &info);
+  M6B_CHECK (info.min_width == 0 && info.min_height == 0 &&
+	     info.max_width == 0 && info.max_height == 0,
+	     "NULL geometry with mask 0 clears the hints");
+}
+
+static int
+m6b_state_events (GdkWindow *w, GdkWindowState changed)
+{
+  GList *l;
+  int n = 0;
+
+  for (l = m6_events.head; l; l = l->next)
+    {
+      GdkEvent *ev = l->data;
+
+      if (ev->type == GDK_WINDOW_STATE && ev->any.window == w &&
+	  (ev->window_state.changed_mask & changed))
+	n++;
+    }
+
+  return n;
+}
+
+/* Requests such as set_maximized go to the real compositor, which answers
+ * with its own configure.  Let those answers arrive first, then put the
+ * window in a known state with a synthetic configure, so that the checks
+ * below see the effect of the hook alone. */
+static void
+m6b_settle (GdkDisplay *d, GdkWindow *w)
+{
+  gdk_display_sync (d);
+  m6_drain ();
+  _gdk_wayland_test_toplevel_configure (w, 0, 0, 0);
+  m6_drain ();
+  m6_clear ();
+}
+
+/* TRUE if a recorded window-state event for @w changed @flag and its new
+ * state has (@set) or lacks (!@set) the flag */
+static gboolean
+m6b_state_event_with (GdkWindow *w, GdkWindowState flag, gboolean set)
+{
+  GList *l;
+
+  for (l = m6_events.head; l; l = l->next)
+    {
+      GdkEvent *ev = l->data;
+
+      if (ev->type == GDK_WINDOW_STATE && ev->any.window == w &&
+	  (ev->window_state.changed_mask & flag) &&
+	  ((ev->window_state.new_window_state & flag) != 0) == set)
+	return TRUE;
+    }
+
+  return FALSE;
+}
+
+static void
+m6b_hints_state (GdkDisplay *d, GdkWindow *w3)
+{
+  GDKWTestToplevelInfo info;
+  GdkWindow *w7;
+  gint gw = -1, gh = -1;
+
+  m6_clear ();
+
+  /* maximize */
+  gdk_window_maximize (w3);
+  M6B_CHECK (m6b_info (w3, &info) && info.maximized, "maximize recorded");
+  m6b_settle (d, w3);
+  M6B_HOOK (_gdk_wayland_test_toplevel_configure (w3, 0, 0,
+						  GDKW_TEST_STATE_MAXIMIZED),
+	    "configure maximized");
+  m6_drain ();
+  M6B_CHECK (gdk_window_get_state (w3) & GDK_WINDOW_STATE_MAXIMIZED,
+	     "window state has MAXIMIZED");
+  M6B_EQ_INT (m6b_state_events (w3, GDK_WINDOW_STATE_MAXIMIZED), 1,
+	      "one window-state event for MAXIMIZED");
+  M6B_CHECK (m6b_state_event_with (w3, GDK_WINDOW_STATE_MAXIMIZED, TRUE),
+	     "the event carries the new state");
+  /* the same configure again changes nothing */
+  _gdk_wayland_test_toplevel_configure (w3, 0, 0, GDKW_TEST_STATE_MAXIMIZED);
+  m6_drain ();
+  M6B_EQ_INT (m6b_state_events (w3, GDK_WINDOW_STATE_MAXIMIZED), 1,
+	      "a repeated configure sends no second event");
+  gdk_window_unmaximize (w3);
+  M6B_CHECK (m6b_info (w3, &info) && !info.maximized, "unmaximize recorded");
+  gdk_display_sync (d);
+  _gdk_wayland_test_toplevel_configure (w3, 0, 0, 0);
+  m6_drain ();
+  M6B_CHECK (!(gdk_window_get_state (w3) & GDK_WINDOW_STATE_MAXIMIZED),
+	     "MAXIMIZED cleared by the next configure");
+  M6B_CHECK (m6b_state_event_with (w3, GDK_WINDOW_STATE_MAXIMIZED, FALSE),
+	     "an event clears MAXIMIZED");
+
+  /* fullscreen */
+  gdk_window_fullscreen (w3);
+  M6B_CHECK (m6b_info (w3, &info) && info.fullscreen, "fullscreen recorded");
+  m6b_settle (d, w3);
+  _gdk_wayland_test_toplevel_configure (w3, 0, 0, GDKW_TEST_STATE_FULLSCREEN);
+  m6_drain ();
+  M6B_CHECK (gdk_window_get_state (w3) & GDK_WINDOW_STATE_FULLSCREEN,
+	     "window state has FULLSCREEN");
+  M6B_EQ_INT (m6b_state_events (w3, GDK_WINDOW_STATE_FULLSCREEN), 1,
+	      "one window-state event for FULLSCREEN");
+  gdk_window_unfullscreen (w3);
+  M6B_CHECK (m6b_info (w3, &info) && !info.fullscreen, "unfullscreen recorded");
+  gdk_display_sync (d);
+  _gdk_wayland_test_toplevel_configure (w3, 0, 0, 0);
+  m6_drain ();
+  M6B_CHECK (!(gdk_window_get_state (w3) & GDK_WINDOW_STATE_FULLSCREEN),
+	     "FULLSCREEN cleared");
+  M6B_CHECK (m6b_state_event_with (w3, GDK_WINDOW_STATE_FULLSCREEN, FALSE),
+	     "an event clears FULLSCREEN");
+
+  /* ACTIVATED has no GDK2 window state: it is recorded, no event */
+  m6b_settle (d, w3);
+  _gdk_wayland_test_toplevel_configure (w3, 0, 0, GDKW_TEST_STATE_ACTIVATED);
+  m6_drain ();
+  M6B_CHECK (m6b_info (w3, &info) &&
+	     (info.configure_states & GDKW_TEST_STATE_ACTIVATED),
+	     "ACTIVATED recorded");
+  M6B_EQ_INT (m6_count (GDK_WINDOW_STATE, w3), 0, "ACTIVATED sends no state event");
+  _gdk_wayland_test_toplevel_configure (w3, 0, 0, 0);
+  M6B_CHECK (m6b_info (w3, &info) &&
+	     !(info.configure_states & GDKW_TEST_STATE_ACTIVATED),
+	     "ACTIVATED cleared");
+
+  /* a configure with a size resizes the window */
+  _gdk_wayland_test_toplevel_configure (w3, 220, 170, 0);
+  m6_drain ();
+  gdk_window_get_geometry (w3, NULL, NULL, &gw, &gh, NULL);
+  M6B_EQ_INT (gw, 220, "configure size, width");
+  M6B_EQ_INT (gh, 170, "configure size, height");
+
+  /* iconify: one request, no ICONIFIED state */
+  gdk_window_iconify (w3);
+  M6B_CHECK (m6b_info (w3, &info) && info.minimize_requests == 1,
+	     "one minimize request");
+  M6B_CHECK (!(gdk_window_get_state (w3) & GDK_WINDOW_STATE_ICONIFIED),
+	     "ICONIFIED is never set");
+
+  /* focus on a mapped window: nothing happens, nothing breaks */
+  gdk_window_focus (w3, GDK_CURRENT_TIME);
+
+  /* an iconify before the first show is applied at show */
+  w7 = m6b_toplevel (40, 40, GDK_STRUCTURE_MASK, NULL, NULL);
+  if (w7)
+    {
+      gdk_window_iconify (w7);
+      gdk_window_show (w7);
+      M6B_CHECK (m6b_info (w7, &info) && info.minimize_requests == 1,
+		 "iconify before show is sent at show");
+      /* deiconify on a hidden window maps it */
+      gdk_window_hide (w7);
+      M6B_CHECK (!gdk_window_is_visible (w7), "w7 hidden");
+      gdk_window_deiconify (w7);
+      M6B_CHECK (gdk_window_is_visible (w7), "deiconify maps a hidden window");
+      gdk_window_destroy (w7);
+    }
+  gdk_display_sync (d);
+  m6_clear ();
+}
+
+static void
+m6b_hints_drags (GdkDisplay *d, GdkWindow *w3)
+{
+  static const GdkWindowEdge edges[8] = {
+    GDK_WINDOW_EDGE_NORTH_WEST, GDK_WINDOW_EDGE_NORTH,
+    GDK_WINDOW_EDGE_NORTH_EAST, GDK_WINDOW_EDGE_WEST,
+    GDK_WINDOW_EDGE_EAST, GDK_WINDOW_EDGE_SOUTH_WEST,
+    GDK_WINDOW_EDGE_SOUTH, GDK_WINDOW_EDGE_SOUTH_EAST
+  };
+  static const guint xdg_edges[8] = { 5, 1, 9, 4, 8, 6, 2, 10 };
+  GDKWTestToplevelInfo info;
+  guint before;
+  guint32 t = 70000;
+  int i;
+
+  M6B_HOOK (_gdk_wayland_test_pointer_enter (d, w3, 20, 20), "enter w3");
+  m6_drain ();
+
+  /* no button held: the request is dropped */
+  m6b_info (w3, &info);
+  before = info.move_requests;
+  gdk_window_begin_move_drag (w3, 1, 20, 20, GDK_CURRENT_TIME);
+  m6b_info (w3, &info);
+  M6B_EQ_INT (info.move_requests, before, "move drag without a button is dropped");
+
+  M6B_HOOK (_gdk_wayland_test_pointer_button (d, t, GDKW_TEST_BTN_LEFT, TRUE),
+	    "press on w3");
+  m6_drain ();
+  gdk_window_begin_move_drag (w3, 1, 20, 20, GDK_CURRENT_TIME);
+  m6b_info (w3, &info);
+  M6B_EQ_INT (info.move_requests, before + 1, "one move request");
+  M6B_CHECK (info.drag_serial != 0, "the move uses a non zero serial");
+
+  /* each edge, in order */
+  for (i = 0; i < 8; i++)
+    {
+      m6b_info (w3, &info);
+      before = info.resize_requests;
+      gdk_window_begin_resize_drag (w3, edges[i], 1, 20, 20, GDK_CURRENT_TIME);
+      m6b_info (w3, &info);
+      M6B_EQ_INT (info.resize_requests, before + 1, "one resize request per edge");
+      M6B_EQ_INT (info.last_resize_edge, xdg_edges[i], "resize edge value");
+    }
+
+  M6B_HOOK (_gdk_wayland_test_pointer_button (d, t + 50, GDKW_TEST_BTN_LEFT, FALSE),
+	    "release on w3");
+  m6_drain ();
+
+  /* after the release the old serial is no longer valid */
+  m6b_info (w3, &info);
+  before = info.move_requests;
+  gdk_window_begin_move_drag (w3, 1, 20, 20, GDK_CURRENT_TIME);
+  m6b_info (w3, &info);
+  M6B_EQ_INT (info.move_requests, before, "move drag after the release is dropped");
+
+  _gdk_wayland_test_pointer_leave (d, w3);
+  m6_drain ();
+  m6_clear ();
+}
+
+static void
+m6b_hints_misc (GdkDisplay *d, GdkWindow *w3, GdkWindow *w4)
+{
+  GdkRectangle rect;
+  GdkWindowAttr attr;
+  GdkWindow *child, *leader;
+  GdkPixbuf *pb;
+  GList *icons;
+  gint x = -1, y = -1, gw = -1, gh = -1;
+
+  /* geometry queries */
+  gdk_window_get_root_origin (w3, &x, &y);
+  M6B_CHECK (x == 0 && y == 0, "root origin is (0,0)");
+  gdk_window_get_frame_extents (w3, &rect);
+  gdk_window_get_geometry (w3, NULL, NULL, &gw, &gh, NULL);
+  M6B_CHECK (rect.x == 0 && rect.y == 0 && rect.width == gw && rect.height == gh,
+	     "frame extents equal the window geometry");
+  memset (&attr, 0, sizeof attr);
+  attr.window_type = GDK_WINDOW_CHILD;
+  attr.wclass = GDK_INPUT_OUTPUT;
+  attr.width = 30;
+  attr.height = 30;
+  child = gdk_window_new (main_window, &attr, 0);
+  if (child)
+    {
+      gdk_window_get_frame_extents (child, &rect);
+      gdk_window_get_geometry (main_window, NULL, NULL, &gw, &gh, NULL);
+      M6B_CHECK (rect.width == gw && rect.height == gh,
+		 "frame extents of a child are the toplevel's");
+      gdk_window_destroy (child);
+    }
+
+  /* group */
+  gdk_window_set_group (w3, main_window);
+  M6B_CHECK (gdk_window_get_group (w3) == main_window, "group is main window");
+  gdk_window_set_group (w3, NULL);
+  M6B_CHECK (gdk_window_get_group (w3) == NULL, "NULL group clears");
+  leader = m6b_toplevel (30, 30, 0, NULL, NULL);
+  if (leader)
+    {
+      gdk_window_set_group (w3, leader);
+      M6B_CHECK (gdk_window_get_group (w3) == leader, "group is the leader");
+      gdk_window_destroy (leader);
+      m6_drain ();
+      m6_clear ();
+      M6B_CHECK (gdk_window_get_group (w3) == NULL,
+		 "group is NULL after the leader is gone");
+    }
+
+  /* foreign windows are not supported */
+  M6B_CHECK (gdk_window_lookup (1) == NULL, "lookup of an xid");
+  M6B_CHECK (gdk_window_lookup_for_display (d, 1) == NULL, "lookup_for_display");
+  M6B_CHECK (gdk_window_foreign_new_for_display (d, 1) == NULL,
+	     "foreign_new_for_display");
+  M6B_CHECK (gdk_window_foreign_new (1) == NULL, "foreign_new");
+
+  /* destroy_notify destroys a window and drops one reference */
+  g_object_ref (w4);
+  gdk_window_destroy_notify (w4);
+  M6B_CHECK (DEMO_WINDOW_DESTROYED (w4), "destroy_notify destroys the window");
+  g_object_unref (w4);
+
+  /* nothing to do, nothing to break */
+  gdk_window_enable_synchronized_configure (w3);
+  gdk_window_configure_finished (w3);
+
+  /* icons are accepted */
+  pb = gdk_pixbuf_new (GDK_COLORSPACE_RGB, TRUE, 8, 16, 16);
+  icons = g_list_prepend (NULL, pb);
+  gdk_window_set_icon_list (w3, icons);
+  g_list_free (icons);
+  g_object_unref (pb);
+  gdk_window_set_icon (w3, NULL, NULL, NULL);
+  gdk_window_set_icon_name (w3, "ydk-demo");
+}
+
+static void
+m6b_hints (GdkDisplay *d)
+{
+  GdkWindow *w3, *w4;
+
+  w3 = m6b_toplevel (200, 150, GDK_STRUCTURE_MASK | GDK_EXPOSURE_MASK |
+		     GDK_BUTTON_PRESS_MASK | GDK_BUTTON_RELEASE_MASK |
+		     GDK_ENTER_NOTIFY_MASK | GDK_LEAVE_NOTIFY_MASK |
+		     GDK_POINTER_MOTION_MASK, "m6b_w3", "M6bW3");
+  w4 = m6b_toplevel (100, 100, GDK_STRUCTURE_MASK, "m6b_w4", "M6bW4");
+  M6B_CHECK (w3 != NULL && w4 != NULL, "hint test windows created");
+  if (w3 == NULL || w4 == NULL)
+    return;
+
+  gdk_window_show (w3);
+  gdk_display_sync (d);
+  gdk_display_sync (d);
+  m6_clear ();
+
+  m6b_hints_strings (d, w3, w4);
+  m6b_hints_transient (d, w3);
+  m6b_hints_flags (d, w3, w4);
+  m6b_hints_geometry (w3);
+  m6b_hints_state (d, w3);
+  m6b_hints_drags (d, w3);
+  m6b_hints_misc (d, w3, w4);
+
+  gdk_window_destroy (w3);
+  /* w4 was destroyed by destroy_notify; the creation reference is gone with
+   * the destroy, nothing is left to release */
+  m6_drain ();
+  m6_clear ();
+}
+
+/* ---- gaps from the M6 audit ----------------------------------------- */
+
+static void
+m6b_pointer_state (GdkDisplay *d, GdkWindow *child)
+{
+  GdkScreen *scr = NULL;
+  GdkModifierType mask = 0, mask2 = 0;
+  gint x = -1, y = -1, wx = -1, wy = -1;
+  GdkWindow *w;
+  guint32 t = 80000;
+
+  m6_clear ();
+  M6B_HOOK (_gdk_wayland_test_pointer_enter (d, main_window, 150, 160), "enter");
+  m6_drain ();
+  M6B_HOOK (_gdk_wayland_test_pointer_motion (d, t, 155, 165), "motion");
+  m6_drain ();
+
+  M6B_HOOK (_gdk_wayland_test_pointer_button (d, t + 10, GDKW_TEST_BTN_LEFT, TRUE),
+	    "button down");
+  m6_drain ();
+  gdk_display_get_pointer (d, &scr, &x, &y, &mask);
+  M6B_CHECK ((mask & GDK_BUTTON1_MASK) != 0, "get_pointer mask has BUTTON1");
+  M6B_CHECK (x == 155 && y == 165, "get_pointer position with a button held");
+
+  M6B_HOOK (_gdk_wayland_test_keyboard_modifiers (d, GDK_SHIFT_MASK), "shift");
+  gdk_display_get_pointer (d, &scr, &x, &y, &mask);
+  M6B_CHECK ((mask & GDK_BUTTON1_MASK) && (mask & GDK_SHIFT_MASK),
+	     "get_pointer mask has button and shift");
+  gdk_window_get_pointer (main_window, NULL, NULL, &mask2);
+  M6B_EQ_INT (mask2 & (GDK_BUTTON1_MASK | GDK_SHIFT_MASK),
+	      GDK_BUTTON1_MASK | GDK_SHIFT_MASK,
+	      "window_get_pointer reports the same mask");
+
+  w = gdk_display_get_window_at_pointer (d, &wx, &wy);
+  M6B_CHECK (w == child, "window_at_pointer is the child with a button held");
+  M6B_CHECK (wx == 55 && wy == 65, "window_at_pointer child coordinates");
+
+  M6B_HOOK (_gdk_wayland_test_pointer_button (d, t + 20, GDKW_TEST_BTN_LEFT, FALSE),
+	    "button up");
+  m6_drain ();
+  gdk_display_get_pointer (d, &scr, &x, &y, &mask);
+  M6B_CHECK (!(mask & GDK_BUTTON1_MASK) && (mask & GDK_SHIFT_MASK),
+	     "release clears BUTTON1 only");
+  M6B_HOOK (_gdk_wayland_test_keyboard_modifiers (d, 0), "shift off");
+  m6_clear ();
+}
+
+static void
+m6b_warp_beep_pending (GdkDisplay *d)
+{
+  GdkScreen *scr = gdk_screen_get_default ();
+  gint x0 = -1, y0 = -1, x1 = -1, y1 = -1;
+  int before;
+
+  gdk_display_get_pointer (d, NULL, &x0, &y0, NULL);
+  gdk_display_warp_pointer (d, scr, 10, 10);
+  gdk_display_get_pointer (d, NULL, &x1, &y1, NULL);
+  M6B_CHECK (x0 == x1 && y0 == y1, "warp leaves the reported position alone");
+
+  m6_clear ();
+  gdk_display_beep (d);
+  gdk_beep ();
+  gdk_window_beep (main_window);
+  m6_drain ();
+  before = g_queue_get_length (&m6_events);
+  M6B_EQ_INT (before, 0, "beep produces no event");
+
+  m6_clear ();
+  M6B_HOOK (_gdk_wayland_test_pointer_motion (d, 90000, 160, 170), "motion queued");
+  M6B_CHECK (gdk_events_pending (), "events pending after a hook queued one");
+  m6_drain ();
+  M6B_CHECK (!gdk_events_pending (), "no events pending after the drain");
+  m6_clear ();
+}
+
+static void
+m6b_destroy_while_repeating (GdkDisplay *d)
+{
+  GDKWTestSeatInfo info;
+  GdkWindow *w2;
+  gint64 deadline;
+  int presses;
+
+  w2 = m6b_toplevel (50, 50, GDK_KEY_PRESS_MASK | GDK_KEY_RELEASE_MASK |
+		     GDK_FOCUS_CHANGE_MASK, NULL, NULL);
+  M6B_CHECK (w2 != NULL, "repeat window");
+  if (w2 == NULL)
+    return;
+  gdk_window_show (w2);
+  gdk_display_sync (d);
+
+  m6_clear ();
+  M6B_HOOK (_gdk_wayland_test_keyboard_enter (d, w2), "enter repeat window");
+  M6B_HOOK (_gdk_wayland_test_keyboard_repeat_info (d, 50, 50), "repeat info");
+  M6B_HOOK (_gdk_wayland_test_keyboard_key (d, 100000, GDKW_TEST_KEY_A, TRUE),
+	    "press A");
+
+  deadline = g_get_monotonic_time () + 2 * G_USEC_PER_SEC;
+  memset (&info, 0, sizeof info);
+  while (g_get_monotonic_time () < deadline)
+    {
+      m6_run_ms (20);
+      if (_gdk_wayland_test_seat_info (d, &info) && info.repeat_count >= 2)
+	break;
+    }
+  M6B_CHECK (info.repeat_count >= 2, "the key repeated at least twice");
+
+  gdk_window_destroy (w2);
+  m6_drain ();
+  memset (&info, 0, sizeof info);
+  M6B_CHECK (_gdk_wayland_test_seat_info (d, &info), "seat info after destroy");
+  M6B_EQ_INT (info.repeat_key, 0, "repeat stopped by the window destroy");
+  M6B_CHECK (info.keyboard_focus == NULL, "keyboard focus cleared by the destroy");
+
+  m6_clear ();
+  presses = m6_count (GDK_KEY_PRESS, NULL);
+  m6_run_ms (250);
+  M6B_EQ_INT (m6_count (GDK_KEY_PRESS, NULL), presses,
+	      "no key press after the destroy");
+
+  _gdk_wayland_test_keyboard_key (d, 100500, GDKW_TEST_KEY_A, FALSE);
+  M6B_HOOK (_gdk_wayland_test_keyboard_repeat_info (d, 25, 400), "restore repeat");
+  M6B_HOOK (_gdk_wayland_test_keyboard_enter (d, main_window), "focus main again");
+  m6_drain ();
+  m6_clear ();
+}
+
+static void
+m6b_destroy_with_grab (GdkDisplay *d)
+{
+  const GdkEventMask grab_mask = GDK_BUTTON_PRESS_MASK |
+    GDK_BUTTON_RELEASE_MASK | GDK_POINTER_MOTION_MASK;
+  GdkWindow *w2, *gw = NULL;
+  gboolean oe;
+
+  /* pointer grab */
+  w2 = m6b_toplevel (50, 50, GDK_BUTTON_PRESS_MASK | GDK_KEY_PRESS_MASK,
+		     NULL, NULL);
+  M6B_CHECK (w2 != NULL, "grab window");
+  if (w2 == NULL)
+    return;
+  gdk_window_show (w2);
+  gdk_display_sync (d);
+
+  M6B_EQ_INT (gdk_pointer_grab (w2, FALSE, grab_mask, NULL, NULL,
+				GDK_CURRENT_TIME),
+	      GDK_GRAB_SUCCESS, "pointer grab on w2");
+  gdk_window_destroy (w2);
+  m6_drain ();
+  M6B_CHECK (!gdk_pointer_is_grabbed (), "the destroy ended the pointer grab");
+  M6B_EQ_INT (gdk_pointer_grab (main_window, FALSE, grab_mask, NULL, NULL,
+				GDK_CURRENT_TIME),
+	      GDK_GRAB_SUCCESS, "a new pointer grab works");
+  gdk_pointer_ungrab (GDK_CURRENT_TIME);
+  M6B_CHECK (!gdk_pointer_is_grabbed (), "new pointer grab released");
+
+  /* keyboard grab */
+  w2 = m6b_toplevel (50, 50, GDK_BUTTON_PRESS_MASK | GDK_KEY_PRESS_MASK,
+		     NULL, NULL);
+  M6B_CHECK (w2 != NULL, "second grab window");
+  if (w2 == NULL)
+    return;
+  gdk_window_show (w2);
+  gdk_display_sync (d);
+  M6B_EQ_INT (gdk_keyboard_grab (w2, FALSE, GDK_CURRENT_TIME),
+	      GDK_GRAB_SUCCESS, "keyboard grab on w2");
+  M6B_CHECK (gdk_keyboard_grab_info_libgtk_only (d, &gw, &oe),
+	     "keyboard grab is recorded");
+  gdk_window_destroy (w2);
+  m6_drain ();
+  M6B_CHECK (!gdk_keyboard_grab_info_libgtk_only (d, &gw, &oe),
+	     "the destroy ended the keyboard grab");
+  M6B_EQ_INT (gdk_keyboard_grab (main_window, FALSE, GDK_CURRENT_TIME),
+	      GDK_GRAB_SUCCESS, "a new keyboard grab works");
+  gdk_keyboard_ungrab (GDK_CURRENT_TIME);
+  m6_clear ();
+}
+
+static void
+m6b_close_display_with_windows (GdkDisplay *d)
+{
+  const gchar *name = g_getenv ("WAYLAND_DISPLAY");
+  GdkDisplay *d2;
+  GdkScreen *s2;
+  GdkWindow *root2, *a, *b;
+  GdkWindowAttr attr;
+  int variant;
+
+  if (name == NULL)
+    return;
+
+  for (variant = 0; variant < 2; variant++)
+    {
+      d2 = gdk_display_open (name);
+      M6B_CHECK (d2 != NULL, "second display opened");
+      if (d2 == NULL)
+	return;
+
+      s2 = gdk_display_get_default_screen (d2);
+      root2 = gdk_screen_get_root_window (s2);
+      memset (&attr, 0, sizeof attr);
+      attr.window_type = GDK_WINDOW_TOPLEVEL;
+      attr.wclass = GDK_INPUT_OUTPUT;
+      attr.width = 60;
+      attr.height = 60;
+      attr.event_mask = GDK_BUTTON_PRESS_MASK;
+      a = gdk_window_new (root2, &attr, 0);
+      b = gdk_window_new (root2, &attr, 0);
+      M6B_CHECK (a != NULL && b != NULL, "windows on the second display");
+      if (a == NULL || b == NULL)
+	return;
+
+      gdk_window_show (a);
+      gdk_window_show (b);
+      gdk_display_sync (d2);
+      gdk_window_set_title (a, "second display");
+
+      if (variant == 1)
+	M6B_EQ_INT (gdk_pointer_grab (a, FALSE, GDK_BUTTON_PRESS_MASK, NULL, NULL,
+				      GDK_CURRENT_TIME),
+		    GDK_GRAB_SUCCESS, "pointer grab on the second display");
+
+      /* the application still holds both windows */
+      g_object_ref (a);
+      g_object_ref (b);
+      gdk_display_close (d2);
+
+      M6B_CHECK (DEMO_WINDOW_DESTROYED (a), "window a destroyed by the close");
+      M6B_CHECK (DEMO_WINDOW_DESTROYED (b), "window b destroyed by the close");
+      M6B_CHECK (gdk_window_get_display (a) == NULL,
+		 "window a has no display after the close");
+      g_object_unref (a);
+      g_object_unref (b);
+
+      M6B_CHECK (gdk_display_get_default () == d, "default display is unchanged");
+      M6B_CHECK (!gdk_pointer_is_grabbed (), "no grab survives the close");
+      gdk_display_sync (d);
+      M6B_CHECK (gdk_window_is_visible (main_window), "main window still works");
+    }
+}
+
+static int
+m6b_exercise (void)
+{
+  GdkDisplay *display = gdk_display_get_default ();
+  GdkWindowAttr attr;
+  GdkWindow *child;
+
+  gdk_event_handler_set (m6_recorder, NULL, NULL);
+
+  gdk_window_set_events (main_window,
+			 GDK_EXPOSURE_MASK | GDK_KEY_PRESS_MASK |
+			 GDK_KEY_RELEASE_MASK | GDK_BUTTON_PRESS_MASK |
+			 GDK_BUTTON_RELEASE_MASK | GDK_POINTER_MOTION_MASK |
+			 GDK_ENTER_NOTIFY_MASK | GDK_LEAVE_NOTIFY_MASK |
+			 GDK_FOCUS_CHANGE_MASK | GDK_SCROLL_MASK);
+
+  memset (&attr, 0, sizeof attr);
+  attr.window_type = GDK_WINDOW_CHILD;
+  attr.wclass = GDK_INPUT_OUTPUT;
+  attr.x = 100;
+  attr.y = 100;
+  attr.width = 100;
+  attr.height = 100;
+  attr.event_mask = GDK_BUTTON_PRESS_MASK | GDK_BUTTON_RELEASE_MASK |
+    GDK_POINTER_MOTION_MASK | GDK_ENTER_NOTIFY_MASK |
+    GDK_LEAVE_NOTIFY_MASK | GDK_SCROLL_MASK;
+  child = gdk_window_new (main_window, &attr, GDK_WA_X | GDK_WA_Y);
+  M6B_CHECK (child != NULL, "child window created");
+  if (child == NULL)
+    {
+      g_printerr ("ydk_demo: M6B: FAIL (%d)\n", m6b_failures);
+      gdk_event_handler_set (event_handler, NULL, NULL);
+      return m6b_failures ? m6b_failures : 1;
+    }
+  gdk_window_show (child);
+  M6B_HOOK (_gdk_wayland_test_seat_set_version (display, 5), "seat version");
+  m6_drain ();
+  m6_clear ();
+
+  m6b_keymap (display);
+  m6b_display (display);
+  m6b_hints (display);
+  m6b_pointer_state (display, child);
+  m6b_warp_beep_pending (display);
+  m6b_destroy_while_repeating (display);
+  m6b_destroy_with_grab (display);
+  m6b_close_display_with_windows (display);
+  m6b_locale ();
+
+  /* cleanup */
+  _gdk_wayland_test_pointer_leave (display, main_window);
+  _gdk_wayland_test_keyboard_leave (display, main_window);
+  m6_drain ();
+  m6_clear ();
+  gdk_window_destroy (child);
+  gdk_event_handler_set (event_handler, NULL, NULL);
+  gdk_window_invalidate_rect (main_window, NULL, TRUE);
+
+  if (m6b_failures)
+    g_printerr ("ydk_demo: M6B: FAIL (%d)\n", m6b_failures);
+  else
+    g_print ("ydk_demo: M6B: PASS\n");
+
+  return m6b_failures;
+}
+
+/* X11 forwarding sanity: the same public functions, now dispatched, must
+ * still reach the X11 backend.  This is what proves the rename map in
+ * Phase 1 of the smoke test. */
+static int
+m6b_x11_exercise (void)
+{
+  GdkDisplay *d = gdk_display_get_default ();
+  const gchar *env = g_getenv ("DISPLAY");
+  GdkKeymap *keymap = gdk_keymap_get_for_display (d);
+  guint lower, upper;
+
+  M6B_EQ_STR (gdk_keyval_name (GDK_a), "a", "x11: keyval_name");
+  M6B_EQ_INT (gdk_keyval_from_name ("Return"), GDK_Return, "x11: from_name");
+  gdk_keyval_convert_case (GDK_a, &lower, &upper);
+  M6B_CHECK (lower == GDK_a && upper == GDK_A, "x11: convert_case");
+  gdk_keyval_convert_case (0x1000394, &lower, &upper);
+  M6B_EQ_INT (lower, gdk_unicode_to_keyval (0x3b4), "x11: convert_case of U+0394");
+  M6B_CHECK (gdk_keymap_get_direction (keymap) != 0xffff, "x11: keymap direction");
+  if (env != NULL)
+    M6B_EQ_STR (gdk_display_get_name (d), env, "x11: display name is DISPLAY");
+  M6B_CHECK (gdk_devices_list () != NULL, "x11: device list is not empty");
+  M6B_CHECK (gdk_display_list_devices (d) != NULL, "x11: display device list");
+  gdk_window_set_title (main_window, "x");
+  M6B_EQ_INT (gdk_window_get_type_hint (main_window), GDK_WINDOW_TYPE_HINT_NORMAL,
+	      "x11: type hint");
+  M6B_CHECK (gdk_window_lookup (0) == NULL, "x11: window_lookup of 0");
+
+  if (m6b_failures)
+    g_printerr ("ydk_demo: M6B-X11: FAIL (%d)\n", m6b_failures);
+  else
+    g_print ("ydk_demo: M6B-X11: PASS\n");
+
+  return m6b_failures;
+}
+
 int
 main (int argc, char **argv)
 {
   GdkWindowAttr attr;
-  GdkColor bg;
+  /* initialised: the Wayland backend reads .pixel through the colormap */
+  GdkColor bg = { 0, 0xffff, 0xffff, 0xffff };
   GdkScreen *screen;
   gboolean wayland = g_strcmp0 (g_getenv ("GDK_BACKEND"), "wayland") == 0;
 
@@ -2320,6 +3792,8 @@ main (int argc, char **argv)
     }
 
   gdk_color_parse ("#ffffff", &bg);
+  gdk_colormap_alloc_color (gdk_screen_get_system_colormap (screen), &bg,
+			    FALSE, TRUE);
   gdk_window_set_background (main_window, &bg);
 
   gdk_event_handler_set (event_handler, NULL, NULL);
@@ -2339,6 +3813,7 @@ main (int argc, char **argv)
       failed |= m5c_exercise () != 0;
       failed |= m5v_exercise () != 0;
       failed |= m6_exercise () != 0;
+      failed |= m6b_exercise () != 0;
       if (failed)
 	return 1;
 
@@ -2348,9 +3823,15 @@ main (int argc, char **argv)
 	draw_scene (main_window);
       g_print ("ydk_demo: exercises done\n");
     }
+  else if (g_strcmp0 (g_getenv ("GDK_BACKEND"), "x11") == 0 &&
+	   m6b_x11_exercise () != 0)
+    return 1;
 
-  g_timeout_add (TICK_TIMEOUT_MS, tick_timeout, NULL);
-  g_timeout_add (QUIT_TIMEOUT_MS, quit_timeout, NULL);
+  /* valgrind runs this 20 to 50 times slower, see scripts/valgrind-smoke.sh */
+  g_timeout_add (g_getenv ("YDK_DEMO_VALGRIND") ? TICK_TIMEOUT_MS * 20 : TICK_TIMEOUT_MS,
+		 tick_timeout, NULL);
+  g_timeout_add (g_getenv ("YDK_DEMO_VALGRIND") ? QUIT_TIMEOUT_MS * 20 : QUIT_TIMEOUT_MS,
+		 quit_timeout, NULL);
 
   g_main_loop_run (main_loop);
 

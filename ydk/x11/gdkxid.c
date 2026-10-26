@@ -101,7 +101,10 @@ gdk_xid_table_lookup_for_display (GdkDisplay  *display,
   GdkDisplayX11 *display_x11;
   gpointer data = NULL;
   
-  g_return_val_if_fail (GDK_IS_DISPLAY (display), NULL);
+  /* ydk-wayland: this symbol is exported from libydk and may be reached with
+   * a Wayland display (or none).  There is no XID table then. */
+  if (!GDK_IS_DISPLAY_X11 (display))
+    return NULL;
   
   display_x11 = GDK_DISPLAY_X11 (display);
 

@@ -1,0 +1,13 @@
+# valgrind.supp -- suppressions for scripts/valgrind-smoke.sh.
+#
+# Rules:
+#  * Only noise from GLib, fontconfig, Pango, FreeType, the dynamic loader and
+#    the Mesa/driver stack is suppressed, and each entry says why.
+#  * No entry may name a libydk frame.  If a libydk bug shows up it is a
+#    real failure.  A suppression whose stack starts below libydk but passes
+#    through libydk is not allowed either: match the library frames only.
+#  * Prefer "fun:" patterns that name the third party function that reads
+#    the data, not a broad obj:* wildcard.
+#
+# Start empty on purpose.  Add an entry only after reading the stack and
+# checking that the report is in the third party code itself.

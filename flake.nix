@@ -65,6 +65,12 @@
             # public section of this header
             cp ydk/wayland/ydk/gdkseat-wayland.h "$out/include/ydk/"
 
+            # M6b: the dispatch audit (scripts/audit-x11-symbols.sh) reads the
+            # per backend object files and the shared library with nm
+            mkdir -p $out/share/ydk-audit/build
+            cp -r build/ydk $out/share/ydk-audit/build/ydk
+            cp -L build/libydk.so $out/share/ydk-audit/build/libydk.so
+
             mkdir -p $out/lib/pkgconfig
             cat > $out/lib/pkgconfig/ydk.pc <<'PC'
             prefix=@PREFIX@
@@ -128,9 +134,21 @@
         };
 
         smoke-test = pkgs.writeShellScript "ydk-smoke-test" ''
-          export PATH=${lib.makeBinPath [ pkgs.xorg.xorgserver pkgs.weston pkgs.dbus pkgs.imagemagick ydk-demo ]}:$PATH
+          export PATH=${lib.makeBinPath [ pkgs.xorg.xorgserver pkgs.weston pkgs.dbus pkgs.imagemagick pkgs.binutils pkgs.coreutils pkgs.gnugrep pkgs.gawk pkgs.gnused ydk-demo ]}:$PATH
           export LD_LIBRARY_PATH=${lib.makeLibraryPath [ ydk-wayland ]}:$LD_LIBRARY_PATH
+          export YDK_AUDIT_SCRIPT=${./scripts/audit-x11-symbols.sh}
+          export YDK_AUDIT_BUILD=${ydk-wayland}/share/ydk-audit/build
           ${pkgs.bash}/bin/bash ${./scripts/smoke-test.sh}
+        '';
+
+        # M6b: the Wayland demo under valgrind.  Separate from the smoke test
+        # because it is 20 to 50 times slower.  Run it with
+        #   nix run .#valgrind-demo
+        valgrind-demo = pkgs.writeShellScript "ydk-valgrind-demo" ''
+          export PATH=${lib.makeBinPath [ pkgs.valgrind pkgs.weston pkgs.dbus pkgs.coreutils pkgs.gnugrep pkgs.procps ydk-demo ]}:$PATH
+          export LD_LIBRARY_PATH=${lib.makeLibraryPath [ ydk-wayland ]}:$LD_LIBRARY_PATH
+          export YDK_VALGRIND_SUPP=${./scripts/valgrind.supp}
+          ${pkgs.bash}/bin/bash ${./scripts/valgrind-smoke.sh}
         '';
 
         baseline-diff = pkgs.writeShellScript "ydk-baseline-diff" ''
@@ -146,13 +164,14 @@
       in
       {
         packages = {
-          inherit ydk-wayland ydk-demo smoke-test baseline-diff;
+          inherit ydk-wayland ydk-demo smoke-test baseline-diff valgrind-demo;
           default = ydk-wayland;
         };
 
         apps = {
           smoke-test = { type = "app"; program = "${smoke-test}"; };
           baseline-diff = { type = "app"; program = "${baseline-diff}"; };
+          valgrind-demo = { type = "app"; program = "${valgrind-demo}"; };
         };
 
         checks = {
@@ -172,6 +191,7 @@
             wayland-protocols wayland-scanner
             mesa
             weston grim imagemagick
+            valgrind binutils
             xorg.xorgserver
             dbus libei
           ];

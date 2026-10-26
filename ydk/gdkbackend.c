@@ -1406,6 +1406,97 @@ extern void _gdk_x11_display_warp_pointer (GdkDisplay *display, GdkScreen *scree
 extern void _gdk_x11_display_beep (GdkDisplay *display);
 extern gboolean _gdk_x11_events_pending (void);
 
+/* ---- M6b: keymap, display misc and toplevel hint functions.  The X11
+ * definitions are renamed by x11/ydk/gdkwindowing-x11.h; the Wayland ones
+ * live in gdkkeys-wayland.c, gdkdisplay-misc-wayland.c and
+ * gdkwindow-hints-wayland.c (prototypes in gdkprivate-wayland.h). */
+extern PangoDirection _gdk_x11_keymap_get_direction (GdkKeymap *keymap);
+extern gboolean _gdk_x11_keymap_have_bidi_layouts (GdkKeymap *keymap);
+extern gboolean _gdk_x11_keymap_get_caps_lock_state (GdkKeymap *keymap);
+extern gboolean _gdk_x11_keymap_get_entries_for_keyval (GdkKeymap *keymap, guint keyval, GdkKeymapKey **keys, gint *n_keys);
+extern gboolean _gdk_x11_keymap_get_entries_for_keycode (GdkKeymap *keymap, guint hardware_keycode, GdkKeymapKey **keys, guint **keyvals, gint *n_entries);
+extern guint _gdk_x11_keymap_lookup_key (GdkKeymap *keymap, const GdkKeymapKey *key);
+extern void _gdk_x11_keymap_add_virtual_modifiers (GdkKeymap *keymap, GdkModifierType *state);
+extern gboolean _gdk_x11_keymap_map_virtual_modifiers (GdkKeymap *keymap, GdkModifierType *state);
+extern gchar * _gdk_x11_keyval_name (guint keyval);
+extern guint _gdk_x11_keyval_from_name (const gchar *keyval_name);
+extern void _gdk_x11_keyval_convert_case (guint symbol, guint *lower, guint *upper);
+extern const gchar * _gdk_x11_display_get_name (GdkDisplay *display);
+extern gboolean _gdk_x11_display_supports_shapes (GdkDisplay *display);
+extern gboolean _gdk_x11_display_supports_input_shapes (GdkDisplay *display);
+extern gboolean _gdk_x11_display_supports_composite (GdkDisplay *display);
+extern gboolean _gdk_x11_display_supports_selection_notification (GdkDisplay *display);
+extern gboolean _gdk_x11_display_supports_clipboard_persistence (GdkDisplay *display);
+extern gboolean _gdk_x11_display_request_selection_notification (GdkDisplay *display, GdkAtom selection);
+extern void _gdk_x11_display_store_clipboard (GdkDisplay *display, GdkWindow *clipboard_window, guint32 time_, const GdkAtom *targets, gint n_targets);
+extern GdkWindow * _gdk_x11_display_get_default_group (GdkDisplay *display);
+extern gchar * _gdk_x11_get_display (void);
+extern void _gdk_x11_notify_startup_complete (void);
+extern void _gdk_x11_notify_startup_complete_with_id (const gchar *startup_id);
+extern void _gdk_x11_add_client_message_filter (GdkAtom message_type, GdkFilterFunc func, gpointer data);
+extern void _gdk_x11_display_add_client_message_filter (GdkDisplay *display, GdkAtom message_type, GdkFilterFunc func, gpointer data);
+extern gboolean _gdk_x11_event_send_client_message_for_display (GdkDisplay *display, GdkEvent *event, GdkNativeWindow winid);
+extern GdkEvent * _gdk_x11_event_get_graphics_expose (GdkWindow *window);
+extern GList * _gdk_x11_devices_list (void);
+extern GList * _gdk_x11_display_list_devices (GdkDisplay *display);
+extern gboolean _gdk_x11_device_get_history (GdkDevice *device, GdkWindow *window, guint32 start, guint32 stop, GdkTimeCoord ***events, gint *n_events);
+extern void _gdk_x11_input_set_extension_events (GdkWindow *window, gint mask, GdkExtensionMode mode);
+extern gboolean _gdk_x11_spawn_on_screen (GdkScreen *screen, const gchar *working_directory, gchar **argv, gchar **envp, GSpawnFlags flags, GSpawnChildSetupFunc child_setup, gpointer user_data, gint *child_pid, GError **error);
+extern gboolean _gdk_x11_spawn_on_screen_with_pipes (GdkScreen *screen, const gchar *working_directory, gchar **argv, gchar **envp, GSpawnFlags flags, GSpawnChildSetupFunc child_setup, gpointer user_data, gint *child_pid, gint *standard_input, gint *standard_output, gint *standard_error, GError **error);
+extern gboolean _gdk_x11_spawn_command_line_on_screen (GdkScreen *screen, const gchar *command_line, GError **error);
+extern gchar * _gdk_x11_set_locale (void);
+extern gchar * _gdk_x11_wcstombs (const GdkWChar *src);
+extern gint _gdk_x11_mbstowcs (GdkWChar *dest, const gchar *src, gint dest_max);
+extern void _gdk_x11_error_trap_push (void);
+extern gint _gdk_x11_error_trap_pop (void);
+extern gboolean _gdk_x11_get_use_xshm (void);
+extern GdkFont * _gdk_x11_fontset_load (const gchar *fontset_name);
+extern void _gdk_x11_window_set_title (GdkWindow *window, const gchar *title);
+extern void _gdk_x11_window_set_role (GdkWindow *window, const gchar *role);
+extern void _gdk_x11_window_set_startup_id (GdkWindow *window, const gchar *startup_id);
+extern void _gdk_x11_window_set_transient_for (GdkWindow *window, GdkWindow *parent);
+extern void _gdk_x11_window_set_type_hint (GdkWindow *window, GdkWindowTypeHint hint);
+extern GdkWindowTypeHint _gdk_x11_window_get_type_hint (GdkWindow *window);
+extern void _gdk_x11_window_set_modal_hint (GdkWindow *window, gboolean modal);
+extern void _gdk_x11_window_set_skip_taskbar_hint (GdkWindow *window, gboolean skips_taskbar);
+extern void _gdk_x11_window_set_skip_pager_hint (GdkWindow *window, gboolean skips_pager);
+extern void _gdk_x11_window_set_urgency_hint (GdkWindow *window, gboolean urgent);
+extern void _gdk_x11_window_set_hints (GdkWindow *window, gint x, gint y, gint min_width, gint min_height, gint max_width, gint max_height, gint flags);
+extern void _gdk_x11_window_set_geometry_hints (GdkWindow *window, const GdkGeometry *geometry, GdkWindowHints geom_mask);
+extern void _gdk_x11_window_focus (GdkWindow *window, guint32 timestamp);
+extern void _gdk_x11_window_set_accept_focus (GdkWindow *window, gboolean accept_focus);
+extern void _gdk_x11_window_set_focus_on_map (GdkWindow *window, gboolean focus_on_map);
+extern void _gdk_x11_window_set_override_redirect (GdkWindow *window, gboolean override_redirect);
+extern void _gdk_x11_window_set_icon (GdkWindow *window, GdkWindow *icon_window, GdkPixmap *pixmap, GdkBitmap *mask);
+extern void _gdk_x11_window_set_icon_list (GdkWindow *window, GList *pixbufs);
+extern void _gdk_x11_window_set_icon_name (GdkWindow *window, const gchar *name);
+extern void _gdk_x11_window_iconify (GdkWindow *window);
+extern void _gdk_x11_window_deiconify (GdkWindow *window);
+extern void _gdk_x11_window_stick (GdkWindow *window);
+extern void _gdk_x11_window_unstick (GdkWindow *window);
+extern void _gdk_x11_window_maximize (GdkWindow *window);
+extern void _gdk_x11_window_unmaximize (GdkWindow *window);
+extern void _gdk_x11_window_fullscreen (GdkWindow *window);
+extern void _gdk_x11_window_unfullscreen (GdkWindow *window);
+extern void _gdk_x11_window_set_keep_above (GdkWindow *window, gboolean setting);
+extern void _gdk_x11_window_set_keep_below (GdkWindow *window, gboolean setting);
+extern GdkWindow * _gdk_x11_window_get_group (GdkWindow *window);
+extern void _gdk_x11_window_set_group (GdkWindow *window, GdkWindow *leader);
+extern void _gdk_x11_window_set_decorations (GdkWindow *window, GdkWMDecoration decorations);
+extern gboolean _gdk_x11_window_get_decorations (GdkWindow *window, GdkWMDecoration *decorations);
+extern void _gdk_x11_window_set_functions (GdkWindow *window, GdkWMFunction functions);
+extern void _gdk_x11_window_set_opacity (GdkWindow *window, gdouble opacity);
+extern void _gdk_x11_window_begin_resize_drag (GdkWindow *window, GdkWindowEdge edge, gint button, gint root_x, gint root_y, guint32 timestamp);
+extern void _gdk_x11_window_begin_move_drag (GdkWindow *window, gint button, gint root_x, gint root_y, guint32 timestamp);
+extern void _gdk_x11_window_get_root_origin (GdkWindow *window, gint *x, gint *y);
+extern void _gdk_x11_window_get_frame_extents (GdkWindow *window, GdkRectangle *rect);
+extern void _gdk_x11_window_enable_synchronized_configure (GdkWindow *window);
+extern void _gdk_x11_window_configure_finished (GdkWindow *window);
+extern void _gdk_x11_window_destroy_notify (GdkWindow *window);
+extern GdkWindow * _gdk_x11_window_foreign_new_for_display (GdkDisplay *display, GdkNativeWindow anid);
+extern GdkWindow * _gdk_x11_window_lookup_for_display (GdkDisplay *display, GdkNativeWindow anid);
+extern GdkWindow * _gdk_x11_window_lookup (GdkNativeWindow anid);
+
 gint
 gdk_screen_get_width_mm (GdkScreen *screen)
 {
@@ -1593,4 +1684,780 @@ gdk_events_pending (void)
     return _gdk_wayland_events_pending (gdk_display_get_default ());
   else
     return _gdk_x11_events_pending ();
+}
+
+/* ---- M6b dispatchers: keymap, display misc, toplevel hints ---- */
+
+PangoDirection
+gdk_keymap_get_direction (GdkKeymap *keymap)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    return _gdk_wayland_keymap_get_direction (keymap);
+  else
+    return _gdk_x11_keymap_get_direction (keymap);
+}
+
+gboolean
+gdk_keymap_have_bidi_layouts (GdkKeymap *keymap)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    return _gdk_wayland_keymap_have_bidi_layouts (keymap);
+  else
+    return _gdk_x11_keymap_have_bidi_layouts (keymap);
+}
+
+gboolean
+gdk_keymap_get_caps_lock_state (GdkKeymap *keymap)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    return _gdk_wayland_keymap_get_caps_lock_state (keymap);
+  else
+    return _gdk_x11_keymap_get_caps_lock_state (keymap);
+}
+
+gboolean
+gdk_keymap_get_entries_for_keyval (GdkKeymap *keymap, guint keyval, GdkKeymapKey **keys, gint *n_keys)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    return _gdk_wayland_keymap_get_entries_for_keyval (keymap, keyval, keys, n_keys);
+  else
+    return _gdk_x11_keymap_get_entries_for_keyval (keymap, keyval, keys, n_keys);
+}
+
+gboolean
+gdk_keymap_get_entries_for_keycode (GdkKeymap *keymap, guint hardware_keycode, GdkKeymapKey **keys, guint **keyvals, gint *n_entries)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    return _gdk_wayland_keymap_get_entries_for_keycode (keymap, hardware_keycode, keys, keyvals, n_entries);
+  else
+    return _gdk_x11_keymap_get_entries_for_keycode (keymap, hardware_keycode, keys, keyvals, n_entries);
+}
+
+guint
+gdk_keymap_lookup_key (GdkKeymap *keymap, const GdkKeymapKey *key)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    return _gdk_wayland_keymap_lookup_key (keymap, key);
+  else
+    return _gdk_x11_keymap_lookup_key (keymap, key);
+}
+
+void
+gdk_keymap_add_virtual_modifiers (GdkKeymap *keymap, GdkModifierType *state)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    _gdk_wayland_keymap_add_virtual_modifiers (keymap, state);
+  else
+    _gdk_x11_keymap_add_virtual_modifiers (keymap, state);
+}
+
+gboolean
+gdk_keymap_map_virtual_modifiers (GdkKeymap *keymap, GdkModifierType *state)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    return _gdk_wayland_keymap_map_virtual_modifiers (keymap, state);
+  else
+    return _gdk_x11_keymap_map_virtual_modifiers (keymap, state);
+}
+
+gchar *
+gdk_keyval_name (guint keyval)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    return _gdk_wayland_keyval_name (keyval);
+  else
+    return _gdk_x11_keyval_name (keyval);
+}
+
+guint
+gdk_keyval_from_name (const gchar *keyval_name)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    return _gdk_wayland_keyval_from_name (keyval_name);
+  else
+    return _gdk_x11_keyval_from_name (keyval_name);
+}
+
+void
+gdk_keyval_convert_case (guint symbol, guint *lower, guint *upper)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    _gdk_wayland_keyval_convert_case (symbol, lower, upper);
+  else
+    _gdk_x11_keyval_convert_case (symbol, lower, upper);
+}
+
+const gchar *
+gdk_display_get_name (GdkDisplay *display)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    return _gdk_wayland_display_get_name (display);
+  else
+    return _gdk_x11_display_get_name (display);
+}
+
+gboolean
+gdk_display_supports_shapes (GdkDisplay *display)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    return _gdk_wayland_display_supports_shapes (display);
+  else
+    return _gdk_x11_display_supports_shapes (display);
+}
+
+gboolean
+gdk_display_supports_input_shapes (GdkDisplay *display)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    return _gdk_wayland_display_supports_input_shapes (display);
+  else
+    return _gdk_x11_display_supports_input_shapes (display);
+}
+
+gboolean
+gdk_display_supports_composite (GdkDisplay *display)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    return _gdk_wayland_display_supports_composite (display);
+  else
+    return _gdk_x11_display_supports_composite (display);
+}
+
+gboolean
+gdk_display_supports_selection_notification (GdkDisplay *display)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    return _gdk_wayland_display_supports_selection_notification (display);
+  else
+    return _gdk_x11_display_supports_selection_notification (display);
+}
+
+gboolean
+gdk_display_supports_clipboard_persistence (GdkDisplay *display)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    return _gdk_wayland_display_supports_clipboard_persistence (display);
+  else
+    return _gdk_x11_display_supports_clipboard_persistence (display);
+}
+
+gboolean
+gdk_display_request_selection_notification (GdkDisplay *display, GdkAtom selection)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    return _gdk_wayland_display_request_selection_notification (display, selection);
+  else
+    return _gdk_x11_display_request_selection_notification (display, selection);
+}
+
+void
+gdk_display_store_clipboard (GdkDisplay *display, GdkWindow *clipboard_window, guint32 time_, const GdkAtom *targets, gint n_targets)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    _gdk_wayland_display_store_clipboard (display, clipboard_window, time_, targets, n_targets);
+  else
+    _gdk_x11_display_store_clipboard (display, clipboard_window, time_, targets, n_targets);
+}
+
+GdkWindow *
+gdk_display_get_default_group (GdkDisplay *display)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    return _gdk_wayland_display_get_default_group (display);
+  else
+    return _gdk_x11_display_get_default_group (display);
+}
+
+gchar *
+gdk_get_display (void)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    return _gdk_wayland_get_display ();
+  else
+    return _gdk_x11_get_display ();
+}
+
+void
+gdk_notify_startup_complete (void)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    _gdk_wayland_notify_startup_complete ();
+  else
+    _gdk_x11_notify_startup_complete ();
+}
+
+void
+gdk_notify_startup_complete_with_id (const gchar *startup_id)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    _gdk_wayland_notify_startup_complete_with_id (startup_id);
+  else
+    _gdk_x11_notify_startup_complete_with_id (startup_id);
+}
+
+void
+gdk_add_client_message_filter (GdkAtom message_type, GdkFilterFunc func, gpointer data)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    _gdk_wayland_add_client_message_filter (message_type, func, data);
+  else
+    _gdk_x11_add_client_message_filter (message_type, func, data);
+}
+
+void
+gdk_display_add_client_message_filter (GdkDisplay *display, GdkAtom message_type, GdkFilterFunc func, gpointer data)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    _gdk_wayland_display_add_client_message_filter (display, message_type, func, data);
+  else
+    _gdk_x11_display_add_client_message_filter (display, message_type, func, data);
+}
+
+gboolean
+gdk_event_send_client_message_for_display (GdkDisplay *display, GdkEvent *event, GdkNativeWindow winid)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    return _gdk_wayland_event_send_client_message_for_display (display, event, winid);
+  else
+    return _gdk_x11_event_send_client_message_for_display (display, event, winid);
+}
+
+GdkEvent *
+gdk_event_get_graphics_expose (GdkWindow *window)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    return _gdk_wayland_event_get_graphics_expose (window);
+  else
+    return _gdk_x11_event_get_graphics_expose (window);
+}
+
+GList *
+gdk_devices_list (void)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    return _gdk_wayland_devices_list ();
+  else
+    return _gdk_x11_devices_list ();
+}
+
+GList *
+gdk_display_list_devices (GdkDisplay *display)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    return _gdk_wayland_display_list_devices (display);
+  else
+    return _gdk_x11_display_list_devices (display);
+}
+
+gboolean
+gdk_device_get_history (GdkDevice *device, GdkWindow *window, guint32 start, guint32 stop, GdkTimeCoord ***events, gint *n_events)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    return _gdk_wayland_device_get_history (device, window, start, stop, events, n_events);
+  else
+    return _gdk_x11_device_get_history (device, window, start, stop, events, n_events);
+}
+
+void
+gdk_input_set_extension_events (GdkWindow *window, gint mask, GdkExtensionMode mode)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    _gdk_wayland_input_set_extension_events (window, mask, mode);
+  else
+    _gdk_x11_input_set_extension_events (window, mask, mode);
+}
+
+gboolean
+gdk_spawn_on_screen (GdkScreen *screen, const gchar *working_directory, gchar **argv, gchar **envp, GSpawnFlags flags, GSpawnChildSetupFunc child_setup, gpointer user_data, gint *child_pid, GError **error)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    return _gdk_wayland_spawn_on_screen (screen, working_directory, argv, envp, flags, child_setup, user_data, child_pid, error);
+  else
+    return _gdk_x11_spawn_on_screen (screen, working_directory, argv, envp, flags, child_setup, user_data, child_pid, error);
+}
+
+gboolean
+gdk_spawn_on_screen_with_pipes (GdkScreen *screen, const gchar *working_directory, gchar **argv, gchar **envp, GSpawnFlags flags, GSpawnChildSetupFunc child_setup, gpointer user_data, gint *child_pid, gint *standard_input, gint *standard_output, gint *standard_error, GError **error)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    return _gdk_wayland_spawn_on_screen_with_pipes (screen, working_directory, argv, envp, flags, child_setup, user_data, child_pid, standard_input, standard_output, standard_error, error);
+  else
+    return _gdk_x11_spawn_on_screen_with_pipes (screen, working_directory, argv, envp, flags, child_setup, user_data, child_pid, standard_input, standard_output, standard_error, error);
+}
+
+gboolean
+gdk_spawn_command_line_on_screen (GdkScreen *screen, const gchar *command_line, GError **error)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    return _gdk_wayland_spawn_command_line_on_screen (screen, command_line, error);
+  else
+    return _gdk_x11_spawn_command_line_on_screen (screen, command_line, error);
+}
+
+gchar *
+gdk_set_locale (void)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    return _gdk_wayland_set_locale ();
+  else
+    return _gdk_x11_set_locale ();
+}
+
+gchar *
+gdk_wcstombs (const GdkWChar *src)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    return _gdk_wayland_wcstombs (src);
+  else
+    return _gdk_x11_wcstombs (src);
+}
+
+gint
+gdk_mbstowcs (GdkWChar *dest, const gchar *src, gint dest_max)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    return _gdk_wayland_mbstowcs (dest, src, dest_max);
+  else
+    return _gdk_x11_mbstowcs (dest, src, dest_max);
+}
+
+void
+gdk_error_trap_push (void)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    _gdk_wayland_error_trap_push ();
+  else
+    _gdk_x11_error_trap_push ();
+}
+
+gint
+gdk_error_trap_pop (void)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    return _gdk_wayland_error_trap_pop ();
+  else
+    return _gdk_x11_error_trap_pop ();
+}
+
+gboolean
+gdk_get_use_xshm (void)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    return _gdk_wayland_get_use_xshm ();
+  else
+    return _gdk_x11_get_use_xshm ();
+}
+
+GdkFont *
+gdk_fontset_load (const gchar *fontset_name)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    return _gdk_wayland_fontset_load (fontset_name);
+  else
+    return _gdk_x11_fontset_load (fontset_name);
+}
+
+void
+gdk_window_set_title (GdkWindow *window, const gchar *title)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    _gdk_wayland_window_set_title (window, title);
+  else
+    _gdk_x11_window_set_title (window, title);
+}
+
+void
+gdk_window_set_role (GdkWindow *window, const gchar *role)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    _gdk_wayland_window_set_role (window, role);
+  else
+    _gdk_x11_window_set_role (window, role);
+}
+
+void
+gdk_window_set_startup_id (GdkWindow *window, const gchar *startup_id)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    _gdk_wayland_window_set_startup_id (window, startup_id);
+  else
+    _gdk_x11_window_set_startup_id (window, startup_id);
+}
+
+void
+gdk_window_set_transient_for (GdkWindow *window, GdkWindow *parent)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    _gdk_wayland_window_set_transient_for (window, parent);
+  else
+    _gdk_x11_window_set_transient_for (window, parent);
+}
+
+void
+gdk_window_set_type_hint (GdkWindow *window, GdkWindowTypeHint hint)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    _gdk_wayland_window_set_type_hint (window, hint);
+  else
+    _gdk_x11_window_set_type_hint (window, hint);
+}
+
+GdkWindowTypeHint
+gdk_window_get_type_hint (GdkWindow *window)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    return _gdk_wayland_window_get_type_hint (window);
+  else
+    return _gdk_x11_window_get_type_hint (window);
+}
+
+void
+gdk_window_set_modal_hint (GdkWindow *window, gboolean modal)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    _gdk_wayland_window_set_modal_hint (window, modal);
+  else
+    _gdk_x11_window_set_modal_hint (window, modal);
+}
+
+void
+gdk_window_set_skip_taskbar_hint (GdkWindow *window, gboolean skips_taskbar)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    _gdk_wayland_window_set_skip_taskbar_hint (window, skips_taskbar);
+  else
+    _gdk_x11_window_set_skip_taskbar_hint (window, skips_taskbar);
+}
+
+void
+gdk_window_set_skip_pager_hint (GdkWindow *window, gboolean skips_pager)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    _gdk_wayland_window_set_skip_pager_hint (window, skips_pager);
+  else
+    _gdk_x11_window_set_skip_pager_hint (window, skips_pager);
+}
+
+void
+gdk_window_set_urgency_hint (GdkWindow *window, gboolean urgent)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    _gdk_wayland_window_set_urgency_hint (window, urgent);
+  else
+    _gdk_x11_window_set_urgency_hint (window, urgent);
+}
+
+void
+gdk_window_set_hints (GdkWindow *window, gint x, gint y, gint min_width, gint min_height, gint max_width, gint max_height, gint flags)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    _gdk_wayland_window_set_hints (window, x, y, min_width, min_height, max_width, max_height, flags);
+  else
+    _gdk_x11_window_set_hints (window, x, y, min_width, min_height, max_width, max_height, flags);
+}
+
+void
+gdk_window_set_geometry_hints (GdkWindow *window, const GdkGeometry *geometry, GdkWindowHints geom_mask)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    _gdk_wayland_window_set_geometry_hints (window, geometry, geom_mask);
+  else
+    _gdk_x11_window_set_geometry_hints (window, geometry, geom_mask);
+}
+
+void
+gdk_window_focus (GdkWindow *window, guint32 timestamp)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    _gdk_wayland_window_focus (window, timestamp);
+  else
+    _gdk_x11_window_focus (window, timestamp);
+}
+
+void
+gdk_window_set_accept_focus (GdkWindow *window, gboolean accept_focus)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    _gdk_wayland_window_set_accept_focus (window, accept_focus);
+  else
+    _gdk_x11_window_set_accept_focus (window, accept_focus);
+}
+
+void
+gdk_window_set_focus_on_map (GdkWindow *window, gboolean focus_on_map)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    _gdk_wayland_window_set_focus_on_map (window, focus_on_map);
+  else
+    _gdk_x11_window_set_focus_on_map (window, focus_on_map);
+}
+
+void
+gdk_window_set_override_redirect (GdkWindow *window, gboolean override_redirect)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    _gdk_wayland_window_set_override_redirect (window, override_redirect);
+  else
+    _gdk_x11_window_set_override_redirect (window, override_redirect);
+}
+
+void
+gdk_window_set_icon (GdkWindow *window, GdkWindow *icon_window, GdkPixmap *pixmap, GdkBitmap *mask)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    _gdk_wayland_window_set_icon (window, icon_window, pixmap, mask);
+  else
+    _gdk_x11_window_set_icon (window, icon_window, pixmap, mask);
+}
+
+void
+gdk_window_set_icon_list (GdkWindow *window, GList *pixbufs)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    _gdk_wayland_window_set_icon_list (window, pixbufs);
+  else
+    _gdk_x11_window_set_icon_list (window, pixbufs);
+}
+
+void
+gdk_window_set_icon_name (GdkWindow *window, const gchar *name)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    _gdk_wayland_window_set_icon_name (window, name);
+  else
+    _gdk_x11_window_set_icon_name (window, name);
+}
+
+void
+gdk_window_iconify (GdkWindow *window)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    _gdk_wayland_window_iconify (window);
+  else
+    _gdk_x11_window_iconify (window);
+}
+
+void
+gdk_window_deiconify (GdkWindow *window)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    _gdk_wayland_window_deiconify (window);
+  else
+    _gdk_x11_window_deiconify (window);
+}
+
+void
+gdk_window_stick (GdkWindow *window)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    _gdk_wayland_window_stick (window);
+  else
+    _gdk_x11_window_stick (window);
+}
+
+void
+gdk_window_unstick (GdkWindow *window)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    _gdk_wayland_window_unstick (window);
+  else
+    _gdk_x11_window_unstick (window);
+}
+
+void
+gdk_window_maximize (GdkWindow *window)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    _gdk_wayland_window_maximize (window);
+  else
+    _gdk_x11_window_maximize (window);
+}
+
+void
+gdk_window_unmaximize (GdkWindow *window)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    _gdk_wayland_window_unmaximize (window);
+  else
+    _gdk_x11_window_unmaximize (window);
+}
+
+void
+gdk_window_fullscreen (GdkWindow *window)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    _gdk_wayland_window_fullscreen (window);
+  else
+    _gdk_x11_window_fullscreen (window);
+}
+
+void
+gdk_window_unfullscreen (GdkWindow *window)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    _gdk_wayland_window_unfullscreen (window);
+  else
+    _gdk_x11_window_unfullscreen (window);
+}
+
+void
+gdk_window_set_keep_above (GdkWindow *window, gboolean setting)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    _gdk_wayland_window_set_keep_above (window, setting);
+  else
+    _gdk_x11_window_set_keep_above (window, setting);
+}
+
+void
+gdk_window_set_keep_below (GdkWindow *window, gboolean setting)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    _gdk_wayland_window_set_keep_below (window, setting);
+  else
+    _gdk_x11_window_set_keep_below (window, setting);
+}
+
+GdkWindow *
+gdk_window_get_group (GdkWindow *window)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    return _gdk_wayland_window_get_group (window);
+  else
+    return _gdk_x11_window_get_group (window);
+}
+
+void
+gdk_window_set_group (GdkWindow *window, GdkWindow *leader)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    _gdk_wayland_window_set_group (window, leader);
+  else
+    _gdk_x11_window_set_group (window, leader);
+}
+
+void
+gdk_window_set_decorations (GdkWindow *window, GdkWMDecoration decorations)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    _gdk_wayland_window_set_decorations (window, decorations);
+  else
+    _gdk_x11_window_set_decorations (window, decorations);
+}
+
+gboolean
+gdk_window_get_decorations (GdkWindow *window, GdkWMDecoration *decorations)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    return _gdk_wayland_window_get_decorations (window, decorations);
+  else
+    return _gdk_x11_window_get_decorations (window, decorations);
+}
+
+void
+gdk_window_set_functions (GdkWindow *window, GdkWMFunction functions)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    _gdk_wayland_window_set_functions (window, functions);
+  else
+    _gdk_x11_window_set_functions (window, functions);
+}
+
+void
+gdk_window_set_opacity (GdkWindow *window, gdouble opacity)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    _gdk_wayland_window_set_opacity (window, opacity);
+  else
+    _gdk_x11_window_set_opacity (window, opacity);
+}
+
+void
+gdk_window_begin_resize_drag (GdkWindow *window, GdkWindowEdge edge, gint button, gint root_x, gint root_y, guint32 timestamp)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    _gdk_wayland_window_begin_resize_drag (window, edge, button, root_x, root_y, timestamp);
+  else
+    _gdk_x11_window_begin_resize_drag (window, edge, button, root_x, root_y, timestamp);
+}
+
+void
+gdk_window_begin_move_drag (GdkWindow *window, gint button, gint root_x, gint root_y, guint32 timestamp)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    _gdk_wayland_window_begin_move_drag (window, button, root_x, root_y, timestamp);
+  else
+    _gdk_x11_window_begin_move_drag (window, button, root_x, root_y, timestamp);
+}
+
+void
+gdk_window_get_root_origin (GdkWindow *window, gint *x, gint *y)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    _gdk_wayland_window_get_root_origin (window, x, y);
+  else
+    _gdk_x11_window_get_root_origin (window, x, y);
+}
+
+void
+gdk_window_get_frame_extents (GdkWindow *window, GdkRectangle *rect)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    _gdk_wayland_window_get_frame_extents (window, rect);
+  else
+    _gdk_x11_window_get_frame_extents (window, rect);
+}
+
+void
+gdk_window_enable_synchronized_configure (GdkWindow *window)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    _gdk_wayland_window_enable_synchronized_configure (window);
+  else
+    _gdk_x11_window_enable_synchronized_configure (window);
+}
+
+void
+gdk_window_configure_finished (GdkWindow *window)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    _gdk_wayland_window_configure_finished (window);
+  else
+    _gdk_x11_window_configure_finished (window);
+}
+
+void
+gdk_window_destroy_notify (GdkWindow *window)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    _gdk_wayland_window_destroy_notify (window);
+  else
+    _gdk_x11_window_destroy_notify (window);
+}
+
+GdkWindow *
+gdk_window_foreign_new_for_display (GdkDisplay *display, GdkNativeWindow anid)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    return _gdk_wayland_window_foreign_new_for_display (display, anid);
+  else
+    return _gdk_x11_window_foreign_new_for_display (display, anid);
+}
+
+GdkWindow *
+gdk_window_lookup_for_display (GdkDisplay *display, GdkNativeWindow anid)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    return _gdk_wayland_window_lookup_for_display (display, anid);
+  else
+    return _gdk_x11_window_lookup_for_display (display, anid);
+}
+
+GdkWindow *
+gdk_window_lookup (GdkNativeWindow anid)
+{
+  if (gdk_backend_select () == GDK_SELECTED_BACKEND_WAYLAND)
+    return _gdk_wayland_window_lookup (anid);
+  else
+    return _gdk_x11_window_lookup (anid);
 }

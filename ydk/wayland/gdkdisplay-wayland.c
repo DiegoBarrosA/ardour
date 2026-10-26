@@ -33,15 +33,16 @@
 #endif
 
 static void gdkw_display_wayland_finalize (GObject *object);
+static void gdkw_display_wayland_dispose (GObject *object);
 
 G_DEFINE_TYPE (GDKWDisplayWayland, gdkw_display_wayland, GDK_TYPE_DISPLAY)
 
 static const gchar *
 gdkw_display_wayland_get_display_name (GdkDisplay *display)
 {
-  const gchar *name = g_getenv ("WAYLAND_DISPLAY");
+  GDKWDisplayWayland *wd = GDKW_DISPLAY_WAYLAND (display);
 
-  return name ? name : "wayland";
+  return wd->socket_name ? wd->socket_name : "wayland-0";
 }
 
 static gint
@@ -83,6 +84,9 @@ gdkw_display_wayland_sync (GdkDisplay *display)
 {
   GDKWDisplayWayland *wayland_display = GDKW_DISPLAY_WAYLAND (display);
 
+  if (wayland_display->wl_display == NULL)
+    return;
+
   /* Present any outstanding window content, then block until the
    * compositor has consumed it.  The roundtrip is what delivers the
    * xdg_surface configure events that let toplevels map. */
@@ -95,6 +99,9 @@ static void
 gdkw_display_wayland_flush (GdkDisplay *display)
 {
   GDKWDisplayWayland *wayland_display = GDKW_DISPLAY_WAYLAND (display);
+
+  if (wayland_display->wl_display == NULL)
+    return;
 
   _gdk_wayland_display_present_all (wayland_display);
   wl_display_flush (wayland_display->wl_display);
@@ -112,6 +119,47 @@ static const struct xdg_wm_base_listener xdg_wm_base_listener = {
   xdg_wm_base_ping
 };
 
+/* Runs from gdk_display_close () (g_object_run_dispose) and again at the
+ * final unref, so it must be idempotent.  Destroys every window of the
+ * default screen while the display is still fully valid, so no GdkWindow
+ * reaches core code with a dead display.  Also valid on a half built
+ * display (no screen, no seat, no event source). */
+static void
+gdkw_display_wayland_dispose (GObject *object)
+{
+  GDKWDisplayWayland *display = GDKW_DISPLAY_WAYLAND (object);
+
+  if (display->default_screen != NULL &&
+      GDKW_SCREEN_WAYLAND (display->default_screen)->display ==
+      GDK_DISPLAY_OBJECT (display))
+    {
+      GdkWindow *root = gdk_screen_get_root_window (display->default_screen);
+
+      if (root != NULL)
+	{
+	  GList *children = gdk_window_get_children (root);
+	  GList *l;
+
+	  for (l = children; l; l = l->next)
+	    g_object_ref (l->data);
+	  for (l = children; l; l = l->next)
+	    {
+	      if (!GDK_WINDOW_DESTROYED (l->data))
+		gdk_window_destroy (l->data);
+	    }
+	  for (l = children; l; l = l->next)
+	    g_object_unref (l->data);
+	  g_list_free (children);
+	}
+    }
+
+  /* Stops the event source and the seat proxies.  A second call finds
+   * everything already released and does nothing. */
+  _gdk_wayland_events_finalize (GDK_DISPLAY_OBJECT (display));
+
+  G_OBJECT_CLASS (gdkw_display_wayland_parent_class)->dispose (object);
+}
+
 static void
 gdkw_display_wayland_finalize (GObject *object)
 {
@@ -121,16 +169,26 @@ gdkw_display_wayland_finalize (GObject *object)
    * gdk_window_destroy ran) a last chance to release their surfaces */
   if (display->windows)
     {
+      /* teardown removes its node from display->windows, so walk a copy */
+      GSList *copy = g_slist_copy (display->windows);
       GSList *l;
 
-      for (l = display->windows; l; l = l->next)
+      for (l = copy; l; l = l->next)
 	_gdk_wayland_window_impl_teardown (l->data);
+      g_slist_free (copy);
       g_slist_free (display->windows);
       display->windows = NULL;
     }
 
   /* Tear down the event source and seat / keyboard / pointer proxies. */
   _gdk_wayland_events_finalize (GDK_DISPLAY_OBJECT (display));
+
+  if (display->keymap)
+    {
+      display->keymap->display = NULL;
+      g_object_unref (display->keymap);
+      display->keymap = NULL;
+    }
 
   if (display->wl_registry)
     {
@@ -165,6 +223,14 @@ gdkw_display_wayland_finalize (GObject *object)
       display->wl_display = NULL;
     }
 
+  /* The screen is never freed (spec section 5), so a window that outlives
+   * the display must not see a dangling screen->display. */
+  if (display->default_screen != NULL)
+    GDKW_SCREEN_WAYLAND (display->default_screen)->display = NULL;
+
+  g_free (display->socket_name);
+  display->socket_name = NULL;
+
   G_OBJECT_CLASS (gdkw_display_wayland_parent_class)->finalize (object);
 }
 
@@ -174,6 +240,7 @@ gdkw_display_wayland_class_init (GDKWDisplayWaylandClass *klass)
   GObjectClass *object_class = G_OBJECT_CLASS (klass);
   GdkDisplayClass *display_class = GDK_DISPLAY_CLASS (klass);
 
+  object_class->dispose = gdkw_display_wayland_dispose;
   object_class->finalize = gdkw_display_wayland_finalize;
 
   display_class->get_display_name = gdkw_display_wayland_get_display_name;
@@ -342,6 +409,13 @@ _gdk_wayland_display_open (const gchar *display_name)
 
   display = g_object_new (GDKW_TYPE_DISPLAY_WAYLAND, NULL);
   display->wl_display = wl_display;
+  if (display_name != NULL)
+    display->socket_name = g_strdup (display_name);
+  else if (g_getenv ("WAYLAND_DISPLAY") != NULL &&
+	   g_getenv ("WAYLAND_DISPLAY")[0] != '\0')
+    display->socket_name = g_strdup (g_getenv ("WAYLAND_DISPLAY"));
+  else
+    display->socket_name = g_strdup ("wayland-0");
   display->serial = 0;
 
   /* Walk the registry for wl_output so the screen below has compositor

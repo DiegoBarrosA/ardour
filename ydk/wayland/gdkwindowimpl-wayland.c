@@ -46,6 +46,14 @@
 #include "gdkalias.h"
 #endif
 
+/* M6B PROTOTYPES */
+void _gdk_wayland_window_hints_apply (GDKWWindowImplWayland *impl);
+void _gdk_wayland_window_hints_configure (GDKWWindowImplWayland *impl,
+					  const guint32 *states,
+					  gsize n_states);
+void _gdk_wayland_window_hints_free (GDKWWindowImplWayland *impl);
+void _gdk_wayland_window_hints_mapped (GDKWWindowImplWayland *impl);
+
 static void gdk_window_impl_iface_init (GdkWindowImplIface *iface);
 static void gdk_paintable_iface_init (GdkPaintableIface *iface);
 
@@ -171,9 +179,31 @@ gdkw_window_impl_wayland_set_cairo_clip (GdkDrawable *drawable, cairo_t *cr)
 }
 
 static void
+gdkw_window_impl_wayland_finalize (GObject *object)
+{
+  GDKWWindowImplWayland *impl = GDKW_WINDOW_IMPL_WAYLAND (object);
+
+  /* idempotent; the display may already be gone */
+  _gdk_wayland_window_impl_teardown (impl);
+
+  if (impl->colormap)
+    {
+      g_object_unref (impl->colormap);
+      impl->colormap = NULL;
+    }
+
+  _gdk_wayland_window_hints_free (impl);
+
+  G_OBJECT_CLASS (gdkw_window_impl_wayland_parent_class)->finalize (object);
+}
+
+static void
 gdkw_window_impl_wayland_class_init (GDKWWindowImplWaylandClass *klass)
 {
+  GObjectClass *object_class = G_OBJECT_CLASS (klass);
   GdkDrawableClass *drawable_class = GDK_DRAWABLE_CLASS (klass);
+
+  object_class->finalize = gdkw_window_impl_wayland_finalize;
 
   /* create_gc and the draw_* vfuncs, shared with the pixmap impl */
   _gdk_wayland_drawable_install_vfuncs (drawable_class);
@@ -413,6 +443,7 @@ _gdk_wayland_window_impl_teardown (GDKWWindowImplWayland *impl)
       wl_surface_destroy (impl->wl_surface);
       impl->wl_surface = NULL;
     }
+  impl->configured = FALSE;
   g_free (impl->wmclass);
   impl->wmclass = NULL;
 }
@@ -448,6 +479,9 @@ xdg_surface_handle_configure (void *data,
   xdg_surface_ack_configure (xdg_surface, serial);
   impl->configured = TRUE;
 
+  /* children waiting for this window as their transient parent */
+  _gdk_wayland_window_hints_mapped (impl);
+
   /* first allowed buffer commit: attach the freshly-acked surface.  Later
    * commits happen in display sync via present_all. */
   _gdk_wayland_window_impl_present (impl);
@@ -478,27 +512,32 @@ xdg_toplevel_handle_configure (void *data,
 	  gdk_window_invalidate_rect (impl->wrapper, &rect, FALSE);
 	}
     }
+
+  /* compositor window state: maximized, fullscreen, activated */
+  _gdk_wayland_window_hints_configure
+    (impl, states ? (const guint32 *) states->data : NULL,
+     states ? states->size / sizeof (guint32) : 0);
 }
 
 static void
 xdg_toplevel_handle_close (void *data, struct xdg_toplevel *toplevel)
 {
   GDKWWindowImplWayland *impl = data;
-  GdkEvent ev;
+  GdkEvent *ev;
 
   if (impl == NULL || impl->wrapper == NULL ||
       GDK_WINDOW_DESTROYED (impl->wrapper))
     return;
 
-  /* A stack event is fine here: gdk_event_put () copies it.  The core does
-   * not destroy the window; the application answers GDK_DELETE as it would
-   * a WM_DELETE_WINDOW message. */
-  memset (&ev, 0, sizeof ev);
-  ev.any.type = GDK_DELETE;
-  ev.any.window = impl->wrapper;
-  ev.any.send_event = FALSE;
+  /* The core does not destroy the window; the application answers
+   * GDK_DELETE as it would a WM_DELETE_WINDOW message.  Heap event, as
+   * everywhere else (gdk_event_put () copies it). */
+  ev = gdk_event_new (GDK_DELETE);
+  ev->any.window = g_object_ref (impl->wrapper);
+  ev->any.send_event = FALSE;
 
-  gdk_event_put (&ev);
+  gdk_event_put (ev);
+  gdk_event_free (ev);
 }
 
 static const struct xdg_toplevel_listener xdg_toplevel_listener = {
@@ -536,18 +575,6 @@ gdk_paintable_iface_init (GdkPaintableIface *iface)
 
 /*************** window impl interface ***************/
 
-/* xdg-shell surface identifiers don't exist in GDK2, which only carries
- * WM_CLASS.  If the window was created with one, use the class half as the
- * compositor app id (the natural xdg analogue). */
-static const gchar *
-wmclass_of (GDKWWindowImplWayland *impl)
-{
-  if (impl->wmclass)
-    return impl->wmclass;
-
-  return NULL;
-}
-
 static void
 gdk_window_wayland_show (GdkWindow *window, gboolean already_mapped)
 {
@@ -564,6 +591,10 @@ gdk_window_wayland_show (GdkWindow *window, gboolean already_mapped)
   if (impl->wl_surface)
     return; /* already shown */
 
+  if (impl->screen == NULL ||
+      gdk_screen_get_display (impl->screen) == NULL)
+    return; /* display already closed */
+
   display = GDKW_DISPLAY_WAYLAND (gdk_screen_get_display (impl->screen));
 
   if (!display->wl_compositor || !display->xdg_wm_base || !display->wl_shm)
@@ -578,16 +609,13 @@ gdk_window_wayland_show (GdkWindow *window, gboolean already_mapped)
     xdg_wm_base_get_xdg_surface (display->xdg_wm_base, impl->wl_surface);
   impl->xdg_toplevel = xdg_surface_get_toplevel (impl->xdg_surface);
 
-  /* xdg_toplevel_set_app_id corresponds to the X11 WM_CLASS hint; the
-   * compositor uses it to match the surface with a desktop entry. */
-  if (wmclass_of (impl))
-    {
-      xdg_toplevel_set_app_id (impl->xdg_toplevel, impl->wmclass);
-    }
-
   xdg_surface_add_listener (impl->xdg_surface, &xdg_surface_listener, impl);
   xdg_toplevel_add_listener (impl->xdg_toplevel, &xdg_toplevel_listener,
 			     impl);
+
+  /* Stored hints (app id, title, size limits, parent, state requests) go
+   * out before the first commit. */
+  _gdk_wayland_window_hints_apply (impl);
 
   display->windows = g_slist_prepend (display->windows, impl);
 
@@ -637,7 +665,9 @@ gdk_window_wayland_hide (GdkWindow *window)
 
   impl = GDKW_WINDOW_IMPL_WAYLAND (((GdkWindowObject *) window)->impl);
 
-  grab_check_unmap (window);
+  /* the display may already be gone */
+  if (impl->screen != NULL && gdk_screen_get_display (impl->screen) != NULL)
+    grab_check_unmap (window);
 
   resize_buffer (impl, impl->width, impl->height);
 
@@ -881,22 +911,10 @@ gdk_window_wayland_destroy (GdkWindow *window,
   impl = GDKW_WINDOW_IMPL_WAYLAND (((GdkWindowObject *) window)->impl);
 
   /* Mirrors _gdk_xgrab_check_destroy (): make sure no grab outlives the
-   * native window. */
-  if (impl->screen != NULL)
-    {
-      GdkDisplay *display = gdk_screen_get_display (impl->screen);
-      GdkPointerGrabInfo *grab = _gdk_display_get_last_pointer_grab (display);
-
-      if (grab && grab->native_window == window)
-	{
-	  grab->serial_end = grab->serial_start;
-	  grab->implicit_ungrab = TRUE;
-	}
-
-      if (window == display->keyboard_grab.native_window &&
-	  display->keyboard_grab.window != NULL)
-	_gdk_display_unset_has_keyboard_grab (display, TRUE);
-    }
+   * native window.  X11 lets the next event end the grab; there may be no
+   * next event here, so end it now (same as when the window is hidden). */
+  if (impl->screen != NULL && gdk_screen_get_display (impl->screen) != NULL)
+    grab_check_unmap (window);
 
   _gdk_wayland_window_impl_teardown (impl);
 }
@@ -967,6 +985,8 @@ _gdk_wayland_window_impl_new (GdkWindow     *window,
   impl->wrapper = window;
   impl->screen = screen;
   impl->events = event_mask;
+  /* core sets bg_color before the impl is created (black by default) */
+  impl->background = private->bg_color;
 
   impl->x = private->x;
   impl->y = private->y;
@@ -1029,6 +1049,42 @@ _gdk_wayland_test_toplevel_close (GdkWindow *window)
     return FALSE;
 
   xdg_toplevel_handle_close (impl, impl->xdg_toplevel);
+
+  return TRUE;
+}
+
+/*************** test hook (M6b) ***************/
+
+/* Builds an xdg state array from GDKW_TEST_STATE_* bits and calls the real
+ * xdg_toplevel configure listener. width / height <= 0 keep the size. */
+gboolean
+_gdk_wayland_test_toplevel_configure (GdkWindow *window,
+				      gint width, gint height,
+				      guint states)
+{
+  GDKWWindowImplWayland *impl = _gdk_wayland_window_get_impl (window);
+  struct wl_array array;
+  guint32 *p;
+
+  if (impl == NULL || impl->xdg_toplevel == NULL)
+    return FALSE;
+
+  wl_array_init (&array);
+
+#define ADD_STATE(bit, value) \
+  if (states & (bit)) \
+    { \
+      p = wl_array_add (&array, sizeof (guint32)); \
+      if (p) *p = (value); \
+    }
+  ADD_STATE (GDKW_TEST_STATE_MAXIMIZED, 1)
+  ADD_STATE (GDKW_TEST_STATE_FULLSCREEN, 2)
+  ADD_STATE (GDKW_TEST_STATE_RESIZING, 3)
+  ADD_STATE (GDKW_TEST_STATE_ACTIVATED, 4)
+#undef ADD_STATE
+
+  xdg_toplevel_handle_configure (impl, NULL, width, height, &array);
+  wl_array_release (&array);
 
   return TRUE;
 }

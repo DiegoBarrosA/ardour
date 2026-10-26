@@ -215,6 +215,62 @@ gboolean _gdk_wayland_test_seat_info            (GdkDisplay       *display,
  * Owner: "pointer" (gdkwindowimpl-wayland.c). */
 gboolean _gdk_wayland_test_toplevel_close       (GdkWindow *window);
 
+/* ---- M6b: toplevel hint observability ---------------------------------
+ * xdg_toplevel state bits for _gdk_wayland_test_toplevel_configure () */
+enum
+{
+  GDKW_TEST_STATE_MAXIMIZED = 1 << 0,
+  GDKW_TEST_STATE_FULLSCREEN = 1 << 1,
+  GDKW_TEST_STATE_RESIZING = 1 << 2,
+  GDKW_TEST_STATE_ACTIVATED = 1 << 3
+};
+
+/* What the backend last sent to the compositor for one toplevel.  Pointers
+ * are NOT owned (transient_for is a borrowed GdkWindow). */
+typedef struct
+{
+  gboolean   has_toplevel;
+  gboolean   has_title;
+  gchar      title[256];
+  gboolean   has_app_id;
+  gchar      app_id[128];
+  gboolean   has_role;
+  gchar      role[128];
+  GdkWindow *transient_for;
+  gint       min_width, min_height, max_width, max_height;
+  gboolean   maximized, fullscreen;
+  guint      minimize_requests;
+  guint      move_requests, resize_requests;
+  guint32    drag_serial;
+  gboolean   drag_sent;
+  guint      last_resize_edge;
+  guint      configure_states;   /* GDKW_TEST_STATE_* of the last configure */
+} GDKWTestToplevelInfo;
+
+/* Owner: hints (gdkwindow-hints-wayland.c).  FALSE for a non Wayland
+ * window or one without a toplevel. */
+gboolean _gdk_wayland_test_toplevel_info        (GdkWindow            *window,
+                                                 GDKWTestToplevelInfo *info);
+/* Owner: gdkwindowimpl-wayland.c.  Builds a wl_array of xdg states from
+ * @states (GDKW_TEST_STATE_*) and calls the real xdg_toplevel configure
+ * listener.  @width / @height <= 0 keep the current size. */
+gboolean _gdk_wayland_test_toplevel_configure   (GdkWindow *window,
+                                                 gint       width,
+                                                 gint       height,
+                                                 guint      states);
+
+/* Owner: gdkevents-wayland.c.  Calls the real wl_keyboard.modifiers
+ * listener with @depressed and @locked (GDK masks) converted through the live
+ * keymap and @group as the effective layout. */
+gboolean _gdk_wayland_test_keyboard_state       (GdkDisplay     *display,
+                                                 GdkModifierType depressed,
+                                                 GdkModifierType locked,
+                                                 guint           group);
+/* Like _gdk_wayland_test_keyboard_keymap () but with caller supplied keymap
+ * text (XKB_V1), for multi layout tests. */
+gboolean _gdk_wayland_test_keyboard_keymap_text (GdkDisplay  *display,
+                                                 const gchar *text);
+
 G_END_DECLS
 
 /* =========================================================================

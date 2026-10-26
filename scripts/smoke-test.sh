@@ -12,8 +12,15 @@
 # colormap family checks ("ydk_demo: M5C: PASS"), and since F8 the visual /
 # default-colormap / rgba / gdkrgb checks ("ydk_demo: M5V: PASS"), and since M6
 # the input and screen checks driven through the headless test hooks
-# ("ydk_demo: M6: PASS"), with CRITICAL log messages fatal in the demo.  Backends without
-# window support exit 77, which still proves the display open/roundtrip works.
+# ("ydk_demo: M6: PASS"), and since M6b the keymap, display and toplevel hint
+# checks plus the audit gaps ("ydk_demo: M6B: PASS"), with CRITICAL log
+# messages fatal in the demo.  Backends without window support exit 77,
+# which still proves the display open/roundtrip works.
+#
+# Phase 0 runs the dispatch audit (scripts/audit-x11-symbols.sh) when the
+# built objects are available (YDK_AUDIT_BUILD, set by the flake app).
+# Phase 1 also requires "ydk_demo: M6B-X11: PASS": the dispatched M6b
+# functions still reach the X11 backend.
 #
 # Exits 0 on success.
 
@@ -24,12 +31,26 @@ chmod 0700 "$RUNTIME"
 export XDG_RUNTIME_DIR="$RUNTIME"
 trap 'rm -rf "$RUNTIME"' EXIT
 
+echo "== Phase 0: dispatch audit =="
+AUDIT_SCRIPT=${YDK_AUDIT_SCRIPT:-$(dirname "$0")/audit-x11-symbols.sh}
+AUDIT_BUILD=${YDK_AUDIT_BUILD:-build}
+if [ -f "$AUDIT_SCRIPT" ] && [ -d "$AUDIT_BUILD/ydk" ]; then
+  bash "$AUDIT_SCRIPT" "$AUDIT_BUILD"
+else
+  echo "smoke-test: audit skipped (no objects under $AUDIT_BUILD)"
+fi
+
 echo "== Phase 1: X11 baseline (Xvfb) =="
 Xvfb :97 -screen 0 1024x768x24 -nolisten tcp &
 XVFB_PID=$!
 sleep 1
 
-DISPLAY=:97 GDK_BACKEND=x11 ydk-demo
+DISPLAY=:97 GDK_BACKEND=x11 ydk-demo 2>&1 | tee "$RUNTIME/x11-demo.log"
+if ! grep -q "ydk_demo: M6B-X11: PASS" "$RUNTIME/x11-demo.log"; then
+  echo "smoke-test: x11 demo did not report M6B-X11: PASS" >&2
+  kill "$XVFB_PID" 2>/dev/null || true
+  exit 1
+fi
 DISPLAY=:97 import -window root "$RUNTIME/x11-baseline.png"
 
 kill "$XVFB_PID" 2>/dev/null || true
@@ -104,6 +125,11 @@ fi
 
 if [ "$DEMO_RC" -eq 0 ] && ! grep -q "ydk_demo: M6: PASS" "$RUNTIME/wayland-demo.log"; then
   echo "smoke-test: wayland demo exited 0 but did not report M6: PASS" >&2
+  exit 1
+fi
+
+if [ "$DEMO_RC" -eq 0 ] && ! grep -q "ydk_demo: M6B: PASS" "$RUNTIME/wayland-demo.log"; then
+  echo "smoke-test: wayland demo exited 0 but did not report M6B: PASS" >&2
   exit 1
 fi
 

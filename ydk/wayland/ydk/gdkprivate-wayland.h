@@ -96,6 +96,11 @@ struct _GDKWDisplayWayland
   /* M3: per-display keymap; created lazily and filled from the wl_keyboard
    * keymap event (see gdkkeys-wayland.c). */
   GdkKeymap *keymap;
+
+  /* M6b: the socket name this display really connected to (the open
+   * argument, else $WAYLAND_DISPLAY, else libwayland's default
+   * "wayland-0").  Used for the display name and for spawned children. */
+  gchar *socket_name;
 };
 
 struct _GDKWDisplayWaylandClass
@@ -413,5 +418,108 @@ void _gdk_wayland_property_delete (GdkWindow *window, GdkAtom property);
 GdkAtom _gdk_wayland_atom_intern (const gchar *atom_name, gboolean only_if_exists);
 GdkAtom _gdk_wayland_atom_intern_static_string (const gchar *atom_name);
 gchar *_gdk_wayland_atom_name (GdkAtom atom);
+
+
+/********************************************************
+ * M6b: keymap, display misc and toplevel hint functions
+ * (dispatched from ydk/gdkbackend.c).  Each has the signature of the
+ * public gdk_* function of the same name without the prefix.
+ ********************************************************/
+
+/* ---- keymap and keyval (gdkkeys-wayland.c) */
+PangoDirection _gdk_wayland_keymap_get_direction (GdkKeymap *keymap);
+gboolean _gdk_wayland_keymap_have_bidi_layouts (GdkKeymap *keymap);
+gboolean _gdk_wayland_keymap_get_caps_lock_state (GdkKeymap *keymap);
+gboolean _gdk_wayland_keymap_get_entries_for_keyval (GdkKeymap *keymap, guint keyval, GdkKeymapKey **keys, gint *n_keys);
+gboolean _gdk_wayland_keymap_get_entries_for_keycode (GdkKeymap *keymap, guint hardware_keycode, GdkKeymapKey **keys, guint **keyvals, gint *n_entries);
+guint _gdk_wayland_keymap_lookup_key (GdkKeymap *keymap, const GdkKeymapKey *key);
+void _gdk_wayland_keymap_add_virtual_modifiers (GdkKeymap *keymap, GdkModifierType *state);
+gboolean _gdk_wayland_keymap_map_virtual_modifiers (GdkKeymap *keymap, GdkModifierType *state);
+gchar * _gdk_wayland_keyval_name (guint keyval);
+guint _gdk_wayland_keyval_from_name (const gchar *keyval_name);
+void _gdk_wayland_keyval_convert_case (guint symbol, guint *lower, guint *upper);
+
+/* ---- display misc (gdkdisplay-misc-wayland.c) */
+const gchar * _gdk_wayland_display_get_name (GdkDisplay *display);
+gboolean _gdk_wayland_display_supports_shapes (GdkDisplay *display);
+gboolean _gdk_wayland_display_supports_input_shapes (GdkDisplay *display);
+gboolean _gdk_wayland_display_supports_composite (GdkDisplay *display);
+gboolean _gdk_wayland_display_supports_selection_notification (GdkDisplay *display);
+gboolean _gdk_wayland_display_supports_clipboard_persistence (GdkDisplay *display);
+gboolean _gdk_wayland_display_request_selection_notification (GdkDisplay *display, GdkAtom selection);
+void _gdk_wayland_display_store_clipboard (GdkDisplay *display, GdkWindow *clipboard_window, guint32 time_, const GdkAtom *targets, gint n_targets);
+GdkWindow * _gdk_wayland_display_get_default_group (GdkDisplay *display);
+gchar * _gdk_wayland_get_display (void);
+void _gdk_wayland_notify_startup_complete (void);
+void _gdk_wayland_notify_startup_complete_with_id (const gchar *startup_id);
+void _gdk_wayland_add_client_message_filter (GdkAtom message_type, GdkFilterFunc func, gpointer data);
+void _gdk_wayland_display_add_client_message_filter (GdkDisplay *display, GdkAtom message_type, GdkFilterFunc func, gpointer data);
+gboolean _gdk_wayland_event_send_client_message_for_display (GdkDisplay *display, GdkEvent *event, GdkNativeWindow winid);
+GdkEvent * _gdk_wayland_event_get_graphics_expose (GdkWindow *window);
+GList * _gdk_wayland_devices_list (void);
+GList * _gdk_wayland_display_list_devices (GdkDisplay *display);
+gboolean _gdk_wayland_device_get_history (GdkDevice *device, GdkWindow *window, guint32 start, guint32 stop, GdkTimeCoord ***events, gint *n_events);
+void _gdk_wayland_input_set_extension_events (GdkWindow *window, gint mask, GdkExtensionMode mode);
+gboolean _gdk_wayland_spawn_on_screen (GdkScreen *screen, const gchar *working_directory, gchar **argv, gchar **envp, GSpawnFlags flags, GSpawnChildSetupFunc child_setup, gpointer user_data, gint *child_pid, GError **error);
+gboolean _gdk_wayland_spawn_on_screen_with_pipes (GdkScreen *screen, const gchar *working_directory, gchar **argv, gchar **envp, GSpawnFlags flags, GSpawnChildSetupFunc child_setup, gpointer user_data, gint *child_pid, gint *standard_input, gint *standard_output, gint *standard_error, GError **error);
+gboolean _gdk_wayland_spawn_command_line_on_screen (GdkScreen *screen, const gchar *command_line, GError **error);
+gchar * _gdk_wayland_set_locale (void);
+gchar * _gdk_wayland_wcstombs (const GdkWChar *src);
+gint _gdk_wayland_mbstowcs (GdkWChar *dest, const gchar *src, gint dest_max);
+void _gdk_wayland_error_trap_push (void);
+gint _gdk_wayland_error_trap_pop (void);
+gboolean _gdk_wayland_get_use_xshm (void);
+GdkFont * _gdk_wayland_fontset_load (const gchar *fontset_name);
+
+/* ---- toplevel hints (gdkwindow-hints-wayland.c) */
+void _gdk_wayland_window_hints_apply (GDKWWindowImplWayland *impl);
+void _gdk_wayland_window_hints_configure (GDKWWindowImplWayland *impl, const guint32 *states, gsize n_states);
+void _gdk_wayland_window_hints_free (GDKWWindowImplWayland *impl);
+void _gdk_wayland_window_hints_mapped (GDKWWindowImplWayland *impl);
+void _gdk_wayland_window_set_title (GdkWindow *window, const gchar *title);
+void _gdk_wayland_window_set_role (GdkWindow *window, const gchar *role);
+void _gdk_wayland_window_set_startup_id (GdkWindow *window, const gchar *startup_id);
+void _gdk_wayland_window_set_transient_for (GdkWindow *window, GdkWindow *parent);
+void _gdk_wayland_window_set_type_hint (GdkWindow *window, GdkWindowTypeHint hint);
+GdkWindowTypeHint _gdk_wayland_window_get_type_hint (GdkWindow *window);
+void _gdk_wayland_window_set_modal_hint (GdkWindow *window, gboolean modal);
+void _gdk_wayland_window_set_skip_taskbar_hint (GdkWindow *window, gboolean skips_taskbar);
+void _gdk_wayland_window_set_skip_pager_hint (GdkWindow *window, gboolean skips_pager);
+void _gdk_wayland_window_set_urgency_hint (GdkWindow *window, gboolean urgent);
+void _gdk_wayland_window_set_hints (GdkWindow *window, gint x, gint y, gint min_width, gint min_height, gint max_width, gint max_height, gint flags);
+void _gdk_wayland_window_set_geometry_hints (GdkWindow *window, const GdkGeometry *geometry, GdkWindowHints geom_mask);
+void _gdk_wayland_window_focus (GdkWindow *window, guint32 timestamp);
+void _gdk_wayland_window_set_accept_focus (GdkWindow *window, gboolean accept_focus);
+void _gdk_wayland_window_set_focus_on_map (GdkWindow *window, gboolean focus_on_map);
+void _gdk_wayland_window_set_override_redirect (GdkWindow *window, gboolean override_redirect);
+void _gdk_wayland_window_set_icon (GdkWindow *window, GdkWindow *icon_window, GdkPixmap *pixmap, GdkBitmap *mask);
+void _gdk_wayland_window_set_icon_list (GdkWindow *window, GList *pixbufs);
+void _gdk_wayland_window_set_icon_name (GdkWindow *window, const gchar *name);
+void _gdk_wayland_window_iconify (GdkWindow *window);
+void _gdk_wayland_window_deiconify (GdkWindow *window);
+void _gdk_wayland_window_stick (GdkWindow *window);
+void _gdk_wayland_window_unstick (GdkWindow *window);
+void _gdk_wayland_window_maximize (GdkWindow *window);
+void _gdk_wayland_window_unmaximize (GdkWindow *window);
+void _gdk_wayland_window_fullscreen (GdkWindow *window);
+void _gdk_wayland_window_unfullscreen (GdkWindow *window);
+void _gdk_wayland_window_set_keep_above (GdkWindow *window, gboolean setting);
+void _gdk_wayland_window_set_keep_below (GdkWindow *window, gboolean setting);
+GdkWindow * _gdk_wayland_window_get_group (GdkWindow *window);
+void _gdk_wayland_window_set_group (GdkWindow *window, GdkWindow *leader);
+void _gdk_wayland_window_set_decorations (GdkWindow *window, GdkWMDecoration decorations);
+gboolean _gdk_wayland_window_get_decorations (GdkWindow *window, GdkWMDecoration *decorations);
+void _gdk_wayland_window_set_functions (GdkWindow *window, GdkWMFunction functions);
+void _gdk_wayland_window_set_opacity (GdkWindow *window, gdouble opacity);
+void _gdk_wayland_window_begin_resize_drag (GdkWindow *window, GdkWindowEdge edge, gint button, gint root_x, gint root_y, guint32 timestamp);
+void _gdk_wayland_window_begin_move_drag (GdkWindow *window, gint button, gint root_x, gint root_y, guint32 timestamp);
+void _gdk_wayland_window_get_root_origin (GdkWindow *window, gint *x, gint *y);
+void _gdk_wayland_window_get_frame_extents (GdkWindow *window, GdkRectangle *rect);
+void _gdk_wayland_window_enable_synchronized_configure (GdkWindow *window);
+void _gdk_wayland_window_configure_finished (GdkWindow *window);
+void _gdk_wayland_window_destroy_notify (GdkWindow *window);
+GdkWindow * _gdk_wayland_window_foreign_new_for_display (GdkDisplay *display, GdkNativeWindow anid);
+GdkWindow * _gdk_wayland_window_lookup_for_display (GdkDisplay *display, GdkNativeWindow anid);
+GdkWindow * _gdk_wayland_window_lookup (GdkNativeWindow anid);
 
 #endif /* __YDK_GDKP_PRIVATE_WAYLAND_H__ */
