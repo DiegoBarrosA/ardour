@@ -314,8 +314,12 @@ Real versus stubbed:
   app id / role storage and transmission, transient parent, size hints,
   maximize / fullscreen / minimize requests and their window state events,
   interactive move and resize requests, group, decorations, opacity storage.
-- Stubbed and reporting a safe value: shapes, input shapes (FALSE until M7),
-  selection notification and clipboard persistence (FALSE until M8), composite
+
+> [!warning] Corrected 2026-10-26 (M7)
+> Shapes and input shapes were stubbed (FALSE) until M7. They are real now,
+> see the M7 section.
+
+- Stubbed and reporting a safe value: selection notification and clipboard persistence (FALSE until M8), composite
   (FALSE), device history, extension events, startup notification, client
   message send and filters, foreign windows and lookups (NULL), icons
   (stored, never sent: xdg-shell has no icon request), type hints, keep
@@ -344,20 +348,70 @@ Known gaps (deliberately left, in addition to the M6 list):
 - A child keeps `parent_sent` set if its parent's toplevel is torn down and
   the parent window is shown again (cannot happen today: a destroyed window
   is not shown again).
-- Raw `seat->grab.confine_to` needs a weak pointer before M7.
+- Raw `seat->grab.confine_to` needs a weak pointer. This was due before M7 and
+  is still open after it.
 - `drag_sent` of the move / resize hook depends on a `wl_seat` being present,
   which the headless Weston does not offer, so the demo does not assert it.
 - Everything is verified against Weston headless and the test hooks; no real
   seat, tablet or multi-output compositor has been tried.
 
-### M7 - Cursors, shapes, fonts
+### M7 - Cursors, shapes, fonts (DONE)
 
-- `wl_cursor_theme` + `wl_pointer.set_cursor`; real `set_cursor` vfunc.
-- `gdk_window_shape_combine_mask` via `wl_surface.set_opaque_region` /
-  input region (`wl_region`) with the depth-1 masks from M5.
-- a safe font-load path on Wayland (pango-based, no Xlib).
+Contract header: `ydk/wayland/ydk/gdkm7-wayland.h` (installed; its public
+section holds the test hooks). Three pieces, no file shared between them.
 
-Verification: demo sets named cursors and shapes with no crash.
+- Cursors (`gdkcursor-wayland.c`): `wl_cursor_theme_load` on first use, theme
+  from `XCURSOR_THEME`, size from `XCURSOR_SIZE` (1 to 512, else 24), changed by
+  `gdk_x11_display_set_cursor_theme`. Resolution order: blank cursor hides the
+  pointer, pixmap and pixbuf cursors own a shm buffer, typed and named cursors
+  come from the theme (primary name, then aliases such as `ew-resize`), then
+  `left_ptr` or `default`, and last a built in 1x1 transparent buffer.
+  `wl_pointer.set_cursor` is sent on every `wl_pointer.enter` (new serial), from
+  the `set_cursor` vfunc while the window has pointer focus, when an explicit
+  grab starts or ends, and after a theme change. `gdk_cursor_get_image` returns
+  a pixbuf for custom cursors only.
+- Shapes (`gdkshape-wayland.c`): the bounding shape B clears backing pixels
+  outside B on every present and, for depth 24 windows, becomes the opaque
+  region. The effective input region is B intersect I, or whichever exists.
+  Requests are sent only when the region changed; a shape set before `show` is
+  sent before the first commit. `supports_shapes` and `supports_input_shapes`
+  are TRUE.
+- Fonts (`gdkfont-wayland.c`, `gdkdrawable-wayland.c`): `gdk_draw_text` and
+  `gdk_draw_text_wc` draw through Pango with fixed options (96 dpi, gray
+  antialias, slight hinting, hint metrics on, round glyph positions), so
+  measuring equals drawing. Depth 1 targets draw the glyph path, so edges are
+  exact.
+- Build: `wayland-cursor` is a new dependency (`WAYLAND-CURSOR` uselib for the
+  wayland objects and `libydk`); nix needs no new package. The smoke test and
+  valgrind scripts export `FONTCONFIG_FILE` (DejaVu through `makeFontsConf`) and
+  `XDG_CACHE_HOME` under the temp dir.
+
+Verification: `m7_exercise` in the demo (headless, prints `ydk_demo: M7: PASS`;
+`scripts/smoke-test.sh` and `scripts/valgrind-smoke.sh` require it). Cursors
+use a generated three file Xcursor theme and the cursor info hook (a headless
+Weston has no seat, so nothing reaches a real `wl_pointer`). Shapes are read
+back as the regions sent and as backing pixels. Fonts are measured by drawing
+into pixmaps and comparing the ink box with the extents.
+
+Known gaps (deliberately left, in addition to the M6 and M6b lists):
+
+- No cursor animation: only image 0 of a theme cursor is used.
+- No built in arrow: if no theme is usable the pointer is invisible (1x1
+  transparent buffer, logged once with `g_debug`).
+- No scale: cursor size and buffer scale are 1 (M10 multiplies them).
+- The opaque region is sent only for shaped depth 24 windows. Unshaped windows
+  send none (follow up).
+- Theme images are not readable by `gdk_cursor_get_image` (libwayland-cursor
+  hides the pixels), so it returns NULL for theme, typed and blank cursors.
+- A cursor set while the pointer is outside the window is only remembered by
+  the vfunc when the core calls it (it does not call it from outside). On
+  `wl_pointer.enter` the last resolved cursor is sent first and the core's
+  crossing handling then re-sends the right one (same serial, so one or two
+  `set_cursor` requests).
+- `_gdk_wayland_cursor_theme_set` with a NULL theme and size <= 0 still reloads
+  the theme (no leak, no crash).
+- Verified only against headless Weston and the hooks; the real
+  `wl_pointer.set_cursor` request has not been seen by a compositor.
 
 ### M8 - Selection, clipboard, DnD
 

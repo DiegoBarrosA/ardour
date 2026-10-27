@@ -58,6 +58,7 @@
 
 #include "gdkprivate-wayland.h"
 #include "gdkseat-wayland.h"
+#include "gdkm7-wayland.h"
 
 /* ---- helpers ---- */
 
@@ -81,12 +82,10 @@ _gdk_wayland_x11_display_set_cursor_theme (GdkDisplay  *display,
                                            const gchar *theme,
                                            const gint   size)
 {
-  /* Nothing to do yet.  M7 can forward @theme and @size to the Wayland
-   * cursor code from here.  XcursorSetTheme must not run: there is no X
-   * Display behind this object. */
-  (void) display;
-  (void) theme;
-  (void) size;
+  /* XcursorSetTheme must not run: there is no X Display behind this
+   * object.  The cursor code tolerates a NULL or non Wayland display, a
+   * NULL or empty theme and size <= 0, silently. */
+  _gdk_wayland_cursor_theme_set (display, theme, size);
 }
 
 /* ---- gdk_x11_window_set_user_time ---- */

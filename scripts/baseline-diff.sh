@@ -29,6 +29,9 @@ START_TIMEOUT=${BASELINE_START_TIMEOUT:-10}    # seconds, compositor/X startup
 RUNTIME=$(mktemp -d)
 chmod 0700 "$RUNTIME"
 export XDG_RUNTIME_DIR="$RUNTIME"
+# M7: the demo needs fontconfig and a writable cache directory
+mkdir -p "$RUNTIME/cache"
+export XDG_CACHE_HOME="$RUNTIME/cache"
 
 XVFB_PID=""
 WESTON_PID=""

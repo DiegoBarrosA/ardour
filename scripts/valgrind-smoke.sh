@@ -31,6 +31,9 @@ fi
 RUNTIME=$(mktemp -d)
 chmod 0700 "$RUNTIME"
 export XDG_RUNTIME_DIR="$RUNTIME"
+# M7: fontconfig needs a writable cache directory
+mkdir -p "$RUNTIME/cache"
+export XDG_CACHE_HOME="$RUNTIME/cache"
 WESTON_PID=
 cleanup () {
   if [ -n "$WESTON_PID" ]; then
@@ -85,7 +88,7 @@ if ! grep -q "ERROR SUMMARY: 0 errors" "$LOG"; then
   echo "valgrind-smoke: FAIL: no 'ERROR SUMMARY: 0 errors' line" >&2
   exit 1
 fi
-for m in M4 M5 M5C M5V M6 M6B; do
+for m in M4 M5 M5C M5V M6 M6B M7; do
   if ! grep -q "ydk_demo: $m: PASS" "$LOG"; then
     echo "valgrind-smoke: FAIL: demo did not report $m: PASS" >&2
     exit 1

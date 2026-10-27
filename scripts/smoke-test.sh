@@ -13,7 +13,8 @@
 # default-colormap / rgba / gdkrgb checks ("ydk_demo: M5V: PASS"), and since M6
 # the input and screen checks driven through the headless test hooks
 # ("ydk_demo: M6: PASS"), and since M6b the keymap, display and toplevel hint
-# checks plus the audit gaps ("ydk_demo: M6B: PASS"), with CRITICAL log
+# checks plus the audit gaps ("ydk_demo: M6B: PASS"), and since M7 the cursor,
+# shape and font checks ("ydk_demo: M7: PASS"), with CRITICAL log
 # messages fatal in the demo.  Backends without window support exit 77,
 # which still proves the display open/roundtrip works.
 #
@@ -29,6 +30,9 @@ set -euo pipefail
 RUNTIME=$(mktemp -d)
 chmod 0700 "$RUNTIME"
 export XDG_RUNTIME_DIR="$RUNTIME"
+# M7: fontconfig needs a writable cache directory
+mkdir -p "$RUNTIME/cache"
+export XDG_CACHE_HOME="$RUNTIME/cache"
 trap 'rm -rf "$RUNTIME"' EXIT
 
 echo "== Phase 0: dispatch audit =="
@@ -130,6 +134,16 @@ fi
 
 if [ "$DEMO_RC" -eq 0 ] && ! grep -q "ydk_demo: M6B: PASS" "$RUNTIME/wayland-demo.log"; then
   echo "smoke-test: wayland demo exited 0 but did not report M6B: PASS" >&2
+  exit 1
+fi
+
+if [ "$DEMO_RC" -eq 0 ] && ! grep -q "ydk_demo: M7: PASS" "$RUNTIME/wayland-demo.log"; then
+  echo "smoke-test: wayland demo exited 0 but did not report M7: PASS" >&2
+  exit 1
+fi
+
+if grep -q "GdkFont text drawing unsupported" "$RUNTIME/wayland-demo.log"; then
+  echo "smoke-test: wayland phase logged the old font drawing warning" >&2
   exit 1
 fi
 

@@ -21,6 +21,7 @@
 #include <ydk/gdkinternals.h>
 
 #include "gdkpixmap-wayland.h"
+#include "gdkm7-wayland.h"
 
 #ifdef GDK_COMPILATION
 #include "gdkalias.h"
@@ -764,19 +765,28 @@ gdkw_draw_pixbuf (GdkDrawable *drawable,
 }
 
 /********************************************************
- * Text (GdkFont) is not supported; use pango
+ * Text (GdkFont, pango based)
  ********************************************************/
 
 static void
-gdkw_text_warn (void)
+gdkw_draw_utf8 (GdkDrawable *drawable,
+		GdkFont     *font,
+		GdkGC       *gc,
+		gint         x,
+		gint         y,
+		gchar       *utf8)
 {
-  static gboolean warned = FALSE;
+  GdkDrawable *impl = NULL;
+  cairo_t *cr;
 
-  if (!warned)
+  cr = gdkw_begin (drawable, gc, GDKW_GC_USE_FILL, &impl);
+  if (cr)
     {
-      warned = TRUE;
-      g_warning ("GdkFont text drawing unsupported on Wayland, use pango");
+      _gdk_wayland_font_show_utf8 (font, cr, x, y, utf8,
+				   gdk_drawable_get_depth (impl) == 1);
+      cairo_destroy (cr);
     }
+  g_free (utf8);
 }
 
 static void
@@ -788,7 +798,11 @@ gdkw_draw_text (GdkDrawable *drawable,
 		const gchar *text,
 		gint         text_length)
 {
-  gdkw_text_warn ();
+  if (!font || !text || text_length == 0)
+    return;
+
+  gdkw_draw_utf8 (drawable, font, gc, x, y,
+		  _gdk_wayland_font_text_to_utf8 (text, text_length));
 }
 
 static void
@@ -800,7 +814,11 @@ gdkw_draw_text_wc (GdkDrawable    *drawable,
 		   const GdkWChar *text,
 		   gint            text_length)
 {
-  gdkw_text_warn ();
+  if (!font || !text || text_length <= 0)
+    return;
+
+  gdkw_draw_utf8 (drawable, font, gc, x, y,
+		  _gdk_wayland_font_wc_to_utf8 (text, text_length));
 }
 
 /********************************************************

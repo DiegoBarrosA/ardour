@@ -43,6 +43,7 @@
 
 #include "gdkprivate-wayland.h"
 #include "gdkseat-wayland.h"
+#include "gdkm7-wayland.h"
 
 #ifdef GDK_COMPILATION
 #include "gdkalias.h"
@@ -898,6 +899,8 @@ pointer_focus_lost (GDKWDisplayWayland *wd)
   GDKWSeat *seat = _gdk_wayland_display_get_seat (display);
   GDKWWindowImplWayland *impl = seat->pointer_focus;
 
+  _gdk_wayland_cursor_pointer_leave (display);
+
   seat->pointer_focus = NULL;
 
   if (impl != NULL)
@@ -943,6 +946,8 @@ wl_pointer_enter (void *data,
   seat->last_pointer_impl = impl;
   seat->px = wl_fixed_to_double (surface_x);
   seat->py = wl_fixed_to_double (surface_y);
+
+  _gdk_wayland_cursor_pointer_enter (GDK_DISPLAY_OBJECT (wd), serial);
 
   queue_crossing (wd, GDK_ENTER_NOTIFY, impl);
 }

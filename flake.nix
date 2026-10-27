@@ -64,6 +64,8 @@
             # M6: the demo drives the headless input test hooks declared in the
             # public section of this header
             cp ydk/wayland/ydk/gdkseat-wayland.h "$out/include/ydk/"
+            # M7: cursor, shape and font test hooks (public section)
+            cp ydk/wayland/ydk/gdkm7-wayland.h "$out/include/ydk/"
 
             # M6b: the dispatch audit (scripts/audit-x11-symbols.sh) reads the
             # per backend object files and the shared library with nm
@@ -136,6 +138,7 @@
         smoke-test = pkgs.writeShellScript "ydk-smoke-test" ''
           export PATH=${lib.makeBinPath [ pkgs.xorg.xorgserver pkgs.weston pkgs.dbus pkgs.imagemagick pkgs.binutils pkgs.coreutils pkgs.gnugrep pkgs.gawk pkgs.gnused ydk-demo ]}:$PATH
           export LD_LIBRARY_PATH=${lib.makeLibraryPath [ ydk-wayland ]}:$LD_LIBRARY_PATH
+          export FONTCONFIG_FILE=${pkgs.makeFontsConf { fontDirectories = [ pkgs.dejavu_fonts ]; }}
           export YDK_AUDIT_SCRIPT=${./scripts/audit-x11-symbols.sh}
           export YDK_AUDIT_BUILD=${ydk-wayland}/share/ydk-audit/build
           ${pkgs.bash}/bin/bash ${./scripts/smoke-test.sh}
@@ -147,6 +150,7 @@
         valgrind-demo = pkgs.writeShellScript "ydk-valgrind-demo" ''
           export PATH=${lib.makeBinPath [ pkgs.valgrind pkgs.weston pkgs.dbus pkgs.coreutils pkgs.gnugrep pkgs.procps ydk-demo ]}:$PATH
           export LD_LIBRARY_PATH=${lib.makeLibraryPath [ ydk-wayland ]}:$LD_LIBRARY_PATH
+          export FONTCONFIG_FILE=${pkgs.makeFontsConf { fontDirectories = [ pkgs.dejavu_fonts ]; }}
           export YDK_VALGRIND_SUPP=${./scripts/valgrind.supp}
           ${pkgs.bash}/bin/bash ${./scripts/valgrind-smoke.sh}
         '';
@@ -154,6 +158,7 @@
         baseline-diff = pkgs.writeShellScript "ydk-baseline-diff" ''
           export PATH=${lib.makeBinPath [ pkgs.xorg.xorgserver pkgs.weston pkgs.dbus pkgs.imagemagick pkgs.coreutils pkgs.util-linux ydk-demo ]}:$PATH
           export LD_LIBRARY_PATH=${lib.makeLibraryPath [ ydk-wayland ]}:$LD_LIBRARY_PATH
+          export FONTCONFIG_FILE=${pkgs.makeFontsConf { fontDirectories = [ pkgs.dejavu_fonts ]; }}
           ${pkgs.bash}/bin/bash ${./scripts/baseline-diff.sh}
         '';
 

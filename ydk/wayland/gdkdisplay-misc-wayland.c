@@ -130,18 +130,18 @@ _gdk_wayland_get_display (void)
 /* Capability queries                                                 */
 /* ------------------------------------------------------------------ */
 
-/* Changes to TRUE in M7 if shapes are mapped to wl_region. */
+/* M7: shapes map to wl_region (gdkshape-wayland.c). */
 gboolean
 _gdk_wayland_display_supports_shapes (GdkDisplay *display)
 {
-  return FALSE;
+  return TRUE;
 }
 
-/* Changes to TRUE in M7 (wl_region input shapes). */
+/* M7: input shapes map to wl_region. */
 gboolean
 _gdk_wayland_display_supports_input_shapes (GdkDisplay *display)
 {
-  return FALSE;
+  return TRUE;
 }
 
 /* Stays FALSE: set_composited is a no-op. */

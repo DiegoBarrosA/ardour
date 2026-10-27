@@ -41,6 +41,7 @@
 #include "gdkprivate-wayland.h"
 #include "gdkseat-wayland.h"
 #include "gdkpixmap-wayland.h"
+#include "gdkm7-wayland.h"
 
 #ifdef GDK_COMPILATION
 #include "gdkalias.h"
@@ -361,6 +362,8 @@ _gdk_wayland_window_impl_present (GDKWWindowImplWayland *impl)
   if (!impl->wl_buffer && !ensure_shm_buffer (impl))
     return;
 
+  _gdk_wayland_shape_before_present (impl);
+
   wl_surface_attach (impl->wl_surface, impl->wl_buffer, 0, 0);
   wl_surface_damage (impl->wl_surface, 0, 0, impl->width, impl->height);
   wl_surface_commit (impl->wl_surface);
@@ -617,6 +620,9 @@ gdk_window_wayland_show (GdkWindow *window, gboolean already_mapped)
    * out before the first commit. */
   _gdk_wayland_window_hints_apply (impl);
 
+  /* Stored shape regions go out before the first commit. */
+  _gdk_wayland_shape_surface_created (impl);
+
   display->windows = g_slist_prepend (display->windows, impl);
 
   /* First commit must be buffer-less: xdg-shell's initial configure is only
@@ -773,6 +779,7 @@ gdk_window_wayland_clear_region (GdkWindow *window,
 static void
 gdk_window_wayland_set_cursor (GdkWindow *window, GdkCursor *cursor)
 {
+  _gdk_wayland_cursor_window_set_cursor (window, cursor);
 }
 
 static void
@@ -868,6 +875,8 @@ gdk_window_wayland_shape_combine_region (GdkWindow *window,
 					 gint offset_x,
 					 gint offset_y)
 {
+  _gdk_wayland_shape_combine_region (window, shape_region,
+				     offset_x, offset_y);
 }
 
 static void
@@ -876,6 +885,8 @@ gdk_window_wayland_input_shape_combine_region (GdkWindow *window,
 					       gint offset_x,
 					       gint offset_y)
 {
+  _gdk_wayland_shape_input_combine_region (window, shape_region,
+					   offset_x, offset_y);
 }
 
 static gboolean

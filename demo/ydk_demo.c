@@ -9,13 +9,13 @@
  * exits.  Exit codes are meaningful to the harness:
  *
  *   0  window created and drawn (X11 baseline and Wayland since M2); under
- *      GDK_BACKEND=wayland also every M4, M5, M5C, M5V, M6 and M6B check
+ *      GDK_BACKEND=wayland also every M4, M5, M5C, M5V, M6, M6B and M7 check
  *      passed (see m4_exercise, m5_exercise, m5c_exercise, m5v_exercise,
- *      m6_exercise, m6b_exercise); under GDK_BACKEND=x11 the dispatched M6b
+ *      m6_exercise, m6b_exercise, m7_exercise); under GDK_BACKEND=x11 the dispatched M6b
  *      functions are checked to still reach X11 (m6b_x11_exercise)
  *   77 skipped: backend has no window support yet
  *   78 skipped: display opened but primary screen unavailable
- *   1  nothing worked (display open failed), an M4 / M5 / M5C / M5V / M6 / M6B check
+ *   1  nothing worked (display open failed), an M4 / M5 / M5C / M5V / M6 / M6B / M7 check
  *      failed, or a g_critical / g_error was logged (see fatal_log_handler)
  */
 
@@ -26,10 +26,12 @@
 #include <sys/wait.h>
 
 #include <glib.h>
+#include <glib/gstdio.h>
 #include <ydk/gdk.h>
 #include <ydk/gdkcairo.h>
 #include <ydk/gdkkeysyms.h>
 #include <ydk/gdkseat-wayland.h>
+#include <ydk/gdkm7-wayland.h>
 
 #define WINDOW_WIDTH  640
 #define WINDOW_HEIGHT 480
@@ -2634,8 +2636,8 @@ m6b_display (GdkDisplay *d)
   g_free (name);
 
   /* capabilities */
-  M6B_CHECK (!gdk_display_supports_shapes (d), "supports_shapes FALSE");
-  M6B_CHECK (!gdk_display_supports_input_shapes (d), "supports_input_shapes FALSE");
+  M6B_CHECK (gdk_display_supports_shapes (d), "supports_shapes TRUE (M7)");
+  M6B_CHECK (gdk_display_supports_input_shapes (d), "supports_input_shapes TRUE (M7)");
   M6B_CHECK (!gdk_display_supports_composite (d), "supports_composite FALSE");
   M6B_CHECK (!gdk_display_supports_selection_notification (d),
 	     "supports_selection_notification FALSE");
@@ -4084,6 +4086,1202 @@ m6b_x11_exercise (void)
   return m6b_failures;
 }
 
+
+/* ---- M7 ------------------------------------------------------------------
+ *
+ * Cursors, shapes and fonts, all headless.  Cursors: a generated Xcursor
+ * theme (three files) is loaded through the search path of the reload hook,
+ * the pointer is "moved" with the M6 pointer hooks and the cursor code
+ * reports what it applied (_gdk_wayland_test_cursor_info), since a headless
+ * Weston has no seat and no wl_pointer.  Shapes: bounding and input shapes
+ * are read back as the regions the backend sent
+ * (_gdk_wayland_test_shape_info) and as backing pixels
+ * (_gdk_wayland_test_window_pixel).  Fonts: text is drawn into pixmaps and
+ * the ink box is compared with the metrics Pango gave.  Same style as M6:
+ * every check runs, failures are counted, CRITICAL stays fatal.
+ */
+
+static int m7_failures;
+static GdkDisplay *m7_d;
+static guint32 m7_time = 1000;
+
+#define M7_CHECK(cond, what)						\
+  G_STMT_START {							\
+    if (!(cond))							\
+      {									\
+	g_printerr ("ydk_demo: M7 check failed: %s\n", what);		\
+	m7_failures++;							\
+      }									\
+  } G_STMT_END
+
+#define M7_EQ_INT(got, want, what)					\
+  G_STMT_START {							\
+    long m7_got = (long) (got), m7_want = (long) (want);		\
+    if (m7_got != m7_want)						\
+      {									\
+	g_printerr ("ydk_demo: M7 check failed: %s: got %ld want %ld\n", \
+		    what, m7_got, m7_want);				\
+	m7_failures++;							\
+      }									\
+  } G_STMT_END
+
+#define M7_EQ_STR(got, want, what)					\
+  G_STMT_START {							\
+    const char *m7_got = (got), *m7_want = (want);			\
+    if (g_strcmp0 (m7_got, m7_want) != 0)				\
+      {									\
+	g_printerr ("ydk_demo: M7 check failed: %s: got \"%s\" want \"%s\"\n", \
+		    what, m7_got ? m7_got : "(null)", m7_want);		\
+	m7_failures++;							\
+      }									\
+  } G_STMT_END
+
+#define M7_HOOK(call, what)						\
+  G_STMT_START {							\
+    if (!(call))							\
+      {									\
+	g_printerr ("ydk_demo: M7 check failed: %s: hook did not deliver\n", \
+		    what);						\
+	m7_failures++;							\
+      }									\
+  } G_STMT_END
+
+extern gboolean gdk_pixbuf_set_option (GdkPixbuf *pixbuf, const gchar *key,
+				       const gchar *value);
+
+static void
+m7_drain (void)
+{
+  while (g_main_context_iteration (NULL, FALSE))
+    ;
+}
+
+/* repaint a window completely and push it to the compositor */
+static void
+m7_repaint (GdkWindow *w)
+{
+  gdk_window_invalidate_rect (w, NULL, TRUE);
+  gdk_window_process_all_updates ();
+  gdk_flush ();
+  m7_drain ();
+}
+
+/* ---- cursors ---- */
+
+/* independent literal table: the primary Xcursor name of each even type */
+static const char *const m7_names[77] = {
+  "X_cursor", "arrow", "based_arrow_down", "based_arrow_up", "boat",
+  "bogosity", "bottom_left_corner", "bottom_right_corner", "bottom_side",
+  "bottom_tee", "box_spiral", "center_ptr", "circle", "clock", "coffee_mug",
+  "cross", "cross_reverse", "crosshair", "diamond_cross", "dot", "dotbox",
+  "double_arrow", "draft_large", "draft_small", "draped_box", "exchange",
+  "fleur", "gobbler", "gumby", "hand1", "hand2", "heart", "icon",
+  "iron_cross", "left_ptr", "left_side", "left_tee", "leftbutton",
+  "ll_angle", "lr_angle", "man", "middlebutton", "mouse", "pencil", "pirate",
+  "plus", "question_arrow", "right_ptr", "right_side", "right_tee",
+  "rightbutton", "rtl_logo", "sailboat", "sb_down_arrow",
+  "sb_h_double_arrow", "sb_left_arrow", "sb_right_arrow", "sb_up_arrow",
+  "sb_v_double_arrow", "shuttle", "sizing", "spider", "spraycan", "star",
+  "target", "tcross", "top_left_arrow", "top_left_corner",
+  "top_right_corner", "top_side", "top_tee", "trek", "ul_angle", "umbrella",
+  "ur_angle", "watch", "xterm"
+};
+
+static void
+m7_put32 (GByteArray *a, guint32 v)
+{
+  guint8 b[4];
+
+  b[0] = v & 0xff;
+  b[1] = (v >> 8) & 0xff;
+  b[2] = (v >> 16) & 0xff;
+  b[3] = (v >> 24) & 0xff;
+  g_byte_array_append (a, b, 4);
+}
+
+/* one image Xcursor file; layout verified against libwayland-cursor */
+static gboolean
+m7_write_xcursor (const gchar *path, int w, int h, int xhot, int yhot)
+{
+  GByteArray *a = g_byte_array_new ();
+  gboolean ok;
+  int i;
+
+  m7_put32 (a, 0x72756358);	/* "Xcur" */
+  m7_put32 (a, 16);
+  m7_put32 (a, 0x00010000);
+  m7_put32 (a, 1);
+  m7_put32 (a, 0xfffd0002);	/* TOC: image, nominal size 24, offset 28 */
+  m7_put32 (a, 24);
+  m7_put32 (a, 28);
+  m7_put32 (a, 36);		/* chunk header */
+  m7_put32 (a, 0xfffd0002);
+  m7_put32 (a, 24);
+  m7_put32 (a, 1);
+  m7_put32 (a, w);
+  m7_put32 (a, h);
+  m7_put32 (a, xhot);
+  m7_put32 (a, yhot);
+  m7_put32 (a, 0);
+  for (i = 0; i < w * h; i++)
+    m7_put32 (a, 0xff000000u);
+  ok = g_file_set_contents (path, (const gchar *) a->data, a->len, NULL);
+  g_byte_array_free (a, TRUE);
+  return ok;
+}
+
+static void
+m7_info (GDKWTestCursorInfo *info)
+{
+  memset (info, 0, sizeof *info);
+  M7_HOOK (_gdk_wayland_test_cursor_info (m7_d, info), "cursor info");
+}
+
+static void
+m7_expect (GDKWTestCursorKind kind, const char *name, int w, int h,
+	   int hx, int hy, const char *what)
+{
+  GDKWTestCursorInfo i;
+  gchar *msg;
+
+  m7_info (&i);
+  msg = g_strdup_printf ("%s: kind", what);
+  M7_EQ_INT (i.kind, kind, msg);
+  g_free (msg);
+  if (name)
+    {
+      msg = g_strdup_printf ("%s: name", what);
+      M7_EQ_STR (i.name, name, msg);
+      g_free (msg);
+    }
+  msg = g_strdup_printf ("%s: size", what);
+  M7_CHECK (i.width == w && i.height == h, msg);
+  g_free (msg);
+  msg = g_strdup_printf ("%s: hotspot", what);
+  M7_CHECK (i.hot_x == hx && i.hot_y == hy, msg);
+  g_free (msg);
+}
+
+static void
+m7_set_type (GdkWindow *w, GdkCursorType type)
+{
+  GdkCursor *c = gdk_cursor_new_for_display (m7_d, type);
+
+  gdk_window_set_cursor (w, c);
+  if (c)
+    gdk_cursor_unref (c);
+  m7_drain ();
+}
+
+static void
+m7_motion (gdouble x, gdouble y)
+{
+  m7_time += 10;
+  M7_HOOK (_gdk_wayland_test_pointer_motion (m7_d, m7_time, x, y), "motion");
+  m7_drain ();
+}
+
+static void
+m7_enter (gdouble x, gdouble y)
+{
+  M7_HOOK (_gdk_wayland_test_pointer_enter (m7_d, main_window, x, y), "enter");
+  m7_drain ();
+}
+
+static void
+m7_leave (void)
+{
+  M7_HOOK (_gdk_wayland_test_pointer_leave (m7_d, main_window), "leave");
+  m7_drain ();
+}
+
+static void
+m7_cursor_names (void)
+{
+  const gchar * const *cand;
+  int t, i;
+  gboolean found;
+
+  for (t = 0; t <= 152; t += 2)
+    {
+      gchar *msg = g_strdup_printf ("type %d name", t);
+
+      M7_EQ_STR (_gdk_wayland_cursor_type_to_name (t), m7_names[t / 2], msg);
+      g_free (msg);
+    }
+  M7_EQ_STR (_gdk_wayland_cursor_type_to_name (GDK_LEFT_PTR), "left_ptr", "68");
+  M7_EQ_STR (_gdk_wayland_cursor_type_to_name (GDK_HAND2), "hand2", "60");
+  M7_EQ_STR (_gdk_wayland_cursor_type_to_name (GDK_SB_H_DOUBLE_ARROW),
+	     "sb_h_double_arrow", "108");
+  M7_EQ_STR (_gdk_wayland_cursor_type_to_name (GDK_WATCH), "watch", "150");
+  M7_EQ_STR (_gdk_wayland_cursor_type_to_name (GDK_XTERM), "xterm", "152");
+  M7_EQ_STR (_gdk_wayland_cursor_type_to_name (GDK_FLEUR), "fleur", "52");
+  M7_CHECK (_gdk_wayland_cursor_type_to_name (1) == NULL, "odd type 1");
+  M7_CHECK (_gdk_wayland_cursor_type_to_name (151) == NULL, "odd type 151");
+  M7_CHECK (_gdk_wayland_cursor_type_to_name (GDK_LAST_CURSOR) == NULL,
+	    "GDK_LAST_CURSOR");
+  M7_CHECK (_gdk_wayland_cursor_type_to_name (GDK_BLANK_CURSOR) == NULL,
+	    "GDK_BLANK_CURSOR");
+  M7_CHECK (_gdk_wayland_cursor_type_to_name (GDK_CURSOR_IS_PIXMAP) == NULL,
+	    "GDK_CURSOR_IS_PIXMAP");
+  M7_CHECK (_gdk_wayland_cursor_type_to_name (154) == NULL, "154");
+  M7_CHECK (_gdk_wayland_cursor_type_to_name (-5) == NULL, "-5");
+  M7_CHECK (_gdk_wayland_cursor_name_candidates (GDK_BLANK_CURSOR) == NULL,
+	    "no candidates for blank");
+
+  cand = _gdk_wayland_cursor_name_candidates (GDK_SB_H_DOUBLE_ARROW);
+  M7_CHECK (cand != NULL && cand[0] != NULL, "candidates exist");
+  if (cand && cand[0])
+    {
+      M7_EQ_STR (cand[0], "sb_h_double_arrow", "candidate 0 is the primary name");
+      found = FALSE;
+      for (i = 1; cand[i]; i++)
+	if (g_strcmp0 (cand[i], "ew-resize") == 0)
+	  found = TRUE;
+      M7_CHECK (found, "ew-resize is a candidate of sb_h_double_arrow");
+    }
+}
+
+/* builds a depth 1 bitmap from a predicate on (column, row) */
+static GdkBitmap *
+m7_bitmap (int w, int h, int (*pred) (int col, int row))
+{
+  int stride = (w + 7) / 8, r, c;
+  guchar *bits = g_malloc0 (stride * h);
+  GdkBitmap *bm;
+
+  for (r = 0; r < h; r++)
+    for (c = 0; c < w; c++)
+      if (pred (c, r))
+	bits[r * stride + c / 8] |= 1 << (c % 8);
+  bm = gdk_bitmap_create_from_data (main_window, (const gchar *) bits, w, h);
+  g_free (bits);
+  return bm;
+}
+
+static const guchar m7_src_bits[8] = { 0xff, 0x0f, 0xaa, 0x55, 0xf0, 0x00, 0xff, 0x81 };
+static const guchar m7_mask_bits[8] = { 0xff, 0xff, 0xf0, 0x3c, 0x0f, 0xff, 0x00, 0x81 };
+
+static void
+m7_custom_cursors (void)
+{
+  GdkBitmap *src, *mask, *b16;
+  GdkPixmap *bad_depth;
+  GdkColor fg = { 0, 0xffff, 0, 0 }, bg = { 0, 0, 0, 0xffff };
+  GdkCursor *c, *c2;
+  GdkPixbuf *pb, *img;
+  GDKWTestCursorInfo i;
+  guint32 px;
+  int x, y, bad = 0, bad_img = 0;
+  gboolean seen[3] = { FALSE, FALSE, FALSE };
+  const guchar *p;
+  guchar big[32] = { 0 };
+
+  src = gdk_bitmap_create_from_data (main_window, (const gchar *) m7_src_bits, 8, 8);
+  mask = gdk_bitmap_create_from_data (main_window, (const gchar *) m7_mask_bits, 8, 8);
+  M7_CHECK (src != NULL && mask != NULL, "custom: bitmaps created");
+  if (!src || !mask)
+    return;
+
+  c = gdk_cursor_new_from_pixmap (src, mask, &fg, &bg, 3, 2);
+  M7_CHECK (c != NULL, "custom: new_from_pixmap");
+  if (c)
+    {
+      gdk_window_set_cursor (main_window, c);
+      m7_drain ();
+      m7_expect (GDKW_TEST_CURSOR_CUSTOM, NULL, 8, 8, 3, 2, "custom pixmap cursor");
+      m7_info (&i);
+      M7_CHECK (i.cursor == c, "custom: resolved cursor is the pixmap cursor");
+
+      for (y = 0; y < 8; y++)
+	for (x = 0; x < 8; x++)
+	  {
+	    int s = (m7_src_bits[y] >> x) & 1, m = (m7_mask_bits[y] >> x) & 1;
+	    guint32 want = !m ? 0x00000000u : (s ? 0xffff0000u : 0xff0000ffu);
+
+	    seen[!m ? 0 : (s ? 1 : 2)] = TRUE;
+	    if (!_gdk_wayland_test_cursor_pixel (m7_d, x, y, &px) || px != want)
+	      bad++;
+	  }
+      M7_EQ_INT (bad, 0, "custom: pixels follow the XBM rule");
+      M7_CHECK (seen[0] && seen[1] && seen[2], "custom: all three pixel classes tested");
+
+      img = gdk_cursor_get_image (c);
+      M7_CHECK (img != NULL, "custom: get_image");
+      if (img)
+	{
+	  M7_EQ_INT (gdk_pixbuf_get_width (img), 8, "custom image width");
+	  M7_EQ_INT (gdk_pixbuf_get_height (img), 8, "custom image height");
+	  M7_EQ_STR (gdk_pixbuf_get_option (img, "x_hot"), "3", "custom image x_hot");
+	  M7_EQ_STR (gdk_pixbuf_get_option (img, "y_hot"), "2", "custom image y_hot");
+	  if (gdk_pixbuf_get_width (img) == 8 && gdk_pixbuf_get_height (img) == 8 &&
+	      gdk_pixbuf_get_n_channels (img) == 4)
+	    for (y = 0; y < 8; y++)
+	      for (x = 0; x < 8; x++)
+		{
+		  int s = (m7_src_bits[y] >> x) & 1, m = (m7_mask_bits[y] >> x) & 1;
+
+		  p = gdk_pixbuf_get_pixels (img) + y * gdk_pixbuf_get_rowstride (img) + x * 4;
+		  if (!m)
+		    bad_img += p[3] != 0;
+		  else if (s)
+		    bad_img += !(p[0] == 255 && p[1] == 0 && p[2] == 0 && p[3] == 255);
+		  else
+		    bad_img += !(p[0] == 0 && p[1] == 0 && p[2] == 255 && p[3] == 255);
+		}
+	  M7_EQ_INT (bad_img, 0, "custom: get_image RGBA matches");
+	  g_object_unref (img);
+	}
+
+      /* unref while applied: the buffer must stay valid until replaced */
+      gdk_cursor_unref (c);
+      m7_drain ();
+    }
+
+  /* a second custom cursor, unreffed while it is the applied one */
+  c2 = gdk_cursor_new_from_pixmap (src, mask, &fg, &bg, 0, 0);
+  if (c2)
+    {
+      gdk_window_set_cursor (main_window, c2);
+      m7_drain ();
+      gdk_cursor_unref (c2);
+      m7_drain ();
+    }
+  m7_set_type (main_window, GDK_XTERM);
+
+  /* bad arguments give NULL */
+  b16 = gdk_bitmap_create_from_data (main_window, (const gchar *) big, 16, 16);
+  M7_CHECK (gdk_cursor_new_from_pixmap (src, b16, &fg, &bg, 0, 0) == NULL,
+	    "custom: mismatched sizes give NULL");
+  if (b16)
+    g_object_unref (b16);
+  bad_depth = gdk_pixmap_new (main_window, 8, 8, 24);
+  M7_CHECK (gdk_cursor_new_from_pixmap (bad_depth, mask, &fg, &bg, 0, 0) == NULL,
+	    "custom: depth 24 source gives NULL");
+  if (bad_depth)
+    g_object_unref (bad_depth);
+  g_object_unref (src);
+  g_object_unref (mask);
+
+  /* pixbuf cursor */
+  pb = gdk_pixbuf_new (GDK_COLORSPACE_RGB, TRUE, 8, 3, 2);
+  M7_CHECK (pb != NULL, "pixbuf: created");
+  if (pb)
+    {
+      guchar *d = gdk_pixbuf_get_pixels (pb);
+      int rs = gdk_pixbuf_get_rowstride (pb);
+
+      gdk_pixbuf_fill (pb, 0);
+      d[0] = 255; d[1] = 255; d[2] = 255; d[3] = 255;
+      d[4] = 200; d[5] = 100; d[6] = 50; d[7] = 128;
+      d[rs + 8] = 0; d[rs + 9] = 0; d[rs + 10] = 255; d[rs + 11] = 255;
+      gdk_pixbuf_set_option (pb, "x_hot", "1");
+      gdk_pixbuf_set_option (pb, "y_hot", "0");
+      c = gdk_cursor_new_from_pixbuf (m7_d, pb, -1, -1);
+      M7_CHECK (c != NULL, "pixbuf: new_from_pixbuf");
+      if (c)
+	{
+	  gdk_window_set_cursor (main_window, c);
+	  m7_drain ();
+	  m7_expect (GDKW_TEST_CURSOR_CUSTOM, NULL, 3, 2, 1, 0, "pixbuf cursor");
+	  if (_gdk_wayland_test_cursor_pixel (m7_d, 1, 0, &px))
+	    {
+	      int a = px >> 24, r = (px >> 16) & 0xff, g = (px >> 8) & 0xff, b = px & 0xff;
+
+	      M7_CHECK (abs (a - 128) <= 1 && abs (r - 100) <= 1 &&
+			abs (g - 50) <= 1 && abs (b - 25) <= 1,
+			"pixbuf: pixel is premultiplied (100,50,25,128)");
+	    }
+	  else
+	    M7_CHECK (FALSE, "pixbuf: cursor_pixel (1,0)");
+	  M7_CHECK (_gdk_wayland_test_cursor_pixel (m7_d, 0, 0, &px) && px == 0xffffffffu,
+		    "pixbuf: opaque white pixel");
+	  gdk_cursor_unref (c);
+	}
+      g_object_unref (pb);
+    }
+  m7_set_type (main_window, GDK_XTERM);
+}
+
+static void
+m7_remove_in (const gchar *dir, const gchar *name)
+{
+  gchar *file = g_build_filename (dir, name, NULL);
+
+  g_remove (file);
+  g_free (file);
+}
+
+static void
+m7_cursors (void)
+{
+  GdkWindowAttr attr;
+  GdkWindow *child;
+  GdkCursor *cur, *cc, *xterm;
+  GDKWTestCursorInfo i, j;
+  GdkEventMask mask = GDK_BUTTON_PRESS_MASK | GDK_POINTER_MOTION_MASK;
+  gchar *tmp, *dir, *file, *empty, *saved;
+  guint32 s1, px;
+  guint n;
+
+  tmp = g_dir_make_tmp ("ydk-m7-XXXXXX", NULL);
+  M7_CHECK (tmp != NULL, "cursor: temp dir");
+  if (!tmp)
+    return;
+  dir = g_build_filename (tmp, "ydktest", "cursors", NULL);
+  empty = g_build_filename (tmp, "empty", NULL);
+  g_mkdir_with_parents (dir, 0700);
+  g_mkdir_with_parents (empty, 0700);
+  file = g_build_filename (dir, "left_ptr", NULL);
+  M7_CHECK (m7_write_xcursor (file, 8, 6, 1, 2), "write left_ptr");
+  g_free (file);
+  file = g_build_filename (dir, "xterm", NULL);
+  M7_CHECK (m7_write_xcursor (file, 5, 7, 2, 3), "write xterm");
+  g_free (file);
+  file = g_build_filename (dir, "ew-resize", NULL);
+  M7_CHECK (m7_write_xcursor (file, 9, 9, 4, 4), "write ew-resize");
+  g_free (file);
+
+  gdk_window_set_events (main_window,
+			 GDK_EXPOSURE_MASK | GDK_KEY_PRESS_MASK |
+			 GDK_BUTTON_PRESS_MASK | GDK_POINTER_MOTION_MASK |
+			 GDK_ENTER_NOTIFY_MASK | GDK_LEAVE_NOTIFY_MASK);
+
+  /* 1. names */
+  m7_cursor_names ();
+
+  /* 2. injected theme */
+  M7_HOOK (_gdk_wayland_test_cursor_theme_reload (m7_d, "ydktest", 24, tmp),
+	   "theme reload");
+  m7_info (&i);
+  M7_CHECK (i.theme_loaded && i.theme_usable, "theme: loaded and usable");
+  M7_EQ_STR (i.theme_name, "ydktest", "theme name");
+  M7_EQ_INT (i.theme_size, 24, "theme size");
+  cur = gdk_cursor_new_from_name (m7_d, "left_ptr");
+  M7_CHECK (cur != NULL, "new_from_name left_ptr");
+  if (cur)
+    gdk_cursor_unref (cur);
+  cur = gdk_cursor_new_from_name (m7_d, "no_such_cursor_zz");
+  M7_CHECK (cur == NULL, "new_from_name of a missing name is NULL");
+  if (cur)
+    gdk_cursor_unref (cur);
+
+  M7_HOOK (_gdk_wayland_test_cursor_reset (m7_d), "cursor reset");
+  m7_enter (10, 10);
+  m7_expect (GDKW_TEST_CURSOR_THEME, "left_ptr", 8, 6, 1, 2, "enter: default cursor");
+  m7_info (&i);
+  M7_CHECK (i.set_count >= 1, "enter applies a cursor");
+  M7_CHECK (!i.to_compositor, "no wl_pointer: nothing goes to the compositor");
+  s1 = i.serial;
+
+  m7_set_type (main_window, GDK_XTERM);
+  m7_expect (GDKW_TEST_CURSOR_THEME, "xterm", 5, 7, 2, 3, "xterm");
+  m7_set_type (main_window, GDK_SB_H_DOUBLE_ARROW);
+  m7_expect (GDKW_TEST_CURSOR_THEME, "ew-resize", 9, 9, 4, 4, "ew-resize alias");
+  m7_set_type (main_window, GDK_WATCH);
+  m7_expect (GDKW_TEST_CURSOR_THEME, "left_ptr", 8, 6, 1, 2, "watch falls back to left_ptr");
+  m7_set_type (main_window, GDK_BLANK_CURSOR);
+  m7_expect (GDKW_TEST_CURSOR_HIDDEN, NULL, 0, 0, 0, 0, "blank cursor");
+
+  m7_set_type (main_window, GDK_XTERM);
+  m7_info (&i);
+  n = i.set_count;
+  m7_set_type (main_window, GDK_XTERM);
+  m7_info (&i);
+  M7_EQ_INT (i.set_count, n, "same cursor again is deduplicated");
+
+  /* 3. child windows */
+  memset (&attr, 0, sizeof attr);
+  attr.window_type = GDK_WINDOW_CHILD;
+  attr.wclass = GDK_INPUT_OUTPUT;
+  attr.x = 150;
+  attr.y = 50;
+  attr.width = 80;
+  attr.height = 80;
+  attr.event_mask = GDK_POINTER_MOTION_MASK | GDK_ENTER_NOTIFY_MASK | GDK_LEAVE_NOTIFY_MASK;
+  child = gdk_window_new (main_window, &attr, GDK_WA_X | GDK_WA_Y);
+  M7_CHECK (child != NULL, "cursor: child window");
+  if (child)
+    {
+      m7_set_type (main_window, GDK_SB_H_DOUBLE_ARROW);
+      gdk_window_show (child);
+      m7_drain ();
+      cc = gdk_cursor_new_for_display (m7_d, GDK_XTERM);
+      gdk_window_set_cursor (child, cc);
+      m7_drain ();
+      m7_motion (160, 60);
+      m7_info (&i);
+      M7_CHECK (i.cursor == cc, "child: pointer in the child uses its cursor");
+      m7_expect (GDKW_TEST_CURSOR_THEME, "xterm", 5, 7, 2, 3, "child cursor");
+      m7_motion (10, 10);
+      m7_expect (GDKW_TEST_CURSOR_THEME, "ew-resize", 9, 9, 4, 4, "back in the parent");
+      m7_motion (160, 60);
+      gdk_window_set_cursor (child, NULL);
+      m7_drain ();
+      m7_expect (GDKW_TEST_CURSOR_THEME, "ew-resize", 9, 9, 4, 4,
+		 "clearing the child cursor restores the parent's");
+      m7_motion (10, 10);
+      gdk_cursor_unref (cc);
+      gdk_window_destroy (child);
+      m7_drain ();
+    }
+
+  /* cursor set while the pointer is outside: remembered, applied by enter */
+  m7_leave ();
+  m7_info (&i);
+  n = i.set_count;
+  xterm = gdk_cursor_new_for_display (m7_d, GDK_XTERM);
+  gdk_window_set_cursor (main_window, xterm);
+  m7_drain ();
+  m7_info (&i);
+  M7_EQ_INT (i.set_count, n, "set_cursor outside the window sends nothing");
+
+  /* 4. serial */
+  m7_enter (10, 10);
+  m7_info (&i);
+  /* enter applies the last remembered (possibly stale) cursor with the new
+   * serial, then the core's crossing handling resolves the real one and the
+   * vfunc re-applies it: one or two sends, the final cursor is what counts */
+  M7_CHECK (i.set_count == n + 1 || i.set_count == n + 2, "enter applies the cursor");
+  M7_CHECK (i.cursor == xterm, "enter applied the cursor set while outside");
+  M7_CHECK (i.serial > s1, "new enter has a newer serial");
+  m7_leave ();
+  m7_info (&j);
+  M7_EQ_INT (j.set_count, i.set_count, "leave sends nothing");
+  m7_enter (10, 10);
+  m7_info (&j);
+  M7_EQ_INT (j.set_count, i.set_count + 1, "re-enter with the same cursor sends again");
+  M7_CHECK (j.serial > i.serial, "re-enter serial grows");
+
+  /* 5. explicit grab */
+  m7_set_type (main_window, GDK_SB_H_DOUBLE_ARROW);
+  M7_EQ_INT (gdk_pointer_grab (main_window, FALSE, mask, NULL, xterm,
+			       GDK_CURRENT_TIME), GDK_GRAB_SUCCESS, "cursor: pointer grab");
+  m7_drain ();
+  m7_expect (GDKW_TEST_CURSOR_THEME, "xterm", 5, 7, 2, 3, "grab cursor wins");
+  gdk_pointer_ungrab (GDK_CURRENT_TIME);
+  m7_drain ();
+  m7_expect (GDKW_TEST_CURSOR_THEME, "ew-resize", 9, 9, 4, 4, "after ungrab");
+  gdk_cursor_unref (xterm);
+
+  /* 7 and 8. custom pixmap and pixbuf cursors */
+  m7_custom_cursors ();
+
+  /* 6. built in theme, disabled theme */
+  M7_HOOK (_gdk_wayland_test_cursor_theme_reload (m7_d, NULL, 0, empty), "builtin theme");
+  m7_info (&i);
+  M7_CHECK (i.theme_usable, "empty search path: built in theme is usable");
+  cur = gdk_cursor_new_from_name (m7_d, "left_ptr");
+  M7_CHECK (cur != NULL, "builtin theme: left_ptr resolves");
+  if (cur)
+    gdk_cursor_unref (cur);
+
+  M7_HOOK (_gdk_wayland_test_cursor_disable_theme (m7_d, TRUE), "disable theme");
+  m7_info (&i);
+  M7_CHECK (!i.theme_usable, "disabled theme is not usable");
+  cur = gdk_cursor_new_from_name (m7_d, "anything");
+  M7_CHECK (cur != NULL, "unusable theme accepts any name");
+  if (cur)
+    gdk_cursor_unref (cur);
+  m7_set_type (main_window, GDK_LEFT_PTR);
+  m7_expect (GDKW_TEST_CURSOR_FALLBACK, NULL, 1, 1, 0, 0, "fallback cursor");
+  M7_CHECK (_gdk_wayland_test_cursor_pixel (m7_d, 0, 0, &px) && px == 0,
+	    "fallback pixel is transparent");
+  m7_set_type (main_window, GDK_BLANK_CURSOR);
+  m7_expect (GDKW_TEST_CURSOR_HIDDEN, NULL, 0, 0, 0, 0, "blank with a disabled theme");
+  M7_HOOK (_gdk_wayland_test_cursor_disable_theme (m7_d, FALSE), "enable theme");
+  m7_info (&i);
+  M7_CHECK (i.theme_usable, "theme usable again");
+
+  /* 9. theme change through the public function */
+  saved = g_strdup (g_getenv ("XCURSOR_PATH"));
+  g_setenv ("XCURSOR_PATH", tmp, TRUE);
+  gdk_x11_display_set_cursor_theme (m7_d, "ydktest", 32);
+  if (saved)
+    g_setenv ("XCURSOR_PATH", saved, TRUE);
+  else
+    g_unsetenv ("XCURSOR_PATH");
+  g_free (saved);
+  m7_info (&i);
+  M7_EQ_STR (i.theme_name, "ydktest", "set_cursor_theme: name");
+  M7_EQ_INT (i.theme_size, 32, "set_cursor_theme: size");
+  M7_EQ_INT (gdk_display_get_default_cursor_size (m7_d), 32, "default cursor size follows");
+  gdk_x11_display_set_cursor_theme (NULL, "ydktest", 24);
+  gdk_x11_display_set_cursor_theme (m7_d, NULL, -1);
+  gdk_x11_display_set_cursor_theme (m7_d, "", 0);
+  gdk_x11_display_set_cursor_theme (m7_d, "ydktest", -1);
+  m7_info (&i);
+  M7_EQ_STR (i.theme_name, "ydktest", "bad arguments keep the theme name");
+  M7_EQ_INT (i.theme_size, 32, "bad arguments keep the size");
+
+  /* back to a known theme for the rest of the run, then clean up */
+  M7_HOOK (_gdk_wayland_test_cursor_theme_reload (m7_d, "ydktest", 24, tmp), "reload");
+  m7_set_type (main_window, GDK_LEFT_PTR);
+  m7_leave ();
+  gdk_window_set_cursor (main_window, NULL);
+  m7_drain ();
+  M7_HOOK (_gdk_wayland_test_cursor_theme_reload (m7_d, NULL, 0, empty), "reload builtin");
+
+  m7_remove_in (dir, "left_ptr");
+  m7_remove_in (dir, "xterm");
+  m7_remove_in (dir, "ew-resize");
+  g_rmdir (dir);
+  file = g_build_filename (tmp, "ydktest", NULL);
+  g_rmdir (file);
+  g_free (file);
+  g_rmdir (empty);
+  g_rmdir (tmp);
+  g_free (dir);
+  g_free (empty);
+  g_free (tmp);
+}
+
+/* cursors on a second display that is closed while they are alive */
+static void
+m7_cursor_lifetime (void)
+{
+  const gchar *name = g_getenv ("WAYLAND_DISPLAY");
+  GdkDisplay *d2;
+  GdkWindow *root2, *a;
+  GdkWindowAttr attr;
+  GdkPixbuf *pb;
+  GdkCursor *c, *t;
+
+  if (name == NULL)
+    return;
+  d2 = gdk_display_open (name);
+  M7_CHECK (d2 != NULL, "lifetime: second display");
+  if (d2 == NULL)
+    return;
+  root2 = gdk_screen_get_root_window (gdk_display_get_default_screen (d2));
+  memset (&attr, 0, sizeof attr);
+  attr.window_type = GDK_WINDOW_TOPLEVEL;
+  attr.wclass = GDK_INPUT_OUTPUT;
+  attr.width = 40;
+  attr.height = 40;
+  a = gdk_window_new (root2, &attr, 0);
+  pb = gdk_pixbuf_new (GDK_COLORSPACE_RGB, TRUE, 8, 4, 4);
+  gdk_pixbuf_fill (pb, 0xff0000ff);
+  c = gdk_cursor_new_from_pixbuf (d2, pb, 1, 1);
+  t = gdk_cursor_new_for_display (d2, GDK_XTERM);
+  M7_CHECK (c != NULL && t != NULL, "lifetime: cursors on the second display");
+  if (a)
+    {
+      gdk_window_show (a);
+      gdk_display_sync (d2);
+      gdk_window_set_cursor (a, c);
+    }
+  g_object_unref (pb);
+  gdk_display_close (d2);
+  /* the cursors outlive their display */
+  if (c)
+    gdk_cursor_unref (c);
+  if (t)
+    gdk_cursor_unref (t);
+}
+
+/* ---- shapes ---- */
+
+static int
+m7_pred_checker (int c, int r)
+{
+  return (r < 8 && c < 8) || (r >= 8 && c >= 8);
+}
+
+static int
+m7_pred_cols (int c, int r)
+{
+  return c <= 5;
+}
+
+/* compares two rectangle lists as regions, never as ordered lists */
+static gboolean
+m7_rects_equal (const GdkRectangle *r, int n, const GdkRectangle *want, int nwant)
+{
+  GdkRegion *a = gdk_region_new (), *b = gdk_region_new ();
+  gboolean eq;
+  int i;
+
+  if (n > GDKW_TEST_MAX_RECTS)
+    n = GDKW_TEST_MAX_RECTS;
+  for (i = 0; i < n; i++)
+    gdk_region_union_with_rect (a, &r[i]);
+  for (i = 0; i < nwant; i++)
+    gdk_region_union_with_rect (b, &want[i]);
+  eq = gdk_region_equal (a, b);
+  gdk_region_destroy (a);
+  gdk_region_destroy (b);
+  return eq;
+}
+
+static void
+m7_shape_info (GdkWindow *w, GDKWTestShapeInfo *i)
+{
+  memset (i, 0, sizeof *i);
+  M7_HOOK (_gdk_wayland_test_shape_info (w, i), "shape info");
+}
+
+static void
+m7_pixel_class (GdkWindow *w, int x, int y, gboolean opaque, const char *what)
+{
+  guint32 px = 0xdeadbeef;
+
+  if (!_gdk_wayland_test_window_pixel (w, x, y, &px))
+    {
+      g_printerr ("ydk_demo: M7 check failed: %s: no pixel at (%d,%d)\n", what, x, y);
+      m7_failures++;
+      return;
+    }
+  if (opaque ? (px >> 24) != 0xff : px != 0)
+    {
+      g_printerr ("ydk_demo: M7 check failed: %s at (%d,%d): pixel %08x\n",
+		  what, x, y, px);
+      m7_failures++;
+    }
+}
+
+static void
+m7_shapes (void)
+{
+  static const GdkRectangle b_want[2] = { { 4, 4, 8, 8 }, { 12, 12, 8, 8 } };
+  static const GdkRectangle i_want[1] = { { 4, 4, 6, 16 } };
+  static const GdkRectangle e_want[1] = { { 4, 4, 6, 8 } };
+  GdkWindow *w = main_window;
+  GdkBitmap *bm, *bi;
+  GDKWTestShapeInfo s, s2;
+  GdkWindowAttr attr;
+  GdkWindow *top, *child;
+  GdkRegion *empty;
+  GdkColormap *rgba;
+  guint32 px;
+  guint reqs;
+
+  /* 1. capabilities */
+  M7_CHECK (gdk_display_supports_shapes (m7_d), "supports_shapes TRUE");
+  M7_CHECK (gdk_display_supports_input_shapes (m7_d), "supports_input_shapes TRUE");
+
+  m7_repaint (w);
+
+  /* 2. bounding shape */
+  bm = m7_bitmap (16, 16, m7_pred_checker);
+  bi = m7_bitmap (16, 16, m7_pred_cols);
+  M7_CHECK (bm != NULL && bi != NULL, "shape: bitmaps");
+  if (!bm || !bi)
+    return;
+  gdk_window_shape_combine_mask (w, bm, 4, 4);
+  m7_drain ();
+  m7_shape_info (w, &s);
+  M7_CHECK (s.has_surface, "shape: toplevel has a surface");
+  M7_CHECK (s.shaped, "shape: shaped");
+  M7_CHECK (m7_rects_equal (s.bounding, s.n_bounding, b_want, 2), "shape: bounding rectangles");
+  M7_CHECK (s.opaque_sent && m7_rects_equal (s.opaque, s.n_opaque, b_want, 2),
+	    "shape: opaque region equals B (depth 24)");
+  M7_CHECK (s.input_sent && m7_rects_equal (s.input, s.n_input, b_want, 2),
+	    "shape: input region equals B");
+  M7_CHECK (s.opaque_requests >= 1 && s.input_requests >= 1, "shape: requests sent");
+
+  /* 3. pixels */
+  m7_repaint (w);
+  m7_pixel_class (w, 6, 6, TRUE, "inside the first square");
+  m7_pixel_class (w, 14, 14, TRUE, "inside the second square");
+  m7_pixel_class (w, 0, 0, FALSE, "outside the shape");
+  m7_pixel_class (w, 15, 6, FALSE, "between the squares");
+
+  /* 4. input shape */
+  gdk_window_input_shape_combine_mask (w, bi, 4, 4);
+  m7_drain ();
+  m7_shape_info (w, &s);
+  M7_CHECK (s.input_shaped, "input shape: stored");
+  M7_CHECK (m7_rects_equal (s.input_shape, s.n_input_shape, i_want, 1), "input shape: rectangles");
+  M7_CHECK (s.input_sent && m7_rects_equal (s.input, s.n_input, e_want, 1),
+	    "input shape: effective region is B intersect I");
+  M7_CHECK (!m7_rects_equal (s.input, s.n_input, b_want, 2), "input shape: differs from B");
+  M7_CHECK (s.opaque_sent && m7_rects_equal (s.opaque, s.n_opaque, b_want, 2),
+	    "input shape: opaque region still B");
+  reqs = s.opaque_requests + s.input_requests;
+  gdk_window_input_shape_combine_mask (w, bi, 4, 4);
+  gdk_window_shape_combine_mask (w, bm, 4, 4);
+  m7_drain ();
+  m7_shape_info (w, &s2);
+  M7_EQ_INT (s2.opaque_requests + s2.input_requests, reqs,
+	     "repeating the same shapes sends nothing");
+
+  /* 5. unset */
+  gdk_window_shape_combine_mask (w, NULL, 0, 0);
+  m7_drain ();
+  m7_shape_info (w, &s);
+  M7_CHECK (!s.shaped, "unset B: not shaped");
+  M7_CHECK (!s.opaque_sent, "unset B: opaque region NULL");
+  M7_CHECK (s.input_sent && m7_rects_equal (s.input, s.n_input, i_want, 1),
+	    "unset B: input region is I");
+  gdk_window_input_shape_combine_mask (w, NULL, 0, 0);
+  m7_drain ();
+  m7_shape_info (w, &s);
+  M7_CHECK (!s.input_shaped && !s.input_sent, "unset I: input region NULL");
+  m7_repaint (w);
+  M7_CHECK (_gdk_wayland_test_window_pixel (w, 0, 0, &px) && px != 0,
+	    "unshaped: pixel (0,0) is not forced transparent");
+  M7_CHECK (_gdk_wayland_test_window_pixel (w, 15, 6, &px) && px != 0,
+	    "unshaped: pixel (15,6) is not forced transparent");
+
+  /* 6. rgba toplevel */
+  rgba = gdk_screen_get_rgba_colormap (gdk_screen_get_default ());
+  if (rgba != NULL)
+    {
+      memset (&attr, 0, sizeof attr);
+      attr.window_type = GDK_WINDOW_TOPLEVEL;
+      attr.wclass = GDK_INPUT_OUTPUT;
+      attr.width = 64;
+      attr.height = 64;
+      attr.colormap = rgba;
+      attr.visual = gdk_colormap_get_visual (rgba);
+      top = gdk_window_new (gdk_get_default_root_window (), &attr,
+			    GDK_WA_COLORMAP | GDK_WA_VISUAL);
+      M7_CHECK (top != NULL, "rgba: toplevel");
+      if (top)
+	{
+	  gdk_window_show (top);
+	  m7_drain ();
+	  gdk_window_shape_combine_mask (top, bm, 4, 4);
+	  m7_drain ();
+	  m7_shape_info (top, &s);
+	  M7_CHECK (s.shaped && !s.opaque_sent, "rgba: no opaque region");
+	  M7_CHECK (s.input_sent && m7_rects_equal (s.input, s.n_input, b_want, 2),
+		    "rgba: input region is B");
+	  gdk_window_destroy (top);
+	  m7_drain ();
+	}
+    }
+
+  /* 7. empty region */
+  empty = gdk_region_new ();
+  gdk_window_shape_combine_region (w, empty, 0, 0);
+  m7_drain ();
+  m7_shape_info (w, &s);
+  M7_CHECK (s.shaped && s.n_bounding == 0, "empty region: shaped, no rectangles");
+  M7_CHECK (s.input_sent && s.n_input == 0, "empty region: empty input region");
+  m7_repaint (w);
+  m7_pixel_class (w, 6, 6, FALSE, "empty region clears the pixel");
+  gdk_window_shape_combine_region (w, NULL, 0, 0);
+  m7_drain ();
+  gdk_region_destroy (empty);
+  m7_repaint (w);
+
+  /* 8. shape before show */
+  memset (&attr, 0, sizeof attr);
+  attr.window_type = GDK_WINDOW_TOPLEVEL;
+  attr.wclass = GDK_INPUT_OUTPUT;
+  attr.width = 64;
+  attr.height = 64;
+  top = gdk_window_new (gdk_get_default_root_window (), &attr, 0);
+  M7_CHECK (top != NULL, "before show: toplevel");
+  if (top)
+    {
+      gdk_window_shape_combine_mask (top, bm, 4, 4);
+      gdk_window_show (top);
+      m7_drain ();
+      gdk_flush ();
+      m7_drain ();
+      m7_shape_info (top, &s);
+      M7_CHECK (s.has_surface, "before show: surface exists after show");
+      M7_CHECK (s.shaped && m7_rects_equal (s.bounding, s.n_bounding, b_want, 2),
+		"before show: bounding shape kept");
+      M7_CHECK (s.opaque_sent && m7_rects_equal (s.opaque, s.n_opaque, b_want, 2),
+		"before show: opaque region sent");
+      M7_CHECK (s.input_sent && m7_rects_equal (s.input, s.n_input, b_want, 2),
+		"before show: input region sent");
+      M7_EQ_INT (s.opaque_requests, 1, "before show: one opaque request");
+      M7_EQ_INT (s.input_requests, 1, "before show: one input request");
+
+      /* 9. a child shape changes nothing in the toplevel */
+      attr.window_type = GDK_WINDOW_CHILD;
+      attr.x = 8;
+      attr.y = 8;
+      attr.width = 32;
+      attr.height = 32;
+      child = gdk_window_new (top, &attr, GDK_WA_X | GDK_WA_Y);
+      if (child)
+	{
+	  gdk_window_show (child);
+	  m7_drain ();
+	  gdk_window_shape_combine_mask (child, bi, 0, 0);
+	  gdk_window_input_shape_combine_mask (child, bi, 0, 0);
+	  m7_drain ();
+	  m7_shape_info (top, &s2);
+	  M7_CHECK (s2.shaped == s.shaped && s2.n_bounding == s.n_bounding &&
+		    s2.n_opaque == s.n_opaque && s2.n_input == s.n_input &&
+		    s2.opaque_requests == s.opaque_requests &&
+		    s2.input_requests == s.input_requests,
+		    "child shape leaves the toplevel info alone");
+	  gdk_window_destroy (child);
+	}
+      gdk_window_destroy (top);
+      m7_drain ();
+    }
+
+  g_object_unref (bm);
+  g_object_unref (bi);
+}
+
+/* ---- fonts ---- */
+
+#define M7_PW 100
+#define M7_PH 50
+
+typedef struct { int count, x0, y0, x1, y1; } M7Ink;
+
+/* fills the whole target with black (pixel 0) or white (pixel @white) */
+static void
+m7_fill (GdkDrawable *pm, GdkGC *gc, guint32 pixel, guint16 level)
+{
+  GdkColor c;
+
+  c.pixel = pixel;
+  c.red = c.green = c.blue = level;
+  gdk_gc_set_foreground (gc, &c);
+  gdk_draw_rectangle (pm, gc, TRUE, 0, 0, M7_PW, M7_PH);
+}
+
+/* reads the target (24 bit colour masked to 0xffffff); ink is every pixel
+ * that differs from @bg */
+static M7Ink
+m7_read (GdkDrawable *pm, guint32 *buf, guint32 bg)
+{
+  GdkImage *img = gdk_drawable_get_image (pm, 0, 0, M7_PW, M7_PH);
+  M7Ink ink = { 0, M7_PW, M7_PH, -1, -1 };
+  int x, y;
+
+  M7_CHECK (img != NULL, "font: get_image");
+  if (!img)
+    return ink;
+  for (y = 0; y < M7_PH; y++)
+    for (x = 0; x < M7_PW; x++)
+      {
+	guint32 p = gdk_image_get_pixel (img, x, y) & 0xffffff;
+
+	if (buf)
+	  buf[y * M7_PW + x] = p;
+	if (p != bg)
+	  {
+	    ink.count++;
+	    ink.x0 = MIN (ink.x0, x);
+	    ink.y0 = MIN (ink.y0, y);
+	    ink.x1 = MAX (ink.x1, x);
+	    ink.y1 = MAX (ink.y1, y);
+	  }
+      }
+  g_object_unref (img);
+  return ink;
+}
+
+static GdkFont *
+m7_font (const char *desc_str)
+{
+  PangoFontDescription *desc = pango_font_description_from_string (desc_str);
+  GdkFont *f = gdk_font_from_description_for_display (m7_d, desc);
+
+  pango_font_description_free (desc);
+  return f;
+}
+
+static void
+m7_fonts (void)
+{
+  GdkFont *font, *bold, *fs;
+  GdkPixmap *pm, *bm;
+  GdkGC *gc, *bgc, *wgc;
+  GdkColor black = { 0, 0, 0, 0 }, red = { 0, 0xffff, 0, 0 };
+  GdkColormap *cm = gdk_drawable_get_colormap (main_window);
+  GDKWTestFontInfo fi;
+  gint l, r, wd, a, d;
+  M7Ink ink, ink2, ink1;
+  static guint32 buf1[M7_PW * M7_PH], buf2[M7_PW * M7_PH];
+  GdkRectangle clip = { 20, 0, 20, 50 };
+  GdkWChar wc[6];
+  const char *hello = "Hello";
+  int i, all_red, exact_red;
+  const guint32 white = 0xffffff;
+
+  gdk_colormap_alloc_color (cm, &black, FALSE, TRUE);
+  gdk_colormap_alloc_color (cm, &red, FALSE, TRUE);
+
+  font = m7_font ("Sans 12");
+  M7_CHECK (font != NULL, "font: Sans 12");
+  if (!font)
+    return;
+
+  /* 1. font info */
+  M7_HOOK (_gdk_wayland_test_font_info (font, &fi), "font info");
+  M7_CHECK (fi.is_wayland_font, "font: is a Wayland font");
+  M7_CHECK (fi.dpi == 96.0, "font: 96 dpi");
+  M7_CHECK (fi.hint_metrics_on, "font: hint metrics on");
+  M7_CHECK (fi.ascent == font->ascent && fi.descent == font->descent,
+	    "font: info ascent and descent equal the GdkFont fields");
+
+  /* 2. extents */
+  gdk_string_extents (font, hello, &l, &r, &wd, &a, &d);
+  M7_EQ_INT (wd, gdk_string_width (font, hello), "font: extents width equals string_width");
+  M7_CHECK (l <= r, "font: lbearing <= rbearing");
+  M7_CHECK (a > 0 && d >= 0, "font: ascent positive, descent not negative");
+  M7_CHECK (a + d <= font->ascent + font->descent + 2, "font: extents within font metrics");
+
+  pm = gdk_pixmap_new (main_window, M7_PW, M7_PH, 24);
+  M7_CHECK (pm != NULL, "font: pixmap");
+  if (!pm)
+    {
+      gdk_font_unref (font);
+      return;
+    }
+  gc = gdk_gc_new (pm);
+
+  /* 3. position and size of the ink */
+  m7_fill (pm, gc, white, 0xffff);
+  gdk_gc_set_foreground (gc, &black);
+  gdk_draw_string (pm, font, gc, 10, 30, hello);
+  ink = m7_read (pm, buf1, white);
+  M7_CHECK (ink.count >= 30, "text: at least 30 ink pixels");
+  M7_CHECK (ink.x0 >= 10 + l - 1 && ink.x0 <= 10 + l + 2, "text: left edge");
+  M7_CHECK (ink.x1 >= 10 + r - 3 && ink.x1 <= 10 + r, "text: right edge");
+  M7_CHECK (ink.y0 >= 30 - a - 1 && ink.y0 <= 30 - a + 2, "text: top edge");
+  M7_CHECK (ink.y1 <= 30 + d, "text: bottom edge");
+  ink1 = ink;
+
+  /* 4. width consistency: "HI" equals "H" then "I" */
+  m7_fill (pm, gc, white, 0xffff);
+  gdk_gc_set_foreground (gc, &black);
+  gdk_draw_string (pm, font, gc, 10, 30, "HI");
+  m7_read (pm, buf1, white);
+  m7_fill (pm, gc, white, 0xffff);
+  gdk_gc_set_foreground (gc, &black);
+  gdk_draw_string (pm, font, gc, 10, 30, "H");
+  gdk_draw_string (pm, font, gc, 10 + gdk_string_width (font, "H"), 30, "I");
+  m7_read (pm, buf2, white);
+  M7_CHECK (memcmp (buf1, buf2, sizeof buf1) == 0, "text: HI equals H then I");
+
+  /* 5. wide characters */
+  for (i = 0; i < 5; i++)
+    wc[i] = hello[i];
+  wc[5] = 0;
+  m7_fill (pm, gc, white, 0xffff);
+  gdk_gc_set_foreground (gc, &black);
+  gdk_draw_string (pm, font, gc, 10, 30, hello);
+  m7_read (pm, buf1, white);
+  m7_fill (pm, gc, white, 0xffff);
+  gdk_gc_set_foreground (gc, &black);
+  gdk_draw_text_wc (pm, font, gc, 10, 30, wc, 5);
+  m7_read (pm, buf2, white);
+  M7_CHECK (memcmp (buf1, buf2, sizeof buf1) == 0, "text: draw_text_wc equals draw_string");
+
+  /* 6. clip */
+  m7_fill (pm, gc, white, 0xffff);
+  gdk_gc_set_foreground (gc, &black);
+  gdk_gc_set_clip_rectangle (gc, &clip);
+  gdk_draw_string (pm, font, gc, 10, 30, "Hello World");
+  gdk_gc_set_clip_rectangle (gc, NULL);
+  ink2 = m7_read (pm, buf1, white);
+  M7_CHECK (ink2.count > 0, "clip: ink inside");
+  M7_CHECK (ink2.count == 0 || (ink2.x0 >= 20 && ink2.x1 < 40), "clip: no ink outside [20,40)");
+
+  /* 7. colour */
+  bold = m7_font ("Sans Bold 24");
+  M7_CHECK (bold != NULL, "colour: Sans Bold 24");
+  if (bold)
+    {
+      m7_fill (pm, gc, white, 0xffff);
+      gdk_gc_set_foreground (gc, &red);
+      gdk_draw_string (pm, bold, gc, 10, 40, "H");
+      m7_read (pm, buf1, white);
+      all_red = 1;
+      exact_red = 0;
+      ink2.count = 0;
+      for (i = 0; i < M7_PW * M7_PH; i++)
+	{
+	  guint32 p = buf1[i];
+	  int pr = (p >> 16) & 0xff, pg = (p >> 8) & 0xff, pb = p & 0xff;
+
+	  if (p == white)
+	    continue;
+	  ink2.count++;
+	  if (pr < pg || pr < pb)
+	    all_red = 0;
+	  if (p == 0xff0000)
+	    exact_red = 1;
+	}
+      M7_CHECK (ink2.count > 0, "colour: ink drawn");
+      M7_CHECK (all_red, "colour: every ink pixel is reddish");
+      M7_CHECK (exact_red, "colour: a pure 0xff0000 pixel exists");
+      gdk_font_unref (bold);
+    }
+
+  /* 8. depth 1 */
+  bm = gdk_pixmap_new (NULL, M7_PW, M7_PH, 1);
+  M7_CHECK (bm != NULL, "bitmap: created");
+  if (bm)
+    {
+      GdkColor c0 = { 0, 0, 0, 0 }, c1 = { 1, 0xffff, 0xffff, 0xffff };
+
+      bgc = gdk_gc_new (bm);
+      gdk_gc_set_foreground (bgc, &c0);
+      gdk_draw_rectangle (bm, bgc, TRUE, 0, 0, M7_PW, M7_PH);
+      gdk_gc_set_foreground (bgc, &c1);
+      gdk_draw_string (bm, font, bgc, 10, 30, hello);
+      ink2 = m7_read (bm, NULL, 0);
+      M7_CHECK (ink2.count >= 30, "bitmap text: at least 30 ink pixels");
+      M7_CHECK (abs (ink2.x0 - ink1.x0) <= 1 && abs (ink2.x1 - ink1.x1) <= 1 &&
+		abs (ink2.y0 - ink1.y0) <= 1 && abs (ink2.y1 - ink1.y1) <= 1,
+		"bitmap text: box within 1 pixel of the colour box");
+      g_object_unref (bgc);
+      g_object_unref (bm);
+    }
+
+  /* 9. window target and edge cases */
+  wgc = gdk_gc_new (main_window);
+  gdk_gc_set_foreground (wgc, &black);
+  gdk_draw_string (main_window, font, wgc, 300, 300, "Window text");
+  gdk_flush ();
+  gdk_draw_text (pm, font, gc, 10, 30, "abc", 0);
+  gdk_draw_text (pm, font, gc, 10, 30, "", 0);
+  gdk_draw_string (pm, font, gc, 10, 30, "");
+  gdk_draw_string (pm, font, gc, 10, 30, "\xe9");
+  M7_CHECK (gdk_string_width (font, "\xe9") > 0, "edge: Latin-1 byte has a width");
+  M7_EQ_INT (gdk_text_width (font, "abc", 0), 0, "edge: zero length has no width");
+  fs = gdk_fontset_load_for_display (m7_d, "Sans 10");
+  if (fs)
+    {
+      gdk_draw_string (pm, fs, gc, 10, 30, "fontset");
+      M7_CHECK (gdk_string_width (fs, "fontset") > 0, "edge: fontset width");
+      gdk_font_unref (fs);
+    }
+  g_object_unref (wgc);
+  m7_repaint (main_window);
+
+  g_object_unref (gc);
+  g_object_unref (pm);
+  gdk_font_unref (font);
+}
+
+static int
+m7_exercise (void)
+{
+  m7_d = gdk_display_get_default ();
+
+  m7_cursors ();
+  m7_cursor_lifetime ();
+  m7_shapes ();
+  m7_fonts ();
+
+  m7_drain ();
+  gdk_window_invalidate_rect (main_window, NULL, TRUE);
+
+  if (m7_failures)
+    g_printerr ("ydk_demo: M7: FAIL (%d)\n", m7_failures);
+  else
+    g_print ("ydk_demo: M7: PASS\n");
+
+  return m7_failures;
+}
+
+
 int
 main (int argc, char **argv)
 {
@@ -4153,6 +5351,7 @@ main (int argc, char **argv)
       failed |= m5v_exercise () != 0;
       failed |= m6_exercise () != 0;
       failed |= m6b_exercise () != 0;
+      failed |= m7_exercise () != 0;
       if (failed)
 	return 1;
 

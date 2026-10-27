@@ -27,6 +27,7 @@
 
 #include "gdkprivate-wayland.h"
 #include "gdkseat-wayland.h"
+#include "gdkm7-wayland.h"
 
 #ifdef GDK_COMPILATION
 #include "gdkalias.h"
@@ -153,6 +154,9 @@ gdkw_display_wayland_dispose (GObject *object)
 	}
     }
 
+  /* Cursor buffers and the cursor surface must go before the connection. */
+  _gdk_wayland_cursor_display_finalize (GDK_DISPLAY_OBJECT (display));
+
   /* Stops the event source and the seat proxies.  A second call finds
    * everything already released and does nothing. */
   _gdk_wayland_events_finalize (GDK_DISPLAY_OBJECT (display));
@@ -179,6 +183,9 @@ gdkw_display_wayland_finalize (GObject *object)
       g_slist_free (display->windows);
       display->windows = NULL;
     }
+
+  /* before wl_shm and wl_compositor are destroyed */
+  _gdk_wayland_cursor_display_finalize (GDK_DISPLAY_OBJECT (display));
 
   /* Tear down the event source and seat / keyboard / pointer proxies. */
   _gdk_wayland_events_finalize (GDK_DISPLAY_OBJECT (display));
@@ -461,24 +468,6 @@ _gdk_wayland_windowing_set_default_display (GdkDisplay *display)
 {
 }
 
-GdkRegion *
-_gdk_wayland_windowing_window_get_shape (GdkWindow *window)
-{
-  return NULL;
-}
-
-GdkRegion *
-_gdk_wayland_windowing_window_get_input_shape (GdkWindow *window)
-{
-  return NULL;
-}
-
-GdkRegion *
-_gdk_wayland_windowing_get_shape_for_mask (GdkBitmap *mask)
-{
-  return NULL;
-}
-
 void
 _gdk_wayland_windowing_window_beep (GdkWindow *window)
 {
@@ -599,6 +588,8 @@ _gdk_wayland_windowing_pointer_grab (GdkWindow *window,
   seat->grab.time = time_;
   seat->grab.serial = _gdk_wayland_event_serial (display);
 
+  _gdk_wayland_cursor_update (display);
+
   return GDK_GRAB_SUCCESS;
 }
 
@@ -635,6 +626,8 @@ _gdk_wayland_display_pointer_ungrab (GdkDisplay *display, guint32 time_)
        * soon as gdk_pointer_ungrab () returns. */
       _gdk_display_pointer_grab_update (display, serial);
     }
+
+  _gdk_wayland_cursor_update (display);
 }
 
 /* gdk_display_keyboard_ungrab () */

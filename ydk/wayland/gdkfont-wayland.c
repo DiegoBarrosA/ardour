@@ -28,6 +28,7 @@
 #include <ydk/gdkinternals.h>
 
 #include "gdkprivate-wayland.h"
+#include "gdkm7-wayland.h"
 
 #ifdef GDK_COMPILATION
 #include "gdkalias.h"
@@ -38,11 +39,19 @@ typedef struct _GdkFontPrivateWayland GdkFontPrivateWayland;
 struct _GdkFontPrivateWayland
 {
   GdkFontPrivate base;
+  guint32 magic;			/* GDKW_FONT_MAGIC */
   GdkDisplay *display;
   PangoFontDescription *desc;
   PangoLayout *layout;
   gchar *name;			/* name used to load, for the cache */
 };
+
+static gboolean
+font_is_wayland (const GdkFont *font)
+{
+  return font != NULL &&
+    ((const GdkFontPrivateWayland *) font)->magic == GDKW_FONT_MAGIC;
+}
 
 static GHashTable *
 font_hash_get (GdkDisplay *display,
@@ -162,13 +171,28 @@ font_new (GdkDisplay                 *display,
 
   private = g_new0 (GdkFontPrivateWayland, 1);
   private->base.ref_count = 1;
+  private->magic = GDKW_FONT_MAGIC;
   private->display = display;
   private->desc = pango_font_description_copy (desc);
 
   context = pango_font_map_create_context (pango_cairo_font_map_get_default ());
+  {
+    /* Fixed options so that measuring equals drawing, on every surface. */
+    cairo_font_options_t *opts = cairo_font_options_create ();
+
+    cairo_font_options_set_antialias (opts, CAIRO_ANTIALIAS_GRAY);
+    cairo_font_options_set_hint_style (opts, CAIRO_HINT_STYLE_SLIGHT);
+    cairo_font_options_set_hint_metrics (opts, CAIRO_HINT_METRICS_ON);
+    pango_cairo_context_set_font_options (context, opts);
+    cairo_font_options_destroy (opts);
+    pango_cairo_context_set_resolution (context, GDKW_FONT_DPI);
+    pango_context_set_round_glyph_positions (context, TRUE);
+  }
   private->layout = pango_layout_new (context);
   g_object_unref (context);
   pango_layout_set_font_description (private->layout, private->desc);
+  pango_layout_set_single_paragraph_mode (private->layout, TRUE);
+  pango_layout_set_width (private->layout, -1);
 
   font = (GdkFont *) private;
   font->type = type;
@@ -190,6 +214,7 @@ font_new (GdkDisplay                 *display,
       /* No such face at all: fail like XLoadQueryFont would. */
       g_object_unref (private->layout);
       pango_font_description_free (private->desc);
+      private->magic = 0;
       g_free (private);
       return NULL;
     }
@@ -213,6 +238,8 @@ GdkDisplay *
 _gdk_wayland_font_get_display (GdkFont *font)
 {
   g_return_val_if_fail (font != NULL, NULL);
+  if (!font_is_wayland (font))
+    return NULL;
 
   return ((GdkFontPrivateWayland *) font)->display;
 }
@@ -295,6 +322,7 @@ _gdk_wayland_font_destroy (GdkFont *font)
       g_free (private->name);
     }
 
+  private->magic = 0;
   g_object_unref (private->layout);
   pango_font_description_free (private->desc);
   g_free (font);
@@ -350,8 +378,8 @@ _gdk_wayland_font_equal (const GdkFont *fonta,
 
 /* Convert legacy 8-bit/locale text to UTF-8.  Never fails; returns a
  * newly allocated string. */
-static gchar *
-text_to_utf8 (const gchar *text,
+gchar *
+_gdk_wayland_font_text_to_utf8 (const gchar *text,
 	      gint         text_length)
 {
   gchar *copy, *result;
@@ -372,8 +400,8 @@ text_to_utf8 (const gchar *text,
   return result ? result : g_strdup ("");
 }
 
-static gchar *
-wc_to_utf8 (const GdkWChar *text,
+gchar *
+_gdk_wayland_font_wc_to_utf8 (const GdkWChar *text,
 	    gint            text_length)
 {
   GString *str = g_string_new (NULL);
@@ -395,15 +423,18 @@ measure (GdkFont     *font,
   GdkFontPrivateWayland *private = (GdkFontPrivateWayland *) font;
   PangoLayoutLine *line;
 
+  memset (ink, 0, sizeof (*ink));
+  memset (logical, 0, sizeof (*logical));
+  if (!font_is_wayland (font))
+    {
+      g_debug ("measure: font of another backend");
+      return;
+    }
+
   pango_layout_set_text (private->layout, utf8, -1);
   line = pango_layout_get_line_readonly (private->layout, 0);
   if (line)
     pango_layout_line_get_pixel_extents (line, ink, logical);
-  else
-    {
-      memset (ink, 0, sizeof (*ink));
-      memset (logical, 0, sizeof (*logical));
-    }
 }
 
 static void
@@ -442,7 +473,7 @@ _gdk_wayland_text_width (GdkFont     *font,
   g_return_val_if_fail (font != NULL, -1);
   g_return_val_if_fail (text != NULL, -1);
 
-  utf8 = text_to_utf8 (text, text_length);
+  utf8 = _gdk_wayland_font_text_to_utf8 (text, text_length);
   extents_utf8 (font, utf8, NULL, NULL, &width, NULL, NULL);
   g_free (utf8);
 
@@ -460,7 +491,7 @@ _gdk_wayland_text_width_wc (GdkFont        *font,
   g_return_val_if_fail (font != NULL, -1);
   g_return_val_if_fail (text != NULL, -1);
 
-  utf8 = wc_to_utf8 (text, text_length);
+  utf8 = _gdk_wayland_font_wc_to_utf8 (text, text_length);
   extents_utf8 (font, utf8, NULL, NULL, &width, NULL, NULL);
   g_free (utf8);
 
@@ -482,7 +513,7 @@ _gdk_wayland_text_extents (GdkFont     *font,
   g_return_if_fail (font != NULL);
   g_return_if_fail (text != NULL);
 
-  utf8 = text_to_utf8 (text, text_length);
+  utf8 = _gdk_wayland_font_text_to_utf8 (text, text_length);
   extents_utf8 (font, utf8, lbearing, rbearing, width, ascent, descent);
   g_free (utf8);
 }
@@ -502,8 +533,85 @@ _gdk_wayland_text_extents_wc (GdkFont        *font,
   g_return_if_fail (font != NULL);
   g_return_if_fail (text != NULL);
 
-  utf8 = wc_to_utf8 (text, text_length);
+  utf8 = _gdk_wayland_font_wc_to_utf8 (text, text_length);
   extents_utf8 (font, utf8, lbearing, rbearing, width, ascent, descent);
   g_free (utf8);
 }
 
+
+gboolean
+_gdk_wayland_font_show_utf8 (GdkFont     *font,
+			     cairo_t     *cr,
+			     gint         x,
+			     gint         y,
+			     const gchar *utf8,
+			     gboolean     as_path)
+{
+  GdkFontPrivateWayland *private;
+  PangoLayoutLine *line;
+
+  if (!font || !cr || !utf8 || utf8[0] == '\0')
+    return FALSE;
+  if (!font_is_wayland (font))
+    {
+      g_debug ("show_utf8: font of another backend, nothing drawn");
+      return FALSE;
+    }
+
+  private = (GdkFontPrivateWayland *) font;
+  pango_layout_set_text (private->layout, utf8, -1);
+  line = pango_layout_get_line_readonly (private->layout, 0);
+  if (!line)
+    return FALSE;
+
+  cairo_move_to (cr, x, y);
+  if (as_path)
+    {
+      pango_cairo_layout_line_path (cr, line);
+      cairo_fill (cr);
+    }
+  else
+    pango_cairo_show_layout_line (cr, line);
+
+  return TRUE;
+}
+
+gboolean
+_gdk_wayland_test_font_info (GdkFont          *font,
+			     GDKWTestFontInfo *info)
+{
+  GdkFontPrivateWayland *private;
+  PangoContext *context;
+  PangoFont *pfont;
+  const cairo_font_options_t *opts;
+
+  if (!info)
+    return FALSE;
+  memset (info, 0, sizeof (*info));
+  if (!font_is_wayland (font))
+    return FALSE;
+
+  private = (GdkFontPrivateWayland *) font;
+  context = pango_layout_get_context (private->layout);
+  info->is_wayland_font = TRUE;
+  info->dpi = pango_cairo_context_get_resolution (context);
+  opts = pango_cairo_context_get_font_options (context);
+  info->hint_metrics_on = opts &&
+    cairo_font_options_get_hint_metrics (opts) == CAIRO_HINT_METRICS_ON;
+  info->ascent = font->ascent;
+  info->descent = font->descent;
+
+  pfont = pango_context_load_font (context, private->desc);
+  if (pfont)
+    {
+      PangoFontDescription *d = pango_font_describe (pfont);
+      const char *fam = pango_font_description_get_family (d);
+
+      if (fam)
+	g_strlcpy (info->family, fam, sizeof (info->family));
+      pango_font_description_free (d);
+      g_object_unref (pfont);
+    }
+
+  return TRUE;
+}
