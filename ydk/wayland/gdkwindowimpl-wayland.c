@@ -43,6 +43,7 @@
 #include "gdkpixmap-wayland.h"
 #include "gdkm7-wayland.h"
 #include "gdkm8-wayland.h"
+#include "gdkm9-wayland.h"
 
 #ifdef GDK_COMPILATION
 #include "gdkalias.h"
@@ -71,6 +72,7 @@ static gboolean ensure_shm_buffer (GDKWWindowImplWayland *impl);
 static void paint_background (GDKWWindowImplWayland *impl);
 static void resize_buffer (GDKWWindowImplWayland *impl,
 			   gint width, gint height);
+static void grab_check_unmap (GdkWindow *window);
 
 /*************** drawable vfuncs ***************/
 
@@ -432,6 +434,10 @@ _gdk_wayland_window_impl_teardown (GDKWWindowImplWayland *impl)
       close (impl->shm_fd);
       impl->shm_fd = -1;
     }
+  /* M9: destroys the xdg_popup and the record (idempotent); the code below
+   * destroys the xdg_surface and the wl_surface */
+  _gdk_wayland_popup_teardown (impl);
+
   if (impl->xdg_toplevel)
     {
       xdg_toplevel_destroy (impl->xdg_toplevel);
@@ -477,6 +483,14 @@ xdg_surface_handle_configure (void *data,
 			      uint32_t serial)
 {
   GDKWWindowImplWayland *impl = data;
+
+  /* M9: a popup does its own ack, geometry and position feedback */
+  if (impl->popup != NULL)
+    {
+      _gdk_wayland_popup_surface_configure (impl, xdg_surface, serial);
+      _gdk_wayland_window_impl_present (impl);
+      return;
+    }
 
   xdg_surface_set_window_geometry (xdg_surface, 0, 0,
 				   impl->width, impl->height);
@@ -579,6 +593,75 @@ gdk_paintable_iface_init (GdkPaintableIface *iface)
 
 /*************** window impl interface ***************/
 
+/* M9: the part of show () that runs once the impl has (or is to get) a
+ * wl_surface and is to be a plain xdg_toplevel.  Also used by the popup piece
+ * for the fallback toplevel (a popup candidate with no usable parent). */
+void
+_gdk_wayland_window_impl_create_toplevel (GDKWWindowImplWayland *impl)
+{
+  GDKWDisplayWayland *display;
+
+  if (impl == NULL || impl->screen == NULL ||
+      gdk_screen_get_display (impl->screen) == NULL)
+    return;
+
+  display = GDKW_DISPLAY_WAYLAND (gdk_screen_get_display (impl->screen));
+
+  if (impl->xdg_toplevel != NULL)
+    return;
+
+  if (impl->wl_surface == NULL)
+    impl->wl_surface = wl_compositor_create_surface (display->wl_compositor);
+
+  if (impl->xdg_surface == NULL)
+    {
+      impl->xdg_surface =
+        xdg_wm_base_get_xdg_surface (display->xdg_wm_base, impl->wl_surface);
+      xdg_surface_add_listener (impl->xdg_surface, &xdg_surface_listener,
+                                impl);
+    }
+
+  impl->xdg_toplevel = xdg_surface_get_toplevel (impl->xdg_surface);
+  xdg_toplevel_add_listener (impl->xdg_toplevel, &xdg_toplevel_listener,
+			     impl);
+
+  /* Stored hints (app id, title, size limits, parent, state requests) go
+   * out before the first commit. */
+  _gdk_wayland_window_hints_apply (impl);
+
+  /* Stored shape regions go out before the first commit. */
+  _gdk_wayland_shape_surface_created (impl);
+
+  if (g_slist_find (display->windows, impl) == NULL)
+    display->windows = g_slist_prepend (display->windows, impl);
+
+  /* First commit must be buffer-less: xdg-shell's initial configure is only
+   * produced in response to a commit, and committing a buffer before that
+   * configure is acked is a protocol error.  The configure listener acks and
+   * then performs the first real present; subsequent frames are committed by
+   * display sync via present_all. */
+  wl_surface_commit (impl->wl_surface);
+}
+
+void
+_gdk_wayland_window_impl_resize_buffer (GDKWWindowImplWayland *impl,
+					gint width, gint height)
+{
+  resize_buffer (impl, width, height);
+}
+
+void
+_gdk_wayland_window_impl_grab_check_unmap (GdkWindow *window)
+{
+  grab_check_unmap (window);
+}
+
+const struct xdg_surface_listener *
+_gdk_wayland_window_impl_xdg_surface_listener (void)
+{
+  return &xdg_surface_listener;
+}
+
 static void
 gdk_window_wayland_show (GdkWindow *window, gboolean already_mapped)
 {
@@ -591,9 +674,6 @@ gdk_window_wayland_show (GdkWindow *window, gboolean already_mapped)
     return;
 
   impl = GDKW_WINDOW_IMPL_WAYLAND (private->impl);
-
-  if (impl->wl_surface)
-    return; /* already shown */
 
   if (impl->screen == NULL ||
       gdk_screen_get_display (impl->screen) == NULL)
@@ -608,30 +688,16 @@ gdk_window_wayland_show (GdkWindow *window, gboolean already_mapped)
       return;
     }
 
+  /* M9: surfaceless windows (input-only, native child, DND) and popup
+   * candidates are handled by the popup piece. */
+  if (_gdk_wayland_popup_show (window))
+    return;
+
+  if (impl->wl_surface)
+    return; /* already shown */
+
   impl->wl_surface = wl_compositor_create_surface (display->wl_compositor);
-  impl->xdg_surface =
-    xdg_wm_base_get_xdg_surface (display->xdg_wm_base, impl->wl_surface);
-  impl->xdg_toplevel = xdg_surface_get_toplevel (impl->xdg_surface);
-
-  xdg_surface_add_listener (impl->xdg_surface, &xdg_surface_listener, impl);
-  xdg_toplevel_add_listener (impl->xdg_toplevel, &xdg_toplevel_listener,
-			     impl);
-
-  /* Stored hints (app id, title, size limits, parent, state requests) go
-   * out before the first commit. */
-  _gdk_wayland_window_hints_apply (impl);
-
-  /* Stored shape regions go out before the first commit. */
-  _gdk_wayland_shape_surface_created (impl);
-
-  display->windows = g_slist_prepend (display->windows, impl);
-
-  /* First commit must be buffer-less: xdg-shell's initial configure is only
-   * produced in response to a commit, and committing a buffer before that
-   * configure is acked is a protocol error.  The configure listener acks and
-   * then performs the first real present; subsequent frames are committed by
-   * display sync via present_all. */
-  wl_surface_commit (impl->wl_surface);
+  _gdk_wayland_window_impl_create_toplevel (impl);
 }
 
 /* Mirrors _gdk_xgrab_check_unmap () in gdkmain-x11.c: a window that stops
@@ -674,7 +740,15 @@ gdk_window_wayland_hide (GdkWindow *window)
 
   /* the display may already be gone */
   if (impl->screen != NULL && gdk_screen_get_display (impl->screen) != NULL)
-    grab_check_unmap (window);
+    {
+      grab_check_unmap (window);
+
+      /* M9: popups above this window go first (xdg-shell wants top-down),
+       * then this window's own popup or surfaceless role */
+      _gdk_wayland_popup_release_children (impl, TRUE);
+      if (_gdk_wayland_popup_hide (window))
+	return;
+    }
 
   resize_buffer (impl, impl->width, impl->height);
 
@@ -722,10 +796,16 @@ gdk_window_wayland_move_resize (GdkWindow *window,
   GDKWWindowImplWayland *impl;
 
   impl = GDKW_WINDOW_IMPL_WAYLAND (((GdkWindowObject *) window)->impl);
-  impl->x = x;
-  impl->y = y;
+  if (with_move)
+    {
+      impl->x = x;
+      impl->y = y;
+    }
   impl->width = width;
   impl->height = height;
+
+  /* M9: no-op unless the impl is a popup */
+  _gdk_wayland_popup_move_resize (window, with_move, x, y, width, height);
 }
 
 static void
@@ -767,7 +847,7 @@ gdk_window_wayland_reparent (GdkWindow *window,
 			     gint x,
 			     gint y)
 {
-  return TRUE;
+  return _gdk_wayland_reparent (window, new_parent, x, y);
 }
 
 static void
@@ -815,10 +895,17 @@ gdk_window_wayland_get_root_coords (GdkWindow *window,
 				    gint *root_x,
 				    gint *root_y)
 {
+  GDKWWindowImplWayland *impl;
+  gint ox = 0, oy = 0;
+
+  /* M9 D2: a popup sits at its root position, everything else at (0, 0) */
+  impl = GDKW_WINDOW_IMPL_WAYLAND (((GdkWindowObject *) window)->impl);
+  _gdk_wayland_popup_root_origin (impl, &ox, &oy);
+
   if (root_x)
-    *root_x = x;
+    *root_x = x + ox;
   if (root_y)
-    *root_y = y;
+    *root_y = y + oy;
 
   return 0;
 }
@@ -828,10 +915,16 @@ gdk_window_wayland_get_deskrelative_origin (GdkWindow *window,
 					    gint *x,
 					    gint *y)
 {
+  GDKWWindowImplWayland *impl;
+  gint ox = 0, oy = 0;
+
+  impl = GDKW_WINDOW_IMPL_WAYLAND (((GdkWindowObject *) window)->impl);
+  _gdk_wayland_popup_root_origin (impl, &ox, &oy);
+
   if (x)
-    *x = 0;
+    *x = ox;
   if (y)
-    *y = 0;
+    *y = oy;
 
   return 0;
 }
@@ -851,23 +944,25 @@ gdk_window_wayland_get_pointer (GdkWindow *window,
   if (mask)
     *mask = _gdk_wayland_seat_get_state (seat);
 
-  /* TRUE means the pointer is inside this toplevel; the core then finds the
-   * child window under it itself. */
-  if (impl == seat->pointer_focus)
-    {
-      if (x)
-	*x = (gint) seat->px;
-      if (y)
-	*y = (gint) seat->py;
-      return TRUE;
-    }
+  /* M9: x and y are always filled, through root space, even when the pointer
+   * is in another native window (a menu grab window while the pointer is
+   * over the base).  TRUE only means the pointer is inside this native
+   * window (the core's contract); the core then finds the child itself.
+   * The core subtracts abs_x and abs_y itself, so the answer is relative to
+   * the impl window, not to @window. */
+  {
+    gdouble fx = 0, fy = 0;
+    GdkWindow *native = (GdkWindow *) ((GdkWindowObject *) window)->impl_window;
 
-  if (x)
-    *x = 0;
-  if (y)
-    *y = 0;
+    _gdk_wayland_pointer_in_window (gdk_screen_get_display (impl->screen),
+				    native != NULL ? native : window, &fx, &fy);
+    if (x)
+      *x = (gint) fx;
+    if (y)
+      *y = (gint) fy;
+  }
 
-  return FALSE;
+  return impl == seat->pointer_focus;
 }
 
 static void
@@ -928,6 +1023,8 @@ gdk_window_wayland_destroy (GdkWindow *window,
   if (impl->screen != NULL && gdk_screen_get_display (impl->screen) != NULL)
     {
       grab_check_unmap (window);
+      /* M9: popups of this window first, GDK-hiding them */
+      _gdk_wayland_popup_release_children (impl, TRUE);
       _gdk_wayland_selection_window_destroyed (window);
     }
 
@@ -977,6 +1074,7 @@ gdk_window_impl_iface_init (GdkWindowImplIface *iface)
   iface->input_window_destroy = gdk_window_wayland_input_window_destroy;
   iface->input_window_crossing = gdk_window_wayland_input_window_crossing;
   iface->supports_native_bg = TRUE;
+  iface->demote_to_child = _gdk_wayland_reparent_demote;
 }
 
 /*************** impl constructor ***************/
@@ -1032,6 +1130,10 @@ _gdk_wayland_window_impl_new (GdkWindow     *window,
    * matches the desktop entry name on most compositors. */
   if ((attributes_mask & GDK_WA_WMCLASS) && attributes->wmclass_class)
     impl->wmclass = g_strdup (attributes->wmclass_class);
+
+  /* M9: override redirect decides the popup role (D1 rule 4) */
+  if ((attributes_mask & GDK_WA_NOREDIR) && attributes->override_redirect)
+    _gdk_wayland_window_set_override_redirect (window, TRUE);
 
   return (GdkDrawable *) impl;
 }

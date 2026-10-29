@@ -1371,8 +1371,8 @@ gdk_window_new (GdkWindow     *parent,
    */
   if (attributes->wclass == GDK_INPUT_ONLY &&
       private->parent->window_type == GDK_WINDOW_ROOT &&
-      GDK_IS_DISPLAY_X11 (GDK_WINDOW_DISPLAY (parent)) &&
-      !G_LIKELY (GDK_DISPLAY_X11 (GDK_WINDOW_DISPLAY (parent))->trusted_client))
+      GDK_IS_DISPLAY_X11 (gdk_drawable_get_display (GDK_DRAWABLE (parent))) &&
+      !G_LIKELY (GDK_DISPLAY_X11 (gdk_drawable_get_display (GDK_DRAWABLE (parent)))->trusted_client))
     {
       g_warning ("Coercing GDK_INPUT_ONLY toplevel window to GDK_INPUT_OUTPUT to work around bug in Xorg server");
       attributes->wclass = GDK_INPUT_OUTPUT;
@@ -1639,7 +1639,23 @@ gdk_window_reparent (GdkWindow *window,
 
   old_native_event_mask = 0;
   do_reparent_to_impl = FALSE;
-  if (gdk_window_has_impl (private))
+  if (gdk_window_has_impl (private) &&
+      new_parent_private->window_type != GDK_WINDOW_ROOT &&
+      new_parent_private->window_type != GDK_WINDOW_FOREIGN &&
+      impl_iface->demote_to_child != NULL &&
+      impl_iface->demote_to_child (window, new_parent))
+    {
+      /* M9: the backend gave up the native window; continue as for a client
+       * side child.  gdk_window_has_impl () is FALSE from here on. */
+      show = was_mapped;
+      gdk_window_hide (window);
+
+      do_reparent_to_impl = TRUE;
+      change_impl (private,
+		   new_parent_private->impl_window,
+		   new_parent_private->impl);
+    }
+  else if (gdk_window_has_impl (private))
     {
       old_native_event_mask = get_native_event_mask (private);
       /* Native window */
@@ -1890,6 +1906,12 @@ gdk_window_ensure_native (GdkWindow *window)
 
   private->impl = old_impl;
   change_impl (private, private, new_impl);
+
+  /* _gdk_window_impl_new () returned the new impl with the creation reference,
+   * and change_impl () took its own: drop the creation one or the impl (and
+   * with it the wl_surface and the shm buffer of a promoted window) outlives
+   * its window.  Found by valgrind --leak-check=full on the M9 reparent test. */
+  g_object_unref (new_impl);
 
   impl_iface = GDK_WINDOW_IMPL_GET_IFACE (private->impl);
 
@@ -6967,6 +6989,13 @@ gdk_window_raise (GdkWindow *window)
       gdk_region_destroy (old_region);
       gdk_region_destroy (new_region);
     }
+
+  /* M9: gdk_window_lower () and every other geometry change already do this.
+   * Without it a window raised under a stationary pointer (an input-only
+   * child above an input-output sibling, for one) gets no crossing events
+   * until the pointer moves.  Queues one idle, and only when the pointer is
+   * in this toplevel. */
+  _gdk_synthesize_crossing_events_for_geometry_change (window);
 }
 
 static void

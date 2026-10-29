@@ -132,7 +132,8 @@ Known gaps (deliberately left):
   core's implicit grab ends when button 1 is released while 8 is still held.
 - Only the first `wl_seat`, `wl_output` and monitor are used; touch, tablet,
   `value120` and `axis_relative_direction` (seat v8/v9) are not handled.
-- Input-only window crossings (M9) and real `xdg_popup` grabs (M9).
+- Input-only window crossings and real `xdg_popup` grabs: done in M9 (grabs only on
+  the virtual seat, see M9).
 - Everything is verified through hooks; a real compositor may order events
   differently (the pointer `leave` handler ends implicit grabs defensively).
 
@@ -324,7 +325,7 @@ Real versus stubbed:
   message send and filters, foreign windows and lookups (NULL; native ids exist for selections since M8), icons
   (stored, never sent: xdg-shell has no icon request), type hints, keep
   above / below, sticky, skip taskbar / pager, urgency, modal (stored only),
-  override redirect (until M9).
+  override redirect (since M9 it decides the popup role).
 - Not observable on Wayland: `GDK_WINDOW_STATE_ICONIFIED`, `_ABOVE`, `_BELOW`,
   `_STICKY` are never set (the compositor does not report them), and GDK2 has
   no FOCUSED state, so xdg `activated` is only recorded in the test info.
@@ -493,6 +494,13 @@ Fixes made while integrating (found by review or by the new demo):
 - `gdk_window_new` dereferenced `GDK_DISPLAY_X11` of a Wayland display for a
   toplevel `GDK_INPUT_ONLY` window (crash); the Xorg workaround is now guarded
   with `GDK_IS_DISPLAY_X11`.
+
+  > [!warning] Corrected 2026-10-29
+  > The line above is wrong: the guard did not fix the crash. It still read
+  > `GDK_WINDOW_DISPLAY (parent)`, the X11 macro, which casts the Wayland impl
+  > to the X11 impl and reads garbage (valgrind: invalid read at gdkwindow.c:1374).
+  > M9 replaced both uses with `gdk_drawable_get_display (GDK_DRAWABLE (parent))`.
+
 - `gdk_drag_begin` fails instead of starting an untracked drag when it gets no
   live window, and when the target list maps to no mime.
 
@@ -567,14 +575,138 @@ reading `~/Projects/Personal/ardour`, lines checked against the working tree):
   `GDK_DRAWABLE_XID (_main_window.get_window()->gobj())` is passed to
   `LV2Plugin::set_main_window_id`. The window has no XID on Wayland.
 
-### M9 - Popups and non-toplevel windows
+### M9 - Popups, input-only windows, reparenting (DONE)
 
-- `xdg_popup` + `xdg_positioner` for menus/tooltips/combo (gtkmenu.c,
-  menu_shell).
-- input-only windows with enter/leave crossing synthesis.
-- reparent (subsurface / xdg_popup parenting).
+The contract, the measured facts (F1 to F8) and decisions D1 to D16 are in the
+header comment of `ydk/wayland/ydk/gdkm9-wayland.h`. New files:
+`gdkpopup-wayland.c` (roles, `xdg_popup`, positioner, grab policy, popup tree),
+`gdkinputonly-wayland.c` (surfaceless windows, pointer position model),
+`gdkreparent-wayland.c` (promotion, demotion, grab breaking). No dispatcher and
+no rename macro was needed (`audit-x11-symbols.sh` passes, 30 and 94 names).
 
-Verification: demo opens a popup that tracks the parent window.
+What exists:
+
+- One role per native window, chosen when it is shown (D1): input-only, native
+  `CHILD` and `DND` hint windows have no `wl_surface` at all; every other TEMP
+  or override-redirect window is a popup candidate whatever its type hint; a
+  candidate with no usable parent becomes a plain `xdg_toplevel`.
+- Root space (D2): the surface space of the base toplevel of the popup family.
+  A popup sits at `private->x, y`; `get_root_coords`, `gdk_window_get_origin`,
+  `gdk_display_get_pointer`, `x_root` of every pointer event and the frame
+  extents add that origin, so `gtk_menu_popup` positions work.
+- The first commit of a popup is deferred to an idle or to `gdk_flush` (D5)
+  because ytk grabs AFTER it shows the menu and `xdg_popup.grab` must precede
+  the first commit. The parent is chosen at commit time (D3): `transient_for`,
+  pointer focus, keyboard focus, last pointer window, newest toplevel; a tooltip
+  nests on the open menu chain, an explicit transient parent dismisses the
+  popups above it.
+- Positioner (D4): `set_size`, 1x1 anchor rect at the wanted position, TOP_LEFT,
+  BOTTOM_RIGHT, slide x and y. Compositor corrections come back through
+  `xdg_popup.configure` and become `GDK_CONFIGURE` (D6). Moves use
+  `xdg_popup_reposition` (xdg_wm_base is bound at `MIN (advertised, 3)`, was 1)
+  and fall back to a new popup below version 3 (D10).
+- Grab policy (D7): menus, combos and dropdowns grab when an explicit GDK grab
+  and a serial exist; tooltips never. The parent of a grabbing popup must be a
+  toplevel or another grabbing popup (xdg-shell protocol error otherwise), so a
+  menu never hangs from a tooltip. A popup refused before its first configure
+  is made again once without the grab.
+- `popup_done` (D8): ends the display's pointer and keyboard grab first
+  (`GDK_GRAB_BROKEN`, `grab_window` NULL, which is what ytk closes menus on),
+  then hides the chain topmost first. Whether the chain held the grab is
+  decided over every member, not only the popup that got the event.
+- Destruction order (D9): popups above a popup go first, a parent outlives its
+  popups, the seat is told when a surface goes away (LEAVE is synthesized).
+- Tooltips get an empty input region (D11). The GDK keyboard focus of a family is
+  its base toplevel and the focus-out is deferred one idle, so opening a menu
+  does not tell ytk the window lost focus (D12).
+- Input-only windows (D13, D15): the toplevel `GDK_INPUT_ONLY` crash is fixed
+  (below), they own no surface, can hold grabs, and
+  `gdk_window_get_pointer` answers through root space for any window.
+- Reparenting (D14): child to child is the core; child to toplevel makes a native
+  impl and shows it after the type switch; toplevel or popup to child uses the
+  new `GdkWindowImplIface.demote_to_child` (NULL for X11 and offscreen); a popup
+  moved to the root is a reposition. Grabs of the subtree are broken both ways.
+
+Core changes (all small, X11 unaffected): `gdk_window_new` Xorg workaround used
+the X11 macro `GDK_WINDOW_DISPLAY (parent)` and crashed for any toplevel
+input-only window on Wayland (now `gdk_drawable_get_display`);
+`gdk_window_reparent` has the `demote_to_child` branch; `gdk_window_raise` now
+queues the crossing synthesis that `gdk_window_lower` already did (a window
+raised under a stationary pointer got no LEAVE / ENTER until the pointer moved).
+`gdk_window_ensure_native` leaked the creation reference of the new impl (and
+with it the `wl_surface` and shm buffer of a promoted window): valgrind
+`--leak-check=full` on the reparent test found it, one `g_object_unref` fixes it.
+
+Fixes from review of the three drafts: a grabbing popup could hang from a popup
+without a grab (protocol error, kills the client in a strict compositor);
+`popup_done` on a lower or tooltip popup left the GDK grabs behind when a
+grabbing popup sat above it; a promoted child kept `seat->grab` (window
+reference and cursor) because `grab.native` is the toplevel; the grab counter
+counted grabs already ended; the DND rule was limited to TEMP windows and the
+surfaceless predicate said TRUE for client side input-only children; a popup
+record leaked its `xdg_popup` when the ledger was gone.
+`gdk_window_get_pointer` is relative to the impl window (the core subtracts
+`abs_x` itself), not to the window it was called for.
+
+Verification: `m9_exercise` in the demo (prints `ydk_demo: M9: PASS`, required by
+`scripts/smoke-test.sh` and `scripts/valgrind-smoke.sh`). T1 to T21 of the header:
+popup position and positioner values, nested chain, compositor correction,
+`gtk_menu_popup` grab order on the virtual seat, tooltip / combo / dropdown,
+`popup_done` chain and retry, fallback toplevel, tooltip nesting, reposition and
+the version 2 fallback, transient change, input-only crossings with exact
+coordinates, overlap, raise, shape hole, event mask, show under a stationary
+pointer, pointer in a popup, reparent both ways with grabs and focus, 50 cycles
+of a three menu chain plus tooltip with every object count back at the baseline
+(and positioners created equal destroyed), and focus coalescing. The headless
+Weston has no seat, so `xdg_popup.grab` is recorded by the virtual seat hook,
+not sent; configure and `popup_done` are injected through the real listeners.
+Mutation checks (a scratch copy with one fix undone at a time) fail the demo for
+the grab parent rule, the `popup_done` grab decision, the promoted child's grab
+record, the DND rule, the `gdk_window_get_pointer` origin and the deferred
+focus-out.
+Valgrind reports 0 errors with no suppressions (50 menu cycles included). A
+`--leak-check=full --track-fds=yes` run shows no leak owned by M9 code (the
+remaining ones are the M7 font code, the M5C colormap and the default screen,
+listed above) and no open fd at exit besides the event loop wakeup and the three
+inherited ones. One Weston line, "Detected an unmapped surface or view in the
+layer list", is printed once during the M9 run; it is a compositor side
+consistency warning, not a protocol error, and reproduces with a plain hide of a
+popup that is created right after the T17 toplevel promotion.
+The M8 audit gaps are closed: `m8_exercise` counts open fds around the S3, S5 and
+D6 transfers, and a write whose reader closes the pipe ends with `ok` FALSE, no
+fd, `pending_writes` 0 and a live process (mutation checked).
+
+Known gaps (deliberately left, D16 and what the tests found):
+
+- Native child windows (`gdk_window_ensure_native`) and DND icon windows are not
+  drawn: no `wl_subsurface`, no drag icon surface.
+- No reactive popups, no `set_parent_size`, no flip (GTK already flipped against
+  the monitor), no touch. A menu opened on button release may lose the
+  compositor grab (it is made again once without it; the GDK grab still routes).
+- Popups of a second base toplevel use that toplevel as their own root space; the
+  root space is one by convention only.
+- The core computes `x_root` of a crossing it synthesizes as `toplevel_x +
+  toplevel->x`; right for popups, off by the requested position for a base
+  toplevel created at a non zero `x, y` (the demo's main window is at 10, 10).
+  Wayland ignores that position; the M8 drag code has the same convention.
+- After the window of `last_pointer_impl` is destroyed the seat keeps `px, py` in
+  its surface space and the origin becomes 0, so the root pointer position
+  jumps by the old popup origin until the next pointer event.
+- A demoted toplevel that held the keyboard focus clears the seat focus without
+  a `GDK_FOCUS_CHANGE` out. Hints (title, app id, size limits) are lost by a
+  demote followed by a promote.
+- Verified only against Weston headless and the virtual seat. No real compositor
+  has seen `xdg_popup.grab` or `reposition` from this code, and no real ytk menu
+  has run on it (M11).
+
+What M10 still needs: `wl_surface_frame` pacing and buffer release (a popup
+resize recreates the shm buffer like a toplevel does), buffer scale (a popup
+positioner works in surface units, so the anchor rect needs no scaling), and the
+compositor initiated toplevel resize that still does not emit `GDK_CONFIGURE`.
+What M11 still needs: a real ytk menu, combo box, tooltip and menu bar on the
+bring-up (grab transfer window order, submenu timing, popup_done on click
+outside), the `gdk_x11_*` guards listed under M8, and a real compositor run for
+the grab serials.
 
 ### M10 - Frame sync and scale
 

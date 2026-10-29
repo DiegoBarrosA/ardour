@@ -147,6 +147,14 @@ struct _GdkWindowImplIface
   void         (* input_window_crossing)(GdkWindow       *window,
 					 gboolean         enter);
   gboolean     supports_native_bg;
+
+  /* M9: optional.  Called by gdk_window_reparent () for a window that owns
+   * its impl when the new parent is not the root.  A backend that cannot keep
+   * a native window as a child (Wayland) releases the native resources and
+   * returns TRUE; the core then makes the window a client side child of the
+   * new parent.  NULL (X11, offscreen) keeps the native window. */
+  gboolean     (* demote_to_child)      (GdkWindow       *window,
+					 GdkWindow       *new_parent);
 };
 
 /* Interface Functions */

@@ -45,6 +45,7 @@
 #include "gdkseat-wayland.h"
 #include "gdkm7-wayland.h"
 #include "gdkm8-wayland.h"
+#include "gdkm9-wayland.h"
 
 #ifdef GDK_COMPILATION
 #include "gdkalias.h"
@@ -662,6 +663,94 @@ wl_keyboard_keymap (void *data,
     seat->modifier_mask = 0;
 }
 
+/* M9 D12: GDK keyboard focus of a popup family is its BASE toplevel.  A
+ * grabbing popup takes wl_keyboard focus, which would send FOCUS_CHANGE out
+ * on the base toplevel and make ytk think the window lost focus while a menu
+ * is open.  The out event is deferred one idle; an enter in the same family
+ * before it runs cancels it.  Key events still reach the menu through
+ * display->keyboard_grab (emit_key). */
+
+#define KBD_PENDING_KEY "ydk-wayland-kbd-pending-out"
+
+typedef struct
+{
+  GDKWDisplayWayland *wd;
+  GDKWWindowImplWayland *impl;  /* family root whose out is pending */
+  guint source;
+} KbdPending;
+
+static void
+kbd_pending_free (gpointer data)
+{
+  KbdPending *k = data;
+
+  if (k->source != 0)
+    g_source_remove (k->source);
+  g_free (k);
+}
+
+static KbdPending *
+kbd_pending_get (GDKWDisplayWayland *wd, gboolean create)
+{
+  KbdPending *k = g_object_get_data (G_OBJECT (wd), KBD_PENDING_KEY);
+
+  if (k == NULL && create)
+    {
+      k = g_new0 (KbdPending, 1);
+      k->wd = wd;
+      g_object_set_data_full (G_OBJECT (wd), KBD_PENDING_KEY, k,
+			      kbd_pending_free);
+    }
+
+  return k;
+}
+
+static void
+kbd_pending_cancel (GDKWDisplayWayland *wd)
+{
+  KbdPending *k = kbd_pending_get (wd, FALSE);
+
+  if (k == NULL)
+    return;
+
+  if (k->source != 0)
+    g_source_remove (k->source);
+  k->source = 0;
+  k->impl = NULL;
+}
+
+static void
+kbd_pending_send (KbdPending *k)
+{
+  GDKWDisplayWayland *wd = k->wd;
+  GDKWWindowImplWayland *impl = k->impl;
+  GdkEvent *event;
+
+  k->impl = NULL;
+
+  /* the impl may have been torn down since */
+  if (impl == NULL || g_slist_find (wd->windows, impl) == NULL)
+    return;
+
+  event = new_event (wd, GDK_FOCUS_CHANGE, impl);
+  if (event != NULL)
+    {
+      event->focus_change.in = FALSE;
+      queue_event (GDK_DISPLAY_OBJECT (wd), event);
+    }
+}
+
+static gboolean
+kbd_pending_cb (gpointer data)
+{
+  KbdPending *k = data;
+
+  k->source = 0;
+  kbd_pending_send (k);
+
+  return G_SOURCE_REMOVE;
+}
+
 static void
 wl_keyboard_enter (void *data,
 		   struct wl_keyboard *keyboard,
@@ -672,16 +761,55 @@ wl_keyboard_enter (void *data,
   GDKWDisplayWayland *wd = data;
   GDKWSeat *seat = _gdk_wayland_display_get_seat (GDK_DISPLAY_OBJECT (wd));
   GDKWWindowImplWayland *impl = _gdk_wayland_impl_from_surface (wd, surface);
+  GDKWWindowImplWayland *root;
+  GDKWWindowImplWayland *prev_focus;
+  KbdPending *pending;
   GdkEvent *event;
 
   seat->keyboard_enter_serial = serial;
   seat->last_serial = serial;
-  seat->keyboard_focus = impl;
 
-  if (impl == NULL)
+  /* D12: the family root holds the GDK focus */
+  root = impl != NULL ? _gdk_wayland_popup_family_root (impl) : NULL;
+  if (root == NULL)
+    root = impl;
+
+  prev_focus = seat->keyboard_focus;
+  seat->keyboard_focus = root;
+
+  if (root == NULL)
     return;
 
-  event = new_event (wd, GDK_FOCUS_CHANGE, impl);
+  /* an out for this very family is still pending: focus never left */
+  pending = kbd_pending_get (wd, FALSE);
+  if (pending != NULL && pending->source != 0 && pending->impl == root)
+    {
+      kbd_pending_cancel (wd);
+      return;
+    }
+
+  /* an out for another window goes out now, ahead of the new in */
+  if (pending != NULL && pending->source != 0)
+    {
+      GDKWWindowImplWayland *old = pending->impl;
+
+      kbd_pending_cancel (wd);
+      if (old != NULL && g_slist_find (wd->windows, old) != NULL)
+	{
+	  event = new_event (wd, GDK_FOCUS_CHANGE, old);
+	  if (event != NULL)
+	    {
+	      event->focus_change.in = FALSE;
+	      queue_event (GDK_DISPLAY_OBJECT (wd), event);
+	    }
+	}
+    }
+
+  /* entering a popup of a family that already holds the focus */
+  if (impl != root && prev_focus == root)
+    return;
+
+  event = new_event (wd, GDK_FOCUS_CHANGE, root);
   if (event == NULL)
     return;
 
@@ -698,11 +826,20 @@ wl_keyboard_leave (void *data,
   GDKWDisplayWayland *wd = data;
   GDKWSeat *seat = _gdk_wayland_display_get_seat (GDK_DISPLAY_OBJECT (wd));
   GDKWWindowImplWayland *impl = _gdk_wayland_impl_from_surface (wd, surface);
+  GDKWWindowImplWayland *root = NULL;
+  gboolean defer = FALSE;
   struct xkb_state *state;
   GdkEvent *event;
 
   if (impl == NULL)
     impl = seat->keyboard_focus;
+
+  /* D12: leaving a surface of a family with live popups is deferred */
+  if (impl != NULL && _gdk_wayland_popup_family_active (impl))
+    {
+      root = _gdk_wayland_popup_family_root (impl);
+      defer = (root != NULL);
+    }
 
   seat->last_serial = serial;
   _gdk_wayland_seat_repeat_cancel (seat);
@@ -714,6 +851,26 @@ wl_keyboard_leave (void *data,
   state = wd->keymap ? _gdk_wayland_keymap_get_xkb_state (wd->keymap) : NULL;
   if (state)
     xkb_state_update_mask (state, 0, 0, 0, 0, 0, 0);
+
+  if (defer)
+    {
+      KbdPending *pending = kbd_pending_get (wd, TRUE);
+
+      /* an older pending out of another window goes out first */
+      if (pending->source != 0 && pending->impl != root)
+	{
+	  g_source_remove (pending->source);
+	  pending->source = 0;
+	  kbd_pending_send (pending);
+	}
+      if (pending->source == 0)
+	{
+	  pending->impl = root;
+	  pending->source = g_idle_add_full (G_PRIORITY_HIGH, kbd_pending_cb,
+					     pending, NULL);
+	}
+      return;
+    }
 
   if (impl == NULL)
     return;
@@ -854,8 +1011,9 @@ queue_crossing (GDKWDisplayWayland *wd, GdkEventType type,
   event->crossing.time = seat_time (seat);
   event->crossing.x = seat->px;
   event->crossing.y = seat->py;
-  event->crossing.x_root = seat->px;
-  event->crossing.y_root = seat->py;
+  _gdk_wayland_event_root_coords (impl, seat->px, seat->py,
+				  &event->crossing.x_root,
+				  &event->crossing.y_root);
   event->crossing.mode = GDK_CROSSING_NORMAL;
   event->crossing.detail = GDK_NOTIFY_NONLINEAR;
   event->crossing.focus = (seat->keyboard_focus == impl);
@@ -992,8 +1150,9 @@ wl_pointer_motion (void *data,
   event->motion.time = time;
   event->motion.x = seat->px;
   event->motion.y = seat->py;
-  event->motion.x_root = seat->px;
-  event->motion.y_root = seat->py;
+  _gdk_wayland_event_root_coords (seat->pointer_focus, seat->px, seat->py,
+				  &event->motion.x_root,
+				  &event->motion.y_root);
   event->motion.state = _gdk_wayland_seat_get_state (seat);
   event->motion.is_hint = FALSE;
   event->motion.device = seat->core_pointer;
@@ -1063,8 +1222,9 @@ wl_pointer_button (void *data,
   event->button.time = time;
   event->button.x = seat->px;
   event->button.y = seat->py;
-  event->button.x_root = seat->px;
-  event->button.y_root = seat->py;
+  _gdk_wayland_event_root_coords (seat->pointer_focus, seat->px, seat->py,
+				  &event->button.x_root,
+				  &event->button.y_root);
   event->button.state = state_before;
   event->button.button = gdk_button;
   event->button.device = seat->core_pointer;
@@ -1092,8 +1252,9 @@ emit_scroll (GDKWDisplayWayland *wd, GdkScrollDirection direction,
   event->scroll.time = time;
   event->scroll.x = seat->px;
   event->scroll.y = seat->py;
-  event->scroll.x_root = seat->px;
-  event->scroll.y_root = seat->py;
+  _gdk_wayland_event_root_coords (seat->pointer_focus, seat->px, seat->py,
+				  &event->scroll.x_root,
+				  &event->scroll.y_root);
   event->scroll.state = _gdk_wayland_seat_get_state (seat);
   event->scroll.direction = direction;
   event->scroll.device = seat->core_pointer;
@@ -1318,8 +1479,34 @@ release_keyboard (GDKWDisplayWayland *wd)
     }
 
   _gdk_wayland_seat_repeat_cancel (seat);
+  kbd_pending_cancel (wd);
   seat->keyboard_focus = NULL;
   seat->modifier_mask = 0;
+}
+
+/* M9 (I10b).  The popup piece calls this whenever it releases the role of an
+ * impl that stays alive: the compositor will not send the pointer leave or
+ * keyboard leave for a destroyed surface, so the seat stops pointing at it
+ * and the LEAVE is synthesized here. */
+void
+_gdk_wayland_seat_surface_gone (GDKWDisplayWayland *wd,
+				GDKWWindowImplWayland *impl)
+{
+  GDKWSeat *seat;
+
+  if (wd == NULL || impl == NULL)
+    return;
+
+  seat = _gdk_wayland_display_get_seat (GDK_DISPLAY_OBJECT (wd));
+
+  if (seat->pointer_focus == impl)
+    pointer_focus_lost (wd);
+
+  if (seat->keyboard_focus == impl)
+    {
+      seat->keyboard_focus = NULL;
+      _gdk_wayland_seat_repeat_cancel (seat);
+    }
 }
 
 static void

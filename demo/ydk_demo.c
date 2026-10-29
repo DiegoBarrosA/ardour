@@ -9,13 +9,13 @@
  * exits.  Exit codes are meaningful to the harness:
  *
  *   0  window created and drawn (X11 baseline and Wayland since M2); under
- *      GDK_BACKEND=wayland also every M4, M5, M5C, M5V, M6, M6B, M7 and M8 check
+ *      GDK_BACKEND=wayland also every M4, M5, M5C, M5V, M6, M6B, M7, M8 and M9 check
  *      passed (see m4_exercise, m5_exercise, m5c_exercise, m5v_exercise,
- *      m6_exercise, m6b_exercise, m7_exercise, m8_exercise); under GDK_BACKEND=x11 the dispatched M6b
+ *      m6_exercise, m6b_exercise, m7_exercise, m8_exercise, m9_exercise); under GDK_BACKEND=x11 the dispatched M6b
  *      functions are checked to still reach X11 (m6b_x11_exercise)
  *   77 skipped: backend has no window support yet
  *   78 skipped: display opened but primary screen unavailable
- *   1  nothing worked (display open failed), an M4 / M5 / M5C / M5V / M6 / M6B / M7 / M8 check
+ *   1  nothing worked (display open failed), an M4 / M5 / M5C / M5V / M6 / M6B / M7 / M8 / M9 check
  *      failed, or a g_critical / g_error was logged (see fatal_log_handler)
  */
 
@@ -24,6 +24,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <sys/types.h>
+#include <fcntl.h>
 #include <sys/wait.h>
 
 #include <glib.h>
@@ -34,6 +35,7 @@
 #include <ydk/gdkseat-wayland.h>
 #include <ydk/gdkm7-wayland.h>
 #include <ydk/gdkm8-wayland.h>
+#include <ydk/gdkm9-wayland.h>
 
 #define WINDOW_WIDTH  640
 #define WINDOW_HEIGHT 480
@@ -5747,6 +5749,23 @@ m8_temp (void)
   return gdk_window_new (gdk_get_default_root_window (), &attr, 0);
 }
 
+/* Open file descriptors of this process.  The directory handle used for the
+ * count is open in both of two counts, so only differences matter. */
+static gint
+m8_open_fds (void)
+{
+  GDir *dir = g_dir_open ("/proc/self/fd", 0, NULL);
+  gint n = 0;
+
+  if (dir == NULL)
+    return -1;
+  while (g_dir_read_name (dir) != NULL)
+    n++;
+  g_dir_close (dir);
+
+  return n;
+}
+
 static GDKWTestDDInfo
 m8_dd (void)
 {
@@ -6191,6 +6210,7 @@ m8_offer_targets_and_paste (GdkAtom sel, GDKWSelKind kind, const gchar *tag)
   const guint8 uri[] = "file:///tmp/a\r\nfile:///tmp/b\r\n";
   gchar what[160];
   guint reads0;
+  gint fds0;
 
   base = m8_dd ();
   reads0 = base.receive_count;
@@ -6217,6 +6237,7 @@ m8_offer_targets_and_paste (GdkAtom sel, GDKWSelKind kind, const gchar *tag)
   m8_paste_free (&p);
 
   /* S3: 100 KB crosses the 64 KiB pipe */
+  fds0 = m8_open_fds ();
   M8_HOOK (_gdk_wayland_test_dd_offer_data (m8_d, id, "text/plain;charset=utf-8",
 					    m8_big, m8_big_len, GDKW_TEST_FEED_NORMAL),
 	   "offer: offer_data");
@@ -6227,6 +6248,8 @@ m8_offer_targets_and_paste (GdkAtom sel, GDKWSelKind kind, const gchar *tag)
   M8_CHECK (p.type == M8_ATOM ("UTF8_STRING") && p.format == 8,
 	    "offer: type UTF8_STRING");
   m8_paste_free (&p);
+  g_snprintf (what, sizeof what, "%s: S3 leaves no file descriptor open", tag);
+  M8_EQ_INT (m8_open_fds (), fds0, what);
   info = m8_dd ();
   M8_EQ_INT (info.receive_count, 1, "offer: one receive");
   M8_CHECK (strcmp (info.receive_mime, "text/plain;charset=utf-8") == 0,
@@ -6431,6 +6454,7 @@ m8_serving (void)
   GdkEvent *ev;
   gchar *name;
   GDKWTestDDInfo info;
+  gint fds0;
 
   /* UTF8_STRING owner, 100 KB */
   m8_resp_reset ();
@@ -6443,10 +6467,12 @@ m8_serving (void)
   m8_drain ();
   m8_clear ();
 
+  fds0 = m8_open_fds ();
   M8_CHECK (m8_serve (GDKW_SEL_CLIPBOARD, "text/plain;charset=utf-8", &out, &len) &&
 	    len == m8_big_len && memcmp (out, m8_big, len) == 0,
 	    "serve: text/plain;charset=utf-8 from UTF8_STRING, 100 KB");
   g_free (out);
+  M8_EQ_INT (m8_open_fds (), fds0, "serve: S5 leaves no file descriptor open");
   ev = m8_find_req (m8_A, M8_ATOM ("UTF8_STRING"));
   M8_CHECK (ev != NULL && ev->selection.requestor != 0 &&
 	    ev->selection.selection == M8_CLIP, "serve: SELECTION_REQUEST on the owner");
@@ -6966,6 +6992,7 @@ m8_dest_cycle (gint variant)
   guint32 serial = 0;
   gint px = 0, py = 0;
   gchar what[96];
+  gint fds0 = 0;
 
   g_snprintf (what, sizeof what, "dest[%d]", variant);
   gdk_window_get_position (m8_A, &px, &py);
@@ -7059,11 +7086,13 @@ m8_dest_cycle (gint variant)
       M8_HOOK (_gdk_wayland_test_dd_offer_data (m8_d, id, "text/plain;charset=utf-8",
 						m8_big, cut, GDKW_TEST_FEED_NORMAL),
 	       "D6: offer_data");
+      fds0 = m8_open_fds ();
       _gdk_wayland_test_dd_reset_requests (m8_d);
       M8_CHECK (gdk_drag_get_selection (ctx) == M8_XDND, "D6: destination get_selection");
       m8_paste (m8_A, gdk_drag_get_selection (ctx), "UTF8_STRING", 5000, &p);
       M8_CHECK (m8_paste_is (&p, m8_big, cut), "D6: data over XdndSelection");
       m8_paste_free (&p);
+      M8_EQ_INT (m8_open_fds (), fds0, "D6: leaves no file descriptor open");
       M8_EQ_INT (m8_dd ().receive_kind, GDKW_SEL_DND, "D6: receive kind DND");
       m8_paste (m8_A, M8_XDND, "DELETE", 5000, &p);
       M8_CHECK (p.notified && p.property != GDK_NONE, "D6: DELETE answered as success");
@@ -7245,6 +7274,77 @@ m8_gauges_zero (const gchar *when)
   M8_EQ_INT (info.pending_writes, 0, what);
 }
 
+/* ---- EPIPE: the reader goes away in the middle of a write ---------------- */
+
+typedef struct
+{
+  gboolean called;
+  gboolean ok;
+} M8WriteState;
+
+static void
+m8_write_done_cb (gboolean ok, gpointer data)
+{
+  M8WriteState *st = data;
+
+  st->called = TRUE;
+  st->ok = ok;
+}
+
+/* exported by libydk, declared only in the internal section of gdkm8-wayland.h */
+extern void *_gdk_wayland_dd_write_async (int fd, GBytes *bytes, guint timeout_ms,
+					  void (*done) (gboolean ok, gpointer user_data),
+					  gpointer user_data);
+
+static void
+m8_epipe (void)
+{
+  M8WriteState st = { FALSE, TRUE };
+  GBytes *bytes;
+  int fds[2];
+  gint fds0;
+  guint writes0;
+  gint64 end;
+
+  M8_CHECK (m8_big != NULL && m8_big_len > 65536,
+	    "EPIPE: the payload is larger than a pipe buffer");
+  if (m8_big == NULL || m8_big_len <= 65536)
+    return;
+
+  writes0 = m8_dd ().pending_writes;
+  fds0 = m8_open_fds ();
+  M8_CHECK (pipe (fds) == 0, "EPIPE: pipe");
+  fcntl (fds[0], F_SETFD, FD_CLOEXEC);
+  fcntl (fds[1], F_SETFD, FD_CLOEXEC);
+
+  bytes = g_bytes_new (m8_big, m8_big_len);
+  /* a long idle timeout: the failure must come from the EPIPE, not from it */
+  _gdk_wayland_dd_write_async (fds[1], bytes, 30000, m8_write_done_cb, &st);
+  g_bytes_unref (bytes);
+
+  /* the first 64 KiB fit in the pipe, the rest waits for a reader */
+  m8_run_ms (100);
+  M8_CHECK (!st.called, "EPIPE: the write is still pending");
+  M8_EQ_INT (m8_dd ().pending_writes, writes0 + 1, "EPIPE: one write in flight");
+
+  /* the reader closes its end: the next write gets EPIPE (SIGPIPE is ignored) */
+  close (fds[0]);
+  end = g_get_monotonic_time () + 1500000;
+  while (!st.called && g_get_monotonic_time () < end)
+    {
+      g_main_context_iteration (NULL, FALSE);
+      g_usleep (500);
+    }
+
+  M8_CHECK (st.called, "EPIPE: the done callback ran");
+  M8_CHECK (!st.ok, "EPIPE: the done callback got FALSE");
+  M8_EQ_INT (m8_dd ().pending_writes, writes0, "EPIPE: pending_writes is back");
+  M8_EQ_INT (m8_open_fds (), fds0, "EPIPE: the write end was closed, no fd left");
+  /* still here: the process survived the broken pipe */
+  M8_CHECK (TRUE, "EPIPE: the process survived");
+}
+
+
 static int
 m8_exercise (void)
 {
@@ -7312,6 +7412,7 @@ m8_exercise (void)
       m8_selection_all (TRUE);
       m8_drag_source ();
       m8_drag_dest ();
+      m8_epipe ();
 
       /* D12 teardown */
       m8_drain ();
@@ -7359,6 +7460,1483 @@ m8_exercise (void)
 
   return m8_failures;
 }
+
+/* ---- M9 -----------------------------------------------------------------
+ *
+ * Popups (xdg_popup), input-only windows, reparenting.  The contract and the
+ * test list (T1 to T21) are in ydk/wayland/ydk/gdkm9-wayland.h.  "Real"
+ * means the assertion follows a gdk_flush () round trip with the headless
+ * weston; "hook" means an injection through the real listener functions.
+ * The headless weston has no wl_seat, so xdg_popup.grab is RECORDED by the
+ * virtual seat hook instead of sent.  Same style as M6: every check runs,
+ * failures are counted, CRITICAL stays fatal.
+ */
+
+static int m9_failures;
+static int m9_checks;
+
+#define M9_CHECK(cond, what)						\
+  G_STMT_START {							\
+    m9_checks++;							\
+    if (!(cond))							\
+      {									\
+	g_printerr ("ydk_demo: M9 check failed: %s\n", what);		\
+	m9_failures++;							\
+      }									\
+  } G_STMT_END
+
+#define M9_EQ_INT(got, want, what)					\
+  G_STMT_START {							\
+    long g_ = (long) (got), w_ = (long) (want);				\
+    m9_checks++;							\
+    if (g_ != w_)							\
+      {									\
+	g_printerr ("ydk_demo: M9 check failed: %s: got %ld want %ld\n", \
+		    what, g_, w_);					\
+	m9_failures++;							\
+      }									\
+  } G_STMT_END
+
+#define M9_HOOK(call, what)						\
+  G_STMT_START {							\
+    m9_checks++;							\
+    if (!(call))							\
+      {									\
+	g_printerr ("ydk_demo: M9 check failed: %s: hook refused\n", what); \
+	m9_failures++;							\
+      }									\
+  } G_STMT_END
+
+#define M9_BTN_LEFT 0x110
+
+static GdkDisplay *m9_d;
+static guint32 m9_time = 700000;
+static GDKWTestObjectCounts m9_base;
+
+static const GdkEventMask m9_grab_mask = GDK_BUTTON_PRESS_MASK |
+  GDK_BUTTON_RELEASE_MASK | GDK_POINTER_MOTION_MASK;
+
+static guint32
+m9_tick (void)
+{
+  m9_time += 100;
+  return m9_time;
+}
+
+/* round trip with the compositor, then deliver what arrived */
+static void
+m9_sync (void)
+{
+  gdk_flush ();
+  m6_drain ();
+}
+
+static GDKWTestRoleInfo
+m9_ri (GdkWindow *w)
+{
+  GDKWTestRoleInfo i;
+
+  memset (&i, 0, sizeof i);
+  M9_HOOK (_gdk_wayland_test_role_info (w, &i), "role_info");
+  return i;
+}
+
+static GDKWTestPopupInfo
+m9_pi (GdkWindow *w)
+{
+  GDKWTestPopupInfo i;
+
+  memset (&i, 0, sizeof i);
+  M9_HOOK (_gdk_wayland_test_popup_info (w, &i), "popup_info");
+  return i;
+}
+
+static GDKWTestObjectCounts
+m9_oc (void)
+{
+  GDKWTestObjectCounts c;
+
+  memset (&c, 0, sizeof c);
+  M9_HOOK (_gdk_wayland_test_object_counts (m9_d, &c), "object_counts");
+  return c;
+}
+
+/* every protocol object count is back to @base, nothing is pending */
+static void
+m9_counts_are (const GDKWTestObjectCounts *base, const char *what)
+{
+  GDKWTestObjectCounts c = m9_oc ();
+  char msg[160];
+
+#define M9_COUNT(field)							\
+  g_snprintf (msg, sizeof msg, "%s: " #field, what);			\
+  M9_EQ_INT (c.field, base->field, msg)
+  M9_COUNT (wl_surfaces);
+  M9_COUNT (xdg_surfaces);
+  M9_COUNT (xdg_toplevels);
+  M9_COUNT (xdg_popups);
+  M9_COUNT (popups_pending);
+  M9_COUNT (popup_stack);
+  M9_COUNT (registered_windows);
+#undef M9_COUNT
+  g_snprintf (msg, sizeof msg, "%s: positioners created == destroyed", what);
+  M9_EQ_INT (c.positioners_created, c.positioners_destroyed, msg);
+  g_snprintf (msg, sizeof msg, "%s: no commit idle armed", what);
+  M9_EQ_INT (c.commit_sources, 0, msg);
+}
+
+/* index of the first recorded event of @type on @w (NULL = any), -1 none */
+static int
+m9_pos (GdkEventType type, GdkWindow *w)
+{
+  GList *l;
+  int i = 0;
+
+  for (l = m6_events.head; l; l = l->next, i++)
+    {
+      GdkEvent *ev = l->data;
+
+      if (ev->type == type && (w == NULL || ev->any.window == w))
+	return i;
+    }
+
+  return -1;
+}
+
+/* n-th (from 0) recorded event of @type on @w */
+static GdkEvent *
+m9_nth (GdkEventType type, GdkWindow *w, int n)
+{
+  GList *l;
+
+  for (l = m6_events.head; l; l = l->next)
+    {
+      GdkEvent *ev = l->data;
+
+      if (ev->type == type && (w == NULL || ev->any.window == w) && n-- == 0)
+	return ev;
+    }
+
+  return NULL;
+}
+
+/* a TEMP window as GtkMenu and GtkTooltip make them */
+static GdkWindow *
+m9_menu (GdkWindow *transient, gint x, gint y, gint w, gint h,
+	 GdkWindowTypeHint hint)
+{
+  GdkWindowAttr attr;
+  GdkWindow *win;
+
+  memset (&attr, 0, sizeof attr);
+  attr.window_type = GDK_WINDOW_TEMP;
+  attr.wclass = GDK_INPUT_OUTPUT;
+  attr.x = x;
+  attr.y = y;
+  attr.width = w;
+  attr.height = h;
+  attr.override_redirect = TRUE;
+  attr.event_mask = GDK_STRUCTURE_MASK | GDK_EXPOSURE_MASK |
+    GDK_ENTER_NOTIFY_MASK | GDK_LEAVE_NOTIFY_MASK | GDK_POINTER_MOTION_MASK |
+    GDK_BUTTON_PRESS_MASK | GDK_BUTTON_RELEASE_MASK;
+  win = gdk_window_new (gdk_get_default_root_window (), &attr,
+			GDK_WA_X | GDK_WA_Y | GDK_WA_NOREDIR);
+  M9_CHECK (win != NULL, "popup window created");
+  if (win == NULL)
+    return NULL;
+  gdk_window_set_type_hint (win, hint);
+  if (transient != NULL)
+    gdk_window_set_transient_for (win, transient);
+
+  return win;
+}
+
+/* a client side child, input-output or input-only */
+static GdkWindow *
+m9_child (GdkWindow *parent, gint x, gint y, gint w, gint h,
+	  gboolean input_only, GdkEventMask mask)
+{
+  GdkWindowAttr attr;
+  GdkWindow *win;
+
+  memset (&attr, 0, sizeof attr);
+  attr.window_type = GDK_WINDOW_CHILD;
+  attr.wclass = input_only ? GDK_INPUT_ONLY : GDK_INPUT_OUTPUT;
+  attr.x = x;
+  attr.y = y;
+  attr.width = w;
+  attr.height = h;
+  attr.event_mask = mask;
+  win = gdk_window_new (parent, &attr, GDK_WA_X | GDK_WA_Y);
+  M9_CHECK (win != NULL, "child window created");
+
+  return win;
+}
+
+/* the GtkMenu grab transfer window: TEMP, input-only, override redirect,
+ * 10x10 at (-100, -100) */
+static GdkWindow *
+m9_transfer (void)
+{
+  GdkWindowAttr attr;
+  GdkWindow *win;
+
+  memset (&attr, 0, sizeof attr);
+  attr.window_type = GDK_WINDOW_TEMP;
+  attr.wclass = GDK_INPUT_ONLY;
+  attr.x = -100;
+  attr.y = -100;
+  attr.width = 10;
+  attr.height = 10;
+  attr.override_redirect = TRUE;
+  attr.event_mask = GDK_BUTTON_PRESS_MASK | GDK_BUTTON_RELEASE_MASK |
+    GDK_POINTER_MOTION_MASK | GDK_KEY_PRESS_MASK;
+  win = gdk_window_new (gdk_get_default_root_window (), &attr,
+			GDK_WA_X | GDK_WA_Y | GDK_WA_NOREDIR);
+  M9_CHECK (win != NULL, "transfer window created");
+
+  return win;
+}
+
+/* pointer and keyboard grab on @w, both expected to succeed */
+static void
+m9_grab (GdkWindow *w, const char *what)
+{
+  char msg[120];
+
+  g_snprintf (msg, sizeof msg, "%s: pointer grab", what);
+  M9_EQ_INT (gdk_pointer_grab (w, FALSE, m9_grab_mask, NULL, NULL,
+			       GDK_CURRENT_TIME), GDK_GRAB_SUCCESS, msg);
+  g_snprintf (msg, sizeof msg, "%s: keyboard grab", what);
+  M9_EQ_INT (gdk_keyboard_grab (w, FALSE, GDK_CURRENT_TIME),
+	     GDK_GRAB_SUCCESS, msg);
+}
+
+static void
+m9_ungrab (void)
+{
+  gdk_pointer_ungrab (GDK_CURRENT_TIME);
+  gdk_keyboard_ungrab (GDK_CURRENT_TIME);
+  m6_drain ();
+}
+
+static gboolean
+m9_keyboard_grabbed (void)
+{
+  GdkWindow *gw = NULL;
+  gboolean oe = FALSE;
+
+  return gdk_keyboard_grab_info_libgtk_only (m9_d, &gw, &oe);
+}
+
+/* destroy @w (a no-op for NULL) and settle */
+static void
+m9_destroy (GdkWindow *w)
+{
+  if (w != NULL)
+    gdk_window_destroy (w);
+}
+
+/* the press and release the grab policy takes its serial from */
+static guint32
+m9_press (void)
+{
+  guint32 bs = 0, ks = 0, ls = 0;
+
+  M9_HOOK (_gdk_wayland_test_pointer_button (m9_d, m9_tick (), M9_BTN_LEFT, TRUE),
+	   "serial press");
+  M9_HOOK (_gdk_wayland_test_pointer_button (m9_d, m9_tick (), M9_BTN_LEFT, FALSE),
+	   "serial release");
+  m6_drain ();
+  M9_HOOK (_gdk_wayland_test_seat_serials (m9_d, &bs, &ks, &ls), "seat serials");
+  M9_CHECK (bs != 0, "the press produced a serial");
+
+  return bs;
+}
+
+/* ---- T19, T1 to T3, T10 ------------------------------------------------- */
+
+static void
+m9_version (void)
+{
+  GDKWTestObjectCounts c = m9_oc ();
+
+  M9_CHECK (c.xdg_wm_base_version >= 3, "T19: xdg_wm_base bound at 3 or more");
+  M9_CHECK (c.xdg_wm_base_version <= 3, "T19: never more than MIN (advertised, 3)");
+}
+
+static void
+m9_chain (void)
+{
+  GdkWindow *first, *second, *c1, *c2, *stack[8];
+  GDKWTestRoleInfo ri;
+  GDKWTestPopupInfo pi, p2;
+  GdkEvent *ev;
+  guint acked, n;
+  gint x, y;
+
+  /* T1: a popup at root (50, 60) under main */
+  first = m9_menu (main_window, 50, 60, 80, 40, GDK_WINDOW_TYPE_HINT_POPUP_MENU);
+  c1 = m9_child (first, 3, 4, 20, 20, FALSE, GDK_EXPOSURE_MASK);
+  if (first == NULL || c1 == NULL)
+    return;
+  gdk_window_show (first);
+  gdk_window_show (c1);
+  ri = m9_ri (first);
+  M9_EQ_INT (ri.role, GDKW_TEST_ROLE_NONE, "T1: no role before the flush");
+  M9_CHECK (ri.has_wl_surface, "T1: the wl_surface exists at show");
+  M9_CHECK (!ri.has_xdg_popup, "T1: no xdg_popup before the flush");
+  pi = m9_pi (first);
+  M9_EQ_INT (pi.state, GDKW_TEST_POPUP_PENDING, "T1: PENDING before the flush");
+
+  m6_clear ();
+  m9_sync ();
+  ri = m9_ri (first);
+  M9_EQ_INT (ri.role, GDKW_TEST_ROLE_POPUP, "T1: role POPUP after the flush");
+  M9_CHECK (ri.has_xdg_popup && ri.has_xdg_surface && !ri.has_xdg_toplevel,
+	    "T1: xdg_popup and xdg_surface, no xdg_toplevel");
+  pi = m9_pi (first);
+  M9_CHECK (pi.parent == main_window, "T1: parent is main");
+  M9_EQ_INT (pi.depth, 0, "T1: depth 0");
+  M9_EQ_INT (pi.pos_width, 80, "T1: positioner width");
+  M9_EQ_INT (pi.pos_height, 40, "T1: positioner height");
+  M9_EQ_INT (pi.anchor_x, 50, "T1: anchor rect x");
+  M9_EQ_INT (pi.anchor_y, 60, "T1: anchor rect y");
+  M9_EQ_INT (pi.anchor_w, 1, "T1: anchor rect w");
+  M9_EQ_INT (pi.anchor_h, 1, "T1: anchor rect h");
+  M9_EQ_INT (pi.anchor, GDKW_TEST_ANCHOR_TOP_LEFT, "T1: anchor TOP_LEFT");
+  M9_EQ_INT (pi.gravity, GDKW_TEST_GRAVITY_BOTTOM_RIGHT, "T1: gravity BOTTOM_RIGHT");
+  M9_EQ_INT (pi.offset_x, 0, "T1: offset x");
+  M9_EQ_INT (pi.offset_y, 0, "T1: offset y");
+  M9_EQ_INT (pi.constraint_adjustment,
+	     GDKW_TEST_CONSTRAINT_SLIDE_X | GDKW_TEST_CONSTRAINT_SLIDE_Y,
+	     "T1: constraint SLIDE_X | SLIDE_Y");
+  M9_EQ_INT (pi.get_popup_requests, 1, "T1: one get_popup");
+  M9_EQ_INT (pi.conf_x, 50, "T1: weston configure x");
+  M9_EQ_INT (pi.conf_y, 60, "T1: weston configure y");
+  M9_EQ_INT (pi.conf_w, 80, "T1: weston configure width");
+  M9_EQ_INT (pi.conf_h, 40, "T1: weston configure height");
+  M9_EQ_INT (pi.state, GDKW_TEST_POPUP_MAPPED, "T1: MAPPED");
+  M9_EQ_INT (pi.root_x, 50, "T1: root x");
+  M9_EQ_INT (pi.root_y, 60, "T1: root y");
+  M9_CHECK (pi.acked_configures >= 1, "T1: the configure was acked");
+  M9_EQ_INT (m6_count (GDK_CONFIGURE, first), 0, "T1: no GDK_CONFIGURE");
+  gdk_window_get_origin (first, &x, &y);
+  M9_EQ_INT (x, 50, "T1: origin x");
+  M9_EQ_INT (y, 60, "T1: origin y");
+  gdk_window_get_origin (c1, &x, &y);
+  M9_EQ_INT (x, 53, "T1: child origin x");
+  M9_EQ_INT (y, 64, "T1: child origin y");
+
+  /* T2: a submenu at root (130, 70) hangs from the first popup */
+  second = m9_menu (first, 130, 70, 60, 30, GDK_WINDOW_TYPE_HINT_POPUP_MENU);
+  c2 = m9_child (second, 1, 1, 10, 10, FALSE, GDK_EXPOSURE_MASK);
+  gdk_window_show (second);
+  gdk_window_show (c2);
+  m9_sync ();
+  p2 = m9_pi (second);
+  M9_CHECK (p2.parent == first, "T2: parent is the first popup");
+  M9_EQ_INT (p2.depth, 1, "T2: depth 1");
+  M9_EQ_INT (p2.anchor_x, 80, "T2: anchor rect x");
+  M9_EQ_INT (p2.anchor_y, 10, "T2: anchor rect y");
+  M9_EQ_INT (p2.conf_x, 80, "T2: weston configure x");
+  M9_EQ_INT (p2.conf_y, 10, "T2: weston configure y");
+  M9_EQ_INT (p2.conf_w, 60, "T2: weston configure width");
+  M9_EQ_INT (p2.conf_h, 30, "T2: weston configure height");
+  M9_EQ_INT (p2.root_x, 130, "T2: root x");
+  M9_EQ_INT (p2.root_y, 70, "T2: root y");
+  memset (stack, 0, sizeof stack);
+  n = _gdk_wayland_test_popup_stack (m9_d, stack, 8);
+  M9_EQ_INT (n, 2, "T2: two committed popups");
+  M9_CHECK (stack[0] == first && stack[1] == second, "T2: stack order");
+
+  /* T3: the compositor moves the first popup (hook through the listener) */
+  pi = m9_pi (first);
+  acked = pi.acked_configures;
+  m6_clear ();
+  M9_HOOK (_gdk_wayland_test_popup_configure (first, 40, 55, 80, 40),
+	   "T3: configure");
+  m6_drain ();
+  gdk_window_get_position (first, &x, &y);
+  M9_EQ_INT (x, 40, "T3: private x");
+  M9_EQ_INT (y, 55, "T3: private y");
+  M9_EQ_INT (m6_count (GDK_CONFIGURE, first), 1, "T3: one GDK_CONFIGURE");
+  ev = m6_find (GDK_CONFIGURE, first);
+  if (ev != NULL)
+    {
+      M9_EQ_INT (ev->configure.x, 40, "T3: event x");
+      M9_EQ_INT (ev->configure.y, 55, "T3: event y");
+      M9_EQ_INT (ev->configure.width, 80, "T3: event width");
+      M9_EQ_INT (ev->configure.height, 40, "T3: event height");
+    }
+  gdk_window_get_position (second, &x, &y);
+  M9_EQ_INT (x, 120, "T3: submenu follows, x");
+  M9_EQ_INT (y, 65, "T3: submenu follows, y");
+  M9_EQ_INT (m6_count (GDK_CONFIGURE, second), 1, "T3: submenu CONFIGURE");
+  ev = m6_find (GDK_CONFIGURE, second);
+  if (ev != NULL)
+    {
+      M9_EQ_INT (ev->configure.x, 120, "T3: submenu event x");
+      M9_EQ_INT (ev->configure.y, 65, "T3: submenu event y");
+    }
+  M9_HOOK (_gdk_wayland_test_popup_configure (first, 40, 55, 90, 40),
+	   "T3: wider configure");
+  m6_drain ();
+  M9_EQ_INT (gdk_window_get_width (first), 90, "T3: width follows the configure");
+  m6_clear ();
+  M9_HOOK (_gdk_wayland_test_popup_configure (first, 40, 55, 90, 40),
+	   "T3: identical configure");
+  m6_drain ();
+  M9_EQ_INT (m6_count (GDK_CONFIGURE, NULL), 0,
+	     "T3: an identical configure sends no GDK_CONFIGURE");
+  pi = m9_pi (first);
+  M9_EQ_INT (pi.acked_configures, acked, "T3: injected configures send no ack");
+
+  /* T10: reposition (real) */
+  pi = m9_pi (first);
+  M9_EQ_INT (pi.reposition_requests, 0, "T10: no reposition so far");
+  gdk_window_move_resize (first, 60, 70, 90, 50);
+  pi = m9_pi (first);
+  M9_EQ_INT (pi.reposition_requests, 1, "T10: one reposition request");
+  M9_EQ_INT (pi.reposition_token, 1, "T10: token 1");
+  M9_EQ_INT (pi.anchor_x, 60, "T10: anchor rect x");
+  M9_EQ_INT (pi.anchor_y, 70, "T10: anchor rect y");
+  M9_EQ_INT (pi.pos_width, 90, "T10: positioner width");
+  M9_EQ_INT (pi.pos_height, 50, "T10: positioner height");
+  m9_sync ();
+  pi = m9_pi (first);
+  M9_EQ_INT (pi.repositioned_token, 1, "T10: weston answered repositioned (1)");
+  M9_EQ_INT (gdk_window_get_width (first), 90, "T10: width 90");
+  M9_EQ_INT (gdk_window_get_height (first), 50, "T10: height 50");
+  gdk_window_get_position (first, &x, &y);
+  M9_EQ_INT (x, 60, "T10: x after repositioned");
+  M9_EQ_INT (y, 70, "T10: y after repositioned");
+  M9_EQ_INT (pi.get_popup_requests, 1, "T10: still one get_popup");
+
+  /* T10, old compositor: version 2 has no reposition, the popup is made again */
+  M9_HOOK (_gdk_wayland_test_popup_force_version (m9_d, 2), "T10: force v2");
+  gdk_window_move_resize (first, 70, 80, 90, 50);
+  M9_CHECK (!gdk_window_is_visible (second), "T10 v2: descendants are hidden");
+  m9_sync ();
+  pi = m9_pi (first);
+  M9_EQ_INT (pi.get_popup_requests, 2, "T10 v2: get_popup again");
+  M9_EQ_INT (pi.reposition_requests, 1, "T10 v2: no new reposition");
+  M9_EQ_INT (pi.state, GDKW_TEST_POPUP_MAPPED, "T10 v2: mapped again");
+  gdk_window_get_position (first, &x, &y);
+  M9_EQ_INT (x, 70, "T10 v2: x");
+  M9_EQ_INT (y, 80, "T10 v2: y");
+  M9_HOOK (_gdk_wayland_test_popup_force_version (m9_d, 0), "T10: clear v2");
+
+  /* the children first: gdk_window_destroy () of a parent does not drop the
+   * reference of its children */
+  m9_destroy (c2);
+  m9_destroy (c1);
+  m9_destroy (second);
+  m9_destroy (first);
+  m9_sync ();
+  m9_counts_are (&m9_base, "T1 to T3, T10 cleanup");
+}
+
+/* ---- T4, T5: grabs ------------------------------------------------------ */
+
+static void
+m9_grabs (void)
+{
+  GdkWindow *tw, *menu, *mchild, *tip, *combo, *drop;
+  GDKWTestRoleInfo ri;
+  GDKWTestPopupInfo pi;
+  guint32 serial;
+
+  M9_HOOK (_gdk_wayland_test_popup_virtual_seat (m9_d, TRUE), "T4: virtual seat");
+  M9_HOOK (_gdk_wayland_test_pointer_enter (m9_d, main_window, 300, 300),
+	   "T4: pointer into main");
+  serial = m9_press ();
+
+  /* T4: the order of gtk_menu_popup () */
+  tw = m9_transfer ();
+  if (tw == NULL)
+    return;
+  gdk_window_show (tw);
+  ri = m9_ri (tw);
+  M9_EQ_INT (ri.role, GDKW_TEST_ROLE_NONE, "T4: transfer window has no role");
+  M9_EQ_INT (ri.norole_reason, GDKW_TEST_NOROLE_INPUT_ONLY, "T4: reason INPUT_ONLY");
+  M9_CHECK (!ri.has_wl_surface, "T4: transfer window has no wl_surface");
+  m9_grab (tw, "T4: transfer window");
+
+  menu = m9_menu (main_window, 100, 100, 100, 80, GDK_WINDOW_TYPE_HINT_POPUP_MENU);
+  mchild = m9_child (menu, 0, 0, 50, 50, FALSE, GDK_BUTTON_PRESS_MASK);
+  gdk_window_show (menu);
+  gdk_window_show (mchild);
+  pi = m9_pi (menu);
+  M9_EQ_INT (pi.state, GDKW_TEST_POPUP_PENDING, "T4: menu is PENDING");
+  M9_EQ_INT (gdk_pointer_grab (mchild, FALSE, m9_grab_mask, NULL, NULL,
+			       GDK_CURRENT_TIME),
+	     GDK_GRAB_SUCCESS, "T4: grab on the menu child while PENDING");
+  m9_sync ();
+  pi = m9_pi (menu);
+  M9_CHECK (pi.grab_wanted, "T4: grab wanted");
+  M9_CHECK (pi.grab_sent, "T4: grab sent");
+  M9_CHECK (pi.grab_virtual, "T4: grab recorded on the virtual seat");
+  M9_EQ_INT (pi.grab_serial, serial, "T4: the serial is the press serial");
+  M9_EQ_INT (pi.get_popup_requests, 1, "T4: one get_popup");
+  M9_CHECK (!pi.retried_without_grab, "T4: no retry");
+
+  /* T5: a tooltip never grabs, COMBO and DROPDOWN_MENU do */
+  tip = m9_menu (NULL, 300, 200, 60, 20, GDK_WINDOW_TYPE_HINT_TOOLTIP);
+  gdk_window_show (tip);
+  m9_sync ();
+  pi = m9_pi (tip);
+  M9_CHECK (!pi.grab_wanted, "T5: tooltip does not want a grab");
+  M9_CHECK (!pi.grab_sent, "T5: tooltip sends no grab");
+  M9_CHECK (pi.input_region_empty, "T5: tooltip has an empty input region");
+  M9_CHECK (pi.parent == menu, "T5: tooltip nests on the menu");
+  M9_EQ_INT (pi.depth, 1, "T5: tooltip depth 1");
+
+  /* a grabbing popup does not hang from the tooltip: that would be a
+   * protocol error (the parent of a grab must hold a grab) */
+  combo = m9_menu (NULL, 220, 120, 60, 40, GDK_WINDOW_TYPE_HINT_COMBO);
+  gdk_window_show (combo);
+  m9_sync ();
+  pi = m9_pi (combo);
+  M9_CHECK (pi.grab_wanted && pi.grab_sent && pi.grab_virtual,
+	    "T5: COMBO grabs like POPUP_MENU");
+  M9_CHECK (pi.parent == menu, "T5: COMBO hangs from the grabbing menu, not the tooltip");
+  M9_EQ_INT (pi.grab_serial, serial, "T5: COMBO serial");
+  drop = m9_menu (NULL, 230, 130, 60, 40, GDK_WINDOW_TYPE_HINT_DROPDOWN_MENU);
+  gdk_window_show (drop);
+  m9_sync ();
+  pi = m9_pi (drop);
+  M9_CHECK (pi.grab_wanted && pi.grab_sent && pi.grab_virtual,
+	    "T5: DROPDOWN_MENU grabs like POPUP_MENU");
+  M9_CHECK (pi.parent == combo, "T5: DROPDOWN_MENU hangs from the topmost grabbing popup");
+  pi = m9_pi (tip);
+  M9_EQ_INT (pi.state, GDKW_TEST_POPUP_MAPPED, "T5: the tooltip stays up");
+
+  m9_destroy (drop);
+  m9_destroy (combo);
+  m9_destroy (mchild);
+  m9_destroy (menu);
+  m9_sync ();
+  m9_ungrab ();
+  m9_destroy (tip);
+  m9_destroy (tw);
+  m9_sync ();
+  m9_counts_are (&m9_base, "T4, T5 cleanup");
+}
+
+/* ---- T6, T7, T9, T11: popup_done and dismissal --------------------------- */
+
+static void
+m9_done (void)
+{
+  GdkWindow *tw, *m1, *s1, *tip, *m2;
+  GDKWTestRoleInfo ri;
+  GDKWTestPopupInfo pi;
+  GDKWTestObjectCounts before;
+  GdkEvent *ev;
+  int i_s1, i_m1;
+  gboolean seen_pointer, seen_keyboard;
+  int i;
+
+  /* T6: popup_done on M1 with S1 above it */
+  tw = m9_transfer ();
+  gdk_window_show (tw);
+  m9_grab (tw, "T6");
+  before = m9_oc ();
+  m1 = m9_menu (main_window, 100, 100, 100, 80, GDK_WINDOW_TYPE_HINT_POPUP_MENU);
+  gdk_window_show (m1);
+  m9_sync ();
+  s1 = m9_menu (m1, 200, 110, 80, 60, GDK_WINDOW_TYPE_HINT_POPUP_MENU);
+  gdk_window_show (s1);
+  m9_sync ();
+  pi = m9_pi (s1);
+  M9_CHECK (pi.parent == m1 && pi.depth == 1, "T6: S1 hangs from M1");
+  M9_CHECK (pi.grab_sent, "T6: S1 holds a grab");
+  M9_CHECK (gdk_pointer_is_grabbed (), "T6: pointer grabbed");
+  M9_CHECK (m9_keyboard_grabbed (), "T6: keyboard grabbed");
+  m6_clear ();
+  M9_HOOK (_gdk_wayland_test_popup_done (m1), "T6: popup_done on M1");
+  m6_drain ();
+  i_s1 = m9_pos (GDK_UNMAP, s1);
+  i_m1 = m9_pos (GDK_UNMAP, m1);
+  M9_CHECK (i_s1 >= 0 && i_m1 >= 0, "T6: both got GDK_UNMAP");
+  M9_CHECK (i_s1 < i_m1, "T6: S1 is unmapped before M1");
+  M9_CHECK (!gdk_window_is_visible (s1) && !gdk_window_is_visible (m1),
+	    "T6: both windows are hidden");
+  M9_CHECK (!gdk_pointer_is_grabbed (), "T6: the pointer grab ended");
+  M9_CHECK (!m9_keyboard_grabbed (), "T6: the keyboard grab ended");
+  seen_pointer = seen_keyboard = FALSE;
+  for (i = 0; (ev = m9_nth (GDK_GRAB_BROKEN, NULL, i)) != NULL; i++)
+    {
+      if (ev->grab_broken.keyboard)
+	seen_keyboard = TRUE;
+      else
+	{
+	  seen_pointer = TRUE;
+	  M9_CHECK (ev->grab_broken.grab_window == NULL,
+		    "T6: pointer GRAB_BROKEN has grab_window NULL");
+	}
+    }
+  M9_CHECK (seen_pointer, "T6: pointer GRAB_BROKEN reached the application");
+  M9_CHECK (seen_keyboard, "T6: keyboard GRAB_BROKEN reached the application");
+  /* the pointer one comes before the unmaps: ytk closes the menu from it */
+  {
+    int first_broken = m9_pos (GDK_GRAB_BROKEN, NULL);
+
+    M9_CHECK (first_broken >= 0 && first_broken < i_s1,
+	      "T6: GRAB_BROKEN comes before the UNMAPs");
+  }
+  ri = m9_ri (m1);
+  M9_CHECK (!ri.has_xdg_popup && !ri.has_wl_surface, "T6: M1 released");
+  ri = m9_ri (s1);
+  M9_CHECK (!ri.has_xdg_popup && !ri.has_wl_surface, "T6: S1 released");
+  m9_counts_are (&before, "T6");
+  m9_destroy (s1);
+  m9_destroy (m1);
+  m9_destroy (tw);
+  m9_sync ();
+
+  /* T6b: popup_done on a popup that holds no grab, with a grabbing popup above
+   * it.  The tooltip is the pointer focus, so a menu opened now still must not
+   * hang from it (the parent of a grab holds a grab), and the dismissal of the
+   * chain has to end the GDK grabs even though the popup that got popup_done
+   * never asked for one. */
+  tw = m9_transfer ();
+  gdk_window_show (tw);
+  m9_grab (tw, "T6b");
+  tip = m9_menu (main_window, 300, 300, 50, 20, GDK_WINDOW_TYPE_HINT_TOOLTIP);
+  gdk_window_show (tip);
+  m9_sync ();
+  M9_HOOK (_gdk_wayland_test_pointer_enter (m9_d, tip, 5, 5), "T6b: pointer into the tooltip");
+  m6_drain ();
+  m1 = m9_menu (NULL, 100, 100, 100, 80, GDK_WINDOW_TYPE_HINT_POPUP_MENU);
+  gdk_window_show (m1);
+  m9_sync ();
+  pi = m9_pi (m1);
+  M9_CHECK (pi.parent == main_window, "T6b: the menu hangs from main, not from the tooltip");
+  M9_CHECK (pi.grab_sent, "T6b: the menu holds a grab");
+  m6_clear ();
+  M9_HOOK (_gdk_wayland_test_popup_done (tip), "T6b: popup_done on the tooltip");
+  m6_drain ();
+  M9_CHECK (!gdk_window_is_visible (tip) && !gdk_window_is_visible (m1),
+	    "T6b: the tooltip and the menu above it are hidden");
+  M9_CHECK (!gdk_pointer_is_grabbed (), "T6b: the pointer grab ended");
+  M9_CHECK (!m9_keyboard_grabbed (), "T6b: the keyboard grab ended");
+  M9_CHECK (m6_find (GDK_GRAB_BROKEN, NULL) != NULL, "T6b: GRAB_BROKEN reached the application");
+  m9_destroy (m1);
+  m9_destroy (tip);
+  m9_destroy (tw);
+  m9_sync ();
+  m9_counts_are (&m9_base, "T6b cleanup");
+
+  /* T7: popup_done on the top popup only */
+  tw = m9_transfer ();
+  gdk_window_show (tw);
+  m9_grab (tw, "T7");
+  m1 = m9_menu (main_window, 100, 100, 100, 80, GDK_WINDOW_TYPE_HINT_POPUP_MENU);
+  gdk_window_show (m1);
+  m9_sync ();
+  s1 = m9_menu (m1, 200, 110, 80, 60, GDK_WINDOW_TYPE_HINT_POPUP_MENU);
+  gdk_window_show (s1);
+  m9_sync ();
+  m6_clear ();
+  M9_HOOK (_gdk_wayland_test_popup_done (s1), "T7: popup_done on S1");
+  m6_drain ();
+  M9_CHECK (!gdk_window_is_visible (s1), "T7: S1 hidden");
+  M9_CHECK (m6_count (GDK_UNMAP, s1) == 1, "T7: S1 got GDK_UNMAP");
+  pi = m9_pi (m1);
+  M9_EQ_INT (pi.state, GDKW_TEST_POPUP_MAPPED, "T7: M1 stays MAPPED");
+  M9_CHECK (gdk_window_is_visible (m1), "T7: M1 stays visible");
+  M9_CHECK (gdk_pointer_is_grabbed (), "T7: the pointer grab persists");
+  M9_CHECK (m9_keyboard_grabbed (), "T7: the keyboard grab persists");
+  M9_EQ_INT (m6_count (GDK_GRAB_BROKEN, NULL), 0, "T7: no GRAB_BROKEN");
+  m9_ungrab ();
+  m9_destroy (s1);
+  m9_destroy (m1);
+  m9_destroy (tw);
+  m9_sync ();
+
+  /* T9: a tooltip nests on the open chain, a second menu dismisses it */
+  tw = m9_transfer ();
+  gdk_window_show (tw);
+  m9_grab (tw, "T9");
+  m1 = m9_menu (main_window, 100, 100, 100, 80, GDK_WINDOW_TYPE_HINT_POPUP_MENU);
+  gdk_window_show (m1);
+  m9_sync ();
+  s1 = m9_menu (m1, 200, 110, 80, 60, GDK_WINDOW_TYPE_HINT_POPUP_MENU);
+  gdk_window_show (s1);
+  m9_sync ();
+  tip = m9_menu (NULL, 300, 300, 50, 20, GDK_WINDOW_TYPE_HINT_TOOLTIP);
+  gdk_window_show (tip);
+  m9_sync ();
+  pi = m9_pi (tip);
+  M9_CHECK (pi.parent == s1, "T9: the tooltip hangs from S1");
+  M9_EQ_INT (pi.depth, 2, "T9: the tooltip is at depth 2");
+  M9_EQ_INT (m9_pi (m1).state, GDKW_TEST_POPUP_MAPPED, "T9: M1 stays mapped");
+  M9_EQ_INT (m9_pi (s1).state, GDKW_TEST_POPUP_MAPPED, "T9: S1 stays mapped");
+  m2 = m9_menu (main_window, 400, 100, 80, 60, GDK_WINDOW_TYPE_HINT_POPUP_MENU);
+  gdk_window_show (m2);
+  m6_clear ();
+  m9_sync ();
+  M9_CHECK (!gdk_window_is_visible (m1) && !gdk_window_is_visible (s1) &&
+	    !gdk_window_is_visible (tip),
+	    "T9: a second menu with transient main dismisses the first chain");
+  M9_EQ_INT (m9_pi (m1).state, GDKW_TEST_POPUP_NONE, "T9: M1 has no popup record");
+  pi = m9_pi (m2);
+  M9_CHECK (pi.parent == main_window && pi.depth == 0, "T9: the new menu hangs from main");
+  M9_EQ_INT (pi.state, GDKW_TEST_POPUP_MAPPED, "T9: the new menu is mapped");
+  m9_ungrab ();
+  m9_destroy (m2);
+  m9_destroy (tip);
+  m9_destroy (s1);
+  m9_destroy (m1);
+  m9_destroy (tw);
+  m9_sync ();
+  m9_counts_are (&m9_base, "T6, T7, T9 cleanup");
+
+  /* T11: refused before the first configure: one retry without grab */
+  tw = m9_transfer ();
+  gdk_window_show (tw);
+  m9_grab (tw, "T11");
+  m1 = m9_menu (main_window, 100, 100, 100, 80, GDK_WINDOW_TYPE_HINT_POPUP_MENU);
+  gdk_window_show (m1);
+  gdk_display_flush (m9_d);          /* commit, but read nothing yet */
+  pi = m9_pi (m1);
+  M9_EQ_INT (pi.state, GDKW_TEST_POPUP_COMMITTED, "T11: COMMITTED, not configured");
+  M9_CHECK (pi.grab_sent, "T11: the first commit asked for a grab");
+  m6_clear ();
+  M9_HOOK (_gdk_wayland_test_popup_done (m1), "T11: popup_done before configure");
+  pi = m9_pi (m1);
+  M9_CHECK (pi.retried_without_grab, "T11: retried without grab");
+  m9_sync ();
+  pi = m9_pi (m1);
+  M9_EQ_INT (pi.get_popup_requests, 2, "T11: get_popup twice");
+  M9_CHECK (!pi.grab_wanted && !pi.grab_sent, "T11: the second one has no grab");
+  M9_EQ_INT (pi.state, GDKW_TEST_POPUP_MAPPED, "T11: mapped after the retry");
+  M9_CHECK (gdk_pointer_is_grabbed (), "T11: the GDK pointer grab is still held");
+  M9_CHECK (m9_keyboard_grabbed (), "T11: the GDK keyboard grab is still held");
+  M9_EQ_INT (m6_count (GDK_GRAB_BROKEN, NULL), 0, "T11: no GRAB_BROKEN");
+  M9_CHECK (gdk_window_is_visible (m1), "T11: the popup stays visible");
+  m9_ungrab ();
+  m9_destroy (m1);
+  m9_destroy (tw);
+  m9_sync ();
+  m9_counts_are (&m9_base, "T11 cleanup");
+}
+
+/* ---- T8, T12: fallback toplevel, transient change, reparent of a popup ---- */
+
+static void
+m9_fallback_and_transient (void)
+{
+  GdkWindow *f, *u, *f2, *top2, *p;
+  GDKWTestRoleInfo ri;
+  GDKWTestPopupInfo pi;
+  GDKWTestReparentCounts rc0, rc1;
+  GdkWindowAttr attr;
+  gint x, y;
+
+  /* T8: no usable parent anywhere: a plain xdg_toplevel */
+  gdk_window_hide (main_window);
+  m9_sync ();
+  f = m9_menu (NULL, 70, 80, 50, 40, GDK_WINDOW_TYPE_HINT_POPUP_MENU);
+  gdk_window_show (f);
+  m9_sync ();
+  ri = m9_ri (f);
+  M9_EQ_INT (ri.role, GDKW_TEST_ROLE_TOPLEVEL, "T8: fallback role TOPLEVEL");
+  M9_CHECK (ri.fallback_toplevel, "T8: fallback flag");
+  M9_CHECK (ri.has_xdg_toplevel && !ri.has_xdg_popup, "T8: xdg_toplevel, no xdg_popup");
+  pi = m9_pi (f);
+  M9_EQ_INT (pi.get_popup_requests, 0, "T8: no get_popup");
+  M9_EQ_INT (pi.state, GDKW_TEST_POPUP_NONE, "T8: no popup record");
+  gdk_window_hide (f);
+  m9_sync ();
+  ri = m9_ri (f);
+  M9_CHECK (!ri.has_xdg_toplevel && !ri.has_wl_surface && !ri.fallback_toplevel,
+	    "T8: hide releases the fallback toplevel");
+
+  /* T8: a transient parent that is not configured yet */
+  memset (&attr, 0, sizeof attr);
+  attr.window_type = GDK_WINDOW_TOPLEVEL;
+  attr.wclass = GDK_INPUT_OUTPUT;
+  attr.width = 120;
+  attr.height = 90;
+  attr.event_mask = GDK_EXPOSURE_MASK;
+  u = gdk_window_new (gdk_get_default_root_window (), &attr, 0);
+  f2 = m9_menu (u, 20, 20, 40, 30, GDK_WINDOW_TYPE_HINT_POPUP_MENU);
+  gdk_window_show (u);
+  gdk_window_show (f2);
+  m9_sync ();
+  ri = m9_ri (f2);
+  M9_EQ_INT (ri.role, GDKW_TEST_ROLE_TOPLEVEL, "T8: unconfigured parent gives the fallback");
+  M9_CHECK (ri.fallback_toplevel, "T8: fallback flag, unconfigured parent");
+  gdk_window_hide (f2);
+  m9_destroy (f2);
+  m9_destroy (u);
+  gdk_window_show (main_window);
+  gdk_window_invalidate_rect (main_window, NULL, TRUE);
+  m9_sync ();
+  m9_counts_are (&m9_base, "T8 cleanup");
+
+  /* T12: transient change on a mapped popup */
+  top2 = gdk_window_new (gdk_get_default_root_window (), &attr, 0);
+  gdk_window_show (top2);
+  m9_sync ();
+  p = m9_menu (main_window, 50, 60, 60, 40, GDK_WINDOW_TYPE_HINT_POPUP_MENU);
+  gdk_window_show (p);
+  m9_sync ();
+  pi = m9_pi (p);
+  M9_CHECK (pi.parent == main_window, "T12: starts under main");
+  gdk_window_set_transient_for (p, top2);
+  m9_sync ();
+  pi = m9_pi (p);
+  M9_CHECK (pi.parent == top2, "T12: parent is now the second toplevel");
+  M9_EQ_INT (pi.get_popup_requests, 2, "T12: the popup was made again");
+  M9_EQ_INT (pi.state, GDKW_TEST_POPUP_MAPPED, "T12: mapped under the new parent");
+
+  /* T12: reparent of a popup to the root is a move */
+  M9_HOOK (_gdk_wayland_test_reparent_counts (m9_d, &rc0), "T12: counts before");
+  gdk_window_reparent (p, gdk_get_default_root_window (), 20, 30);
+  m9_sync ();
+  M9_HOOK (_gdk_wayland_test_reparent_counts (m9_d, &rc1), "T12: counts after");
+  M9_EQ_INT (rc1.moves, rc0.moves + 1, "T12: one move");
+  M9_EQ_INT (rc1.promotions, rc0.promotions, "T12: no promotion");
+  M9_EQ_INT (rc1.demotions, rc0.demotions, "T12: no demotion");
+  pi = m9_pi (p);
+  M9_EQ_INT (pi.root_x, 20, "T12: root x");
+  M9_EQ_INT (pi.root_y, 30, "T12: root y");
+  gdk_window_get_origin (p, &x, &y);
+  M9_EQ_INT (x, 20, "T12: origin x");
+  M9_EQ_INT (y, 30, "T12: origin y");
+  M9_CHECK (gdk_window_is_visible (p), "T12: still visible");
+  M9_EQ_INT (m9_ri (p).role, GDKW_TEST_ROLE_POPUP, "T12: still a popup");
+
+  m9_destroy (p);
+  m9_destroy (top2);
+  m9_sync ();
+  m9_counts_are (&m9_base, "T12 cleanup");
+}
+
+/* ---- T13 to T16: input-only windows and the pointer position model ------- */
+
+static int
+m9_count_focus_out (GdkWindow *w)
+{
+  GList *l;
+  int n = 0;
+
+  for (l = m6_events.head; l; l = l->next)
+    {
+      GdkEvent *ev = l->data;
+
+      if (ev->type == GDK_FOCUS_CHANGE && ev->any.window == w &&
+	  !ev->focus_change.in)
+	n++;
+    }
+
+  return n;
+}
+
+static const GdkEventMask m9_cross_mask = GDK_ENTER_NOTIFY_MASK |
+  GDK_LEAVE_NOTIFY_MASK | GDK_POINTER_MOTION_MASK;
+
+static void
+m9_to_window (GdkWindow *w, gdouble x, gdouble y, const char *what)
+{
+  M9_HOOK (_gdk_wayland_test_pointer_move_to_window (m9_d, m9_tick (), w, x, y),
+	   what);
+  m6_drain ();
+}
+
+static void
+m9_inputonly (void)
+{
+  GdkWindow *a, *b, *c, *b3, *b4;
+  GdkEvent *ev;
+  GdkRegion *shape, *hole;
+  GdkRectangle rect;
+  gint mx, my;
+
+  gdk_window_get_position (main_window, &mx, &my);
+
+  /* start with the pointer outside our surfaces */
+  _gdk_wayland_test_pointer_leave (m9_d, main_window);
+  m6_drain ();
+
+  /* T13: crossings for an input-only child, exact values */
+  a = m9_child (main_window, 20, 20, 200, 200, FALSE, GDK_EXPOSURE_MASK);
+  b = m9_child (a, 50, 50, 100, 100, TRUE, m9_cross_mask);
+  if (a == NULL || b == NULL)
+    return;
+  gdk_window_show (a);
+  gdk_window_show (b);
+  m9_to_window (main_window, 5, 5, "T13: pointer into main");
+  m6_clear ();
+  m9_to_window (b, 10, 10, "T13: pointer into B");
+  ev = m6_find (GDK_LEAVE_NOTIFY, main_window);
+  M9_CHECK (ev != NULL, "T13: LEAVE on main");
+  if (ev != NULL)
+    M9_EQ_INT (ev->crossing.detail, GDK_NOTIFY_INFERIOR, "T13: LEAVE main is INFERIOR");
+  ev = m6_find (GDK_ENTER_NOTIFY, b);
+  M9_CHECK (ev != NULL, "T13: ENTER on B");
+  if (ev != NULL)
+    {
+      M9_EQ_INT ((long) ev->crossing.x, 10, "T13: ENTER x");
+      M9_EQ_INT ((long) ev->crossing.y, 10, "T13: ENTER y");
+      /* The core computes the root coordinates of a crossing it synthesizes as
+       * toplevel_x + toplevel->x (D16, as M8 D6 already relies on), and main
+       * was created at (10, 10).  80 is the position in main. */
+      M9_EQ_INT ((long) ev->crossing.x_root, 80 + mx, "T13: ENTER x_root");
+      M9_EQ_INT ((long) ev->crossing.y_root, 80 + my, "T13: ENTER y_root");
+      M9_EQ_INT (ev->crossing.detail, GDK_NOTIFY_ANCESTOR, "T13: ENTER B is ANCESTOR");
+      M9_EQ_INT (ev->crossing.mode, GDK_CROSSING_NORMAL, "T13: ENTER mode NORMAL");
+    }
+  M9_CHECK (m9_pos (GDK_LEAVE_NOTIFY, main_window) < m9_pos (GDK_ENTER_NOTIFY, b),
+	    "T13: LEAVE main comes before ENTER B");
+  m6_clear ();
+  m9_to_window (main_window, 300, 250, "T13: pointer back to main");
+  ev = m6_find (GDK_LEAVE_NOTIFY, b);
+  M9_CHECK (ev != NULL, "T13: LEAVE on B");
+  if (ev != NULL)
+    {
+      M9_EQ_INT ((long) ev->crossing.x, 230, "T13: LEAVE x relative to B");
+      M9_EQ_INT ((long) ev->crossing.y, 180, "T13: LEAVE y relative to B");
+      M9_EQ_INT (ev->crossing.detail, GDK_NOTIFY_ANCESTOR, "T13: LEAVE B is ANCESTOR");
+    }
+  ev = m6_find (GDK_ENTER_NOTIFY, main_window);
+  M9_CHECK (ev != NULL, "T13: ENTER on main");
+  if (ev != NULL)
+    M9_EQ_INT (ev->crossing.detail, GDK_NOTIFY_INFERIOR, "T13: ENTER main is INFERIOR");
+
+  /* T14a: an input-output sibling above B owns the overlap */
+  c = m9_child (a, 80, 80, 100, 100, FALSE, m9_cross_mask);
+  gdk_window_show (c);
+  m6_clear ();
+  m9_to_window (main_window, 130, 130, "T14: pointer into the overlap");
+  M9_CHECK (m6_find (GDK_ENTER_NOTIFY, c) != NULL, "T14: ENTER on C in the overlap");
+  M9_CHECK (m6_find (GDK_ENTER_NOTIFY, b) == NULL, "T14: no ENTER on B under C");
+  /* raise B under the stationary pointer: the core's idle does the crossings */
+  m6_clear ();
+  gdk_window_raise (b);
+  m6_run_ms (100);
+  M9_CHECK (m6_find (GDK_LEAVE_NOTIFY, c) != NULL, "T14: raise gives LEAVE on C");
+  M9_CHECK (m6_find (GDK_ENTER_NOTIFY, b) != NULL, "T14: raise gives ENTER on B");
+
+  /* T14b: an input shape with a hole */
+  gdk_window_hide (c);
+  m9_to_window (main_window, 300, 250, "T14: pointer out");
+  hole = gdk_region_rectangle (&(GdkRectangle) { 40, 40, 20, 20 });
+  rect.x = 0;
+  rect.y = 0;
+  rect.width = 100;
+  rect.height = 100;
+  shape = gdk_region_rectangle (&rect);
+  gdk_region_subtract (shape, hole);
+  gdk_window_input_shape_combine_region (b, shape, 0, 0);
+  m6_clear ();
+  m9_to_window (main_window, 120, 120, "T14: pointer in the shape hole");
+  M9_CHECK (m6_find (GDK_ENTER_NOTIFY, b) == NULL, "T14: no ENTER on B in the hole");
+  m9_to_window (main_window, 80, 80, "T14: pointer in the shape");
+  M9_CHECK (m6_find (GDK_ENTER_NOTIFY, b) != NULL, "T14: ENTER on B in the shape");
+  gdk_window_input_shape_combine_region (b, NULL, 0, 0);
+  gdk_region_destroy (shape);
+  gdk_region_destroy (hole);
+  m9_to_window (main_window, 300, 250, "T14: pointer out again");
+
+  /* T14c: an ENTER / LEAVE mask only: no MOTION */
+  b3 = m9_child (a, 160, 160, 30, 30, TRUE,
+		 GDK_ENTER_NOTIFY_MASK | GDK_LEAVE_NOTIFY_MASK);
+  gdk_window_show (b3);
+  m6_clear ();
+  m9_to_window (main_window, 190, 190, "T14: pointer into B3");
+  M9_CHECK (m6_find (GDK_ENTER_NOTIFY, b3) != NULL, "T14: ENTER on B3");
+  m9_to_window (main_window, 195, 195, "T14: motion inside B3");
+  M9_EQ_INT (m6_count (GDK_MOTION_NOTIFY, b3), 0, "T14: no MOTION on B3 without the mask");
+  m9_to_window (main_window, 300, 250, "T14: pointer out of B3");
+
+  /* T14d: show under a stationary pointer */
+  b4 = m9_child (a, 10, 10, 30, 30, TRUE, m9_cross_mask);
+  m9_to_window (main_window, 40, 40, "T14: pointer where B4 will be");
+  m6_clear ();
+  gdk_window_show (b4);
+  m6_run_ms (100);
+  M9_CHECK (m6_find (GDK_ENTER_NOTIFY, b4) != NULL,
+	    "T14: showing B4 under the pointer gives ENTER");
+
+  m9_to_window (main_window, 300, 250, "T14: pointer out at the end");
+  m9_destroy (b4);
+  m9_destroy (b3);
+  m9_destroy (c);
+  m9_destroy (b);
+  m9_destroy (a);
+  m6_drain ();
+  m6_clear ();
+}
+
+static void
+m9_pointer_in_popup (void)
+{
+  GdkWindow *p, *pc, *mc, *got;
+  GdkEvent *ev;
+  GDKWTestSeatInfo si;
+  gint x, y;
+  gboolean ok;
+
+  p = m9_menu (main_window, 50, 60, 80, 40, GDK_WINDOW_TYPE_HINT_POPUP_MENU);
+  pc = m9_child (p, 3, 4, 20, 20, FALSE, GDK_EXPOSURE_MASK);
+  gdk_window_show (pc);
+  gdk_window_show (p);
+  m9_sync ();
+  m6_clear ();
+  M9_HOOK (_gdk_wayland_test_pointer_enter (m9_d, p, 5, 6), "T15: enter popup");
+  m6_drain ();
+  ev = m6_find (GDK_ENTER_NOTIFY, p);
+  M9_CHECK (ev != NULL, "T15: ENTER on the popup");
+  if (ev != NULL)
+    {
+      M9_EQ_INT ((long) ev->crossing.x, 5, "T15: ENTER x");
+      M9_EQ_INT ((long) ev->crossing.y, 6, "T15: ENTER y");
+      M9_EQ_INT ((long) ev->crossing.x_root, 55, "T15: ENTER x_root = x + popup origin");
+      M9_EQ_INT ((long) ev->crossing.y_root, 66, "T15: ENTER y_root");
+    }
+  gdk_display_get_pointer (m9_d, NULL, &x, &y, NULL);
+  M9_EQ_INT (x, 55, "T15: gdk_display_get_pointer x");
+  M9_EQ_INT (y, 66, "T15: gdk_display_get_pointer y");
+  x = y = -1;
+  got = gdk_window_get_pointer (main_window, &x, &y, NULL);
+  M9_CHECK (got == NULL, "T15: the pointer is not in main");
+  M9_EQ_INT (x, 55, "T15: gdk_window_get_pointer (main) fills x");
+  M9_EQ_INT (y, 66, "T15: gdk_window_get_pointer (main) fills y");
+  x = y = -1;
+  got = gdk_window_get_pointer (p, &x, &y, NULL);
+  M9_CHECK (got == pc, "T15: the popup child is under the pointer");
+  M9_EQ_INT (x, 5, "T15: gdk_window_get_pointer (popup) x");
+  M9_EQ_INT (y, 6, "T15: gdk_window_get_pointer (popup) y");
+  /* a client side child: the answer is relative to the child, not the impl */
+  x = y = -1;
+  got = gdk_window_get_pointer (pc, &x, &y, NULL);
+  M9_CHECK (got == NULL, "T15: the popup child has no child under the pointer");
+  M9_EQ_INT (x, 2, "T15: gdk_window_get_pointer (popup child) x");
+  M9_EQ_INT (y, 2, "T15: gdk_window_get_pointer (popup child) y");
+  M9_HOOK (_gdk_wayland_test_seat_info (m9_d, &si), "T15: seat info");
+  M9_CHECK (si.pointer_focus == p, "T15: pointer focus is the popup");
+  {
+    gint rx = -1, ry = -1;
+    GdkWindow *focus = NULL;
+
+    ok = _gdk_wayland_test_pointer_root (m9_d, &rx, &ry, &focus);
+    M9_CHECK (ok && rx == 55 && ry == 66 && focus == p,
+	      "T15: pointer_root hook agrees");
+  }
+  M9_HOOK (_gdk_wayland_test_pointer_leave (m9_d, p), "T15: leave popup");
+  m6_drain ();
+  m9_destroy (pc);
+  /* and the same in the toplevel: a child of main at (100, 100) */
+  mc = m9_child (main_window, 100, 100, 60, 60, FALSE, GDK_EXPOSURE_MASK);
+  gdk_window_show (mc);
+  m9_to_window (main_window, 130, 140, "T15: pointer into main");
+  x = y = -1;
+  got = gdk_window_get_pointer (main_window, &x, &y, NULL);
+  M9_CHECK (got == mc, "T15: the main child is under the pointer");
+  M9_EQ_INT (x, 130, "T15: gdk_window_get_pointer (main) x");
+  M9_EQ_INT (y, 140, "T15: gdk_window_get_pointer (main) y");
+  x = y = -1;
+  got = gdk_window_get_pointer (mc, &x, &y, NULL);
+  M9_CHECK (got == NULL, "T15: the main child has no child under the pointer");
+  M9_EQ_INT (x, 30, "T15: gdk_window_get_pointer (main child) x");
+  M9_EQ_INT (y, 40, "T15: gdk_window_get_pointer (main child) y");
+  m9_destroy (mc);
+  M9_HOOK (_gdk_wayland_test_pointer_leave (m9_d, main_window), "T15: leave main");
+  m6_drain ();
+  m9_destroy (p);
+  m9_sync ();
+  m6_clear ();
+}
+
+static void
+m9_surfaceless (void)
+{
+  GdkWindowAttr attr;
+  GdkWindow *io, *dnd, *dnd_top;
+  GDKWTestRoleInfo ri;
+  GDKWTestObjectCounts before = m9_oc ();
+
+  /* T16: a toplevel input-only window used to crash gdk_window_new () */
+  memset (&attr, 0, sizeof attr);
+  attr.window_type = GDK_WINDOW_TOPLEVEL;
+  attr.wclass = GDK_INPUT_ONLY;
+  attr.x = 0;
+  attr.y = 0;
+  attr.width = 10;
+  attr.height = 10;
+  attr.event_mask = GDK_BUTTON_PRESS_MASK;
+  io = gdk_window_new (gdk_get_default_root_window (), &attr, GDK_WA_X | GDK_WA_Y);
+  M9_CHECK (io != NULL, "T16: a toplevel input-only window is created");
+  if (io != NULL)
+    {
+      gdk_window_show (io);
+      ri = m9_ri (io);
+      M9_EQ_INT (ri.role, GDKW_TEST_ROLE_NONE, "T16: role NONE");
+      M9_EQ_INT (ri.norole_reason, GDKW_TEST_NOROLE_INPUT_ONLY, "T16: reason INPUT_ONLY");
+      M9_CHECK (!ri.has_wl_surface && !ri.has_xdg_surface, "T16: no wl_surface");
+      M9_CHECK (gdk_window_is_visible (io), "T16: mapped in the GDK sense");
+      /* surfaceless windows can take grabs (D15) */
+      M9_EQ_INT (gdk_pointer_grab (io, FALSE, m9_grab_mask, NULL, NULL,
+				   GDK_CURRENT_TIME), GDK_GRAB_SUCCESS,
+		 "T16: pointer grab on an input-only toplevel");
+      M9_EQ_INT (gdk_keyboard_grab (io, FALSE, GDK_CURRENT_TIME), GDK_GRAB_SUCCESS,
+		 "T16: keyboard grab on an input-only toplevel");
+      m9_ungrab ();
+      gdk_window_hide (io);
+      gdk_window_destroy (io);
+    }
+
+  /* T16: a DND icon window is surfaceless, whatever its window type */
+  dnd = m9_menu (NULL, 0, 0, 32, 32, GDK_WINDOW_TYPE_HINT_DND);
+  gdk_window_show (dnd);
+  ri = m9_ri (dnd);
+  M9_EQ_INT (ri.role, GDKW_TEST_ROLE_NONE, "T16: DND role NONE");
+  M9_EQ_INT (ri.norole_reason, GDKW_TEST_NOROLE_DND, "T16: reason DND");
+  M9_CHECK (!ri.has_wl_surface, "T16: DND window has no wl_surface");
+
+  memset (&attr, 0, sizeof attr);
+  attr.window_type = GDK_WINDOW_TOPLEVEL;
+  attr.wclass = GDK_INPUT_OUTPUT;
+  attr.width = 32;
+  attr.height = 32;
+  dnd_top = gdk_window_new (gdk_get_default_root_window (), &attr, 0);
+  gdk_window_set_type_hint (dnd_top, GDK_WINDOW_TYPE_HINT_DND);
+  gdk_window_show (dnd_top);
+  ri = m9_ri (dnd_top);
+  M9_EQ_INT (ri.norole_reason, GDKW_TEST_NOROLE_DND, "T16: a toplevel with the DND hint, reason DND");
+  M9_EQ_INT (gdk_pointer_grab (dnd_top, FALSE, m9_grab_mask, NULL, NULL,
+			       GDK_CURRENT_TIME), GDK_GRAB_SUCCESS,
+	     "T16: a grab on a toplevel with the DND hint is viewable");
+  m9_ungrab ();
+  gdk_window_hide (dnd);
+  gdk_window_hide (dnd_top);
+  m9_destroy (dnd);
+  m9_destroy (dnd_top);
+  m9_sync ();
+  m9_counts_are (&before, "T16 cleanup");
+}
+
+/* ---- T17, T18: reparent -------------------------------------------------- */
+
+static void
+m9_reparent (void)
+{
+  GdkWindow *w, *k, *p, *root = gdk_get_default_root_window ();
+  GDKWTestRoleInfo ri;
+  GDKWTestObjectCounts c0, c1;
+  GDKWTestReparentCounts rc0, rc1;
+  GDKWTestSeatInfo si;
+  GdkWindowAttr attr;
+  GdkEvent *ev;
+  gint x, y;
+  int i;
+  gboolean seen_null_grab_window;
+
+  /* T17: a visible toplevel becomes a child of main and back */
+  memset (&attr, 0, sizeof attr);
+  attr.window_type = GDK_WINDOW_TOPLEVEL;
+  attr.wclass = GDK_INPUT_OUTPUT;
+  attr.width = 160;
+  attr.height = 120;
+  attr.event_mask = GDK_EXPOSURE_MASK | m9_cross_mask | GDK_BUTTON_PRESS_MASK;
+  w = gdk_window_new (root, &attr, 0);
+  gdk_window_show (w);
+  m9_sync ();
+  ri = m9_ri (w);
+  M9_EQ_INT (ri.role, GDKW_TEST_ROLE_TOPLEVEL, "T17: W is a toplevel");
+  c0 = m9_oc ();
+  M9_HOOK (_gdk_wayland_test_reparent_counts (m9_d, &rc0), "T17: counts");
+
+  _gdk_wayland_test_pointer_leave (m9_d, main_window);
+  M9_HOOK (_gdk_wayland_test_pointer_enter (m9_d, w, 5, 5), "T17: pointer into W");
+  M9_HOOK (_gdk_wayland_test_keyboard_enter (m9_d, w), "T17: keyboard into W");
+  m6_drain ();
+  M9_EQ_INT (gdk_pointer_grab (w, FALSE, m9_grab_mask, NULL, NULL,
+			       GDK_CURRENT_TIME), GDK_GRAB_SUCCESS, "T17: grab on W");
+  m6_clear ();
+
+  gdk_window_reparent (w, main_window, 30, 40);
+  m6_drain ();
+  M9_EQ_INT (gdk_window_get_window_type (w), GDK_WINDOW_CHILD, "T17: type CHILD");
+  M9_CHECK (gdk_window_get_parent (w) == main_window, "T17: parent is main");
+  M9_CHECK (gdk_window_is_visible (w), "T17: still visible");
+  gdk_window_get_position (w, &x, &y);
+  M9_EQ_INT (x, 30, "T17: position x");
+  M9_EQ_INT (y, 40, "T17: position y");
+  ri = m9_ri (w);
+  M9_CHECK (!ri.own_impl, "T17: W shares the impl of main");
+  c1 = m9_oc ();
+  M9_EQ_INT (c1.wl_surfaces, c0.wl_surfaces - 1, "T17: one wl_surface less");
+  M9_EQ_INT (c1.xdg_surfaces, c0.xdg_surfaces - 1, "T17: one xdg_surface less");
+  M9_EQ_INT (c1.xdg_toplevels, c0.xdg_toplevels - 1, "T17: one xdg_toplevel less");
+  M9_CHECK (!gdk_pointer_is_grabbed (), "T17: the pointer grab was broken");
+  seen_null_grab_window = FALSE;
+  for (i = 0; (ev = m9_nth (GDK_GRAB_BROKEN, NULL, i)) != NULL; i++)
+    if (!ev->grab_broken.keyboard && ev->grab_broken.grab_window == NULL)
+      seen_null_grab_window = TRUE;
+  M9_CHECK (seen_null_grab_window, "T17: GRAB_BROKEN with grab_window NULL");
+  M9_HOOK (_gdk_wayland_test_seat_info (m9_d, &si), "T17: seat info");
+  M9_CHECK (si.pointer_focus == NULL, "T17: no pointer focus after the demote");
+  M9_CHECK (si.keyboard_focus == NULL, "T17: no keyboard focus after the demote");
+  M9_CHECK (!si.explicit_grab_active, "T17: the backend grab record is gone");
+  M9_HOOK (_gdk_wayland_test_reparent_counts (m9_d, &rc1), "T17: counts after");
+  M9_EQ_INT (rc1.demotions, rc0.demotions + 1, "T17: one demotion");
+  M9_EQ_INT (rc1.grabs_broken, rc0.grabs_broken + 1, "T17: one grab broken");
+
+  m6_clear ();
+  m9_to_window (w, 10, 10, "T17: pointer into the child W");
+  ev = m6_find (GDK_ENTER_NOTIFY, w);
+  M9_CHECK (ev != NULL, "T17: ENTER on W");
+  if (ev != NULL)
+    {
+      M9_EQ_INT ((long) ev->crossing.x, 10, "T17: ENTER x");
+      M9_EQ_INT ((long) ev->crossing.y, 10, "T17: ENTER y");
+    }
+
+  /* back to a toplevel, with a grab on W again */
+  M9_EQ_INT (gdk_pointer_grab (w, FALSE, m9_grab_mask, NULL, NULL,
+			       GDK_CURRENT_TIME), GDK_GRAB_SUCCESS, "T17: grab on W again");
+  m6_clear ();
+  gdk_window_reparent (w, root, 0, 0);
+  m9_sync ();
+  M9_EQ_INT (gdk_window_get_window_type (w), GDK_WINDOW_TOPLEVEL, "T17: type TOPLEVEL again");
+  M9_CHECK (gdk_window_is_visible (w), "T17: visible again");
+  M9_CHECK (!gdk_pointer_is_grabbed (), "T17: the grab did not survive the promotion");
+  M9_CHECK (m6_find (GDK_GRAB_BROKEN, NULL) != NULL, "T17: GRAB_BROKEN for the promotion");
+  M9_HOOK (_gdk_wayland_test_seat_info (m9_d, &si), "T17: seat info 2");
+  M9_CHECK (!si.explicit_grab_active, "T17: no stale backend grab record after the promotion");
+  ri = m9_ri (w);
+  M9_EQ_INT (ri.role, GDKW_TEST_ROLE_TOPLEVEL, "T17: role TOPLEVEL after the flush");
+  M9_CHECK (ri.own_impl, "T17: W owns its impl again");
+  c1 = m9_oc ();
+  M9_EQ_INT (c1.wl_surfaces, c0.wl_surfaces, "T17: wl_surfaces back");
+  M9_EQ_INT (c1.xdg_surfaces, c0.xdg_surfaces, "T17: xdg_surfaces back");
+  M9_EQ_INT (c1.xdg_toplevels, c0.xdg_toplevels, "T17: xdg_toplevels back");
+  M9_HOOK (_gdk_wayland_test_reparent_counts (m9_d, &rc1), "T17: counts end");
+  M9_EQ_INT (rc1.promotions, rc0.promotions + 1, "T17: one promotion");
+  m9_destroy (w);
+
+  /* T17: a mapped popup reparented under main is demoted */
+  p = m9_menu (main_window, 50, 60, 60, 40, GDK_WINDOW_TYPE_HINT_POPUP_MENU);
+  gdk_window_show (p);
+  m9_sync ();
+  c0 = m9_oc ();
+  M9_EQ_INT (m9_ri (p).role, GDKW_TEST_ROLE_POPUP, "T17: popup is a popup");
+  M9_HOOK (_gdk_wayland_test_reparent_counts (m9_d, &rc0), "T17: popup counts");
+  gdk_window_reparent (p, main_window, 10, 10);
+  m9_sync ();
+  c1 = m9_oc ();
+  M9_EQ_INT (c1.xdg_popups, c0.xdg_popups - 1, "T17: popup demote, one xdg_popup less");
+  M9_EQ_INT (c1.wl_surfaces, c0.wl_surfaces - 1, "T17: popup demote, one wl_surface less");
+  ri = m9_ri (p);
+  M9_CHECK (!ri.own_impl && !ri.has_xdg_popup, "T17: the demoted popup has no role");
+  M9_CHECK (gdk_window_is_visible (p), "T17: the demoted popup is a visible child");
+  M9_HOOK (_gdk_wayland_test_reparent_counts (m9_d, &rc1), "T17: popup counts after");
+  M9_EQ_INT (rc1.demotions, rc0.demotions + 1, "T17: popup demotion counted");
+  m9_destroy (p);
+  m9_sync ();
+
+  /* T18: a client side child with a ready window becomes a toplevel */
+  k = m9_child (main_window, 7, 8, 50, 50, FALSE, GDK_EXPOSURE_MASK);
+  gdk_window_show (k);
+  M9_CHECK (gdk_window_is_visible (k), "T18: K is mapped");
+  gdk_window_reparent (k, root, 100, 100);
+  m9_sync ();
+  M9_EQ_INT (gdk_window_get_window_type (k), GDK_WINDOW_TOPLEVEL, "T18: K is a toplevel");
+  M9_CHECK (gdk_window_is_visible (k), "T18: K is visible");
+  ri = m9_ri (k);
+  M9_CHECK (ri.own_impl, "T18: K owns an impl");
+  M9_EQ_INT (ri.role, GDKW_TEST_ROLE_TOPLEVEL, "T18: K has the toplevel role after the show");
+  M9_CHECK (ri.has_xdg_toplevel && ri.configured, "T18: K got its xdg_toplevel and configure");
+  m9_destroy (k);
+  m9_sync ();
+  m9_counts_are (&m9_base, "T17, T18 cleanup");
+}
+
+/* ---- T20: cycles --------------------------------------------------------- */
+
+static void
+m9_cycles (void)
+{
+  GdkWindow *tw, *m1, *s1, *s2, *tip;
+  guint cycle, cycles = 50;
+  GDKWTestObjectCounts c;
+  char msg[64];
+
+  M9_HOOK (_gdk_wayland_test_pointer_enter (m9_d, main_window, 300, 300),
+	   "T20: pointer into main");
+  m9_press ();
+  tw = m9_transfer ();
+  gdk_window_show (tw);
+
+  for (cycle = 0; cycle < cycles; cycle++)
+    {
+      m9_grab (tw, "T20");
+      m1 = m9_menu (main_window, 100, 100, 100, 80, GDK_WINDOW_TYPE_HINT_POPUP_MENU);
+      gdk_window_show (m1);
+      m9_sync ();
+      s1 = m9_menu (m1, 200, 110, 80, 60, GDK_WINDOW_TYPE_HINT_POPUP_MENU);
+      gdk_window_show (s1);
+      m9_sync ();
+      s2 = m9_menu (s1, 280, 120, 70, 50, GDK_WINDOW_TYPE_HINT_POPUP_MENU);
+      gdk_window_show (s2);
+      m9_sync ();
+      tip = m9_menu (NULL, 300, 300, 50, 20, GDK_WINDOW_TYPE_HINT_TOOLTIP);
+      gdk_window_show (tip);
+      m9_sync ();
+
+      c = m9_oc ();
+      if (c.xdg_popups != 4)
+	{
+	  g_printerr ("ydk_demo: M9 check failed: T20: cycle %u: %u xdg_popups, want 4\n",
+		      cycle, c.xdg_popups);
+	  m9_failures++;
+	}
+
+      if (cycle & 1)
+	_gdk_wayland_test_popup_done (m1);
+      else
+	gdk_window_hide (m1);
+      m6_drain ();
+
+      m9_destroy (tip);
+      m9_destroy (s2);
+      m9_destroy (s1);
+      m9_destroy (m1);
+      m9_ungrab ();
+      m9_sync ();
+      m6_clear ();
+
+      if (cycle < 3 || cycle == cycles - 1)
+	{
+	  g_snprintf (msg, sizeof msg, "T20: cycle %u", cycle);
+	  m9_counts_are (&m9_base, msg);
+	}
+      else
+	{
+	  GDKWTestObjectCounts d = m9_oc ();
+
+	  if (d.wl_surfaces != m9_base.wl_surfaces ||
+	      d.xdg_popups != m9_base.xdg_popups ||
+	      d.popup_stack != m9_base.popup_stack ||
+	      d.registered_windows != m9_base.registered_windows ||
+	      d.positioners_created != d.positioners_destroyed ||
+	      d.commit_sources != 0)
+	    {
+	      g_printerr ("ydk_demo: M9 check failed: T20: cycle %u did not return to the baseline\n",
+			  cycle);
+	      m9_failures++;
+	    }
+	}
+    }
+
+  m9_destroy (tw);
+  m9_sync ();
+  m9_counts_are (&m9_base, "T20 end");
+}
+
+/* ---- T21: keyboard focus coalescing -------------------------------------- */
+
+static void
+m9_focus (void)
+{
+  GdkWindow *p;
+  GDKWTestSeatInfo si;
+
+  p = m9_menu (main_window, 100, 100, 80, 60, GDK_WINDOW_TYPE_HINT_POPUP_MENU);
+  gdk_window_show (p);
+  m9_sync ();
+  M9_EQ_INT (m9_pi (p).state, GDKW_TEST_POPUP_MAPPED, "T21: popup is mapped");
+
+  M9_HOOK (_gdk_wayland_test_keyboard_enter (m9_d, main_window), "T21: enter main");
+  m6_run_ms (30);
+  m6_clear ();
+  M9_HOOK (_gdk_wayland_test_keyboard_leave (m9_d, main_window), "T21: leave main");
+  M9_HOOK (_gdk_wayland_test_keyboard_enter (m9_d, p), "T21: enter the popup");
+  m6_run_ms (50);
+  M9_EQ_INT (m9_count_focus_out (main_window), 0,
+	     "T21: no focus-out on main when the focus moves to its popup");
+  M9_HOOK (_gdk_wayland_test_seat_info (m9_d, &si), "T21: seat info");
+  M9_CHECK (si.keyboard_focus == main_window,
+	    "T21: the GDK keyboard focus of the family is its base toplevel");
+  M9_EQ_INT (m6_count (GDK_FOCUS_CHANGE, p), 0, "T21: the popup gets no focus event");
+
+  M9_HOOK (_gdk_wayland_test_keyboard_leave (m9_d, p), "T21: leave the popup");
+  M9_EQ_INT (m9_count_focus_out (main_window), 0,
+	     "T21: the focus-out is deferred, not synchronous");
+  m6_run_ms (50);
+  M9_EQ_INT (m9_count_focus_out (main_window), 1,
+	     "T21: one focus-out on main when the family loses the focus");
+
+  /* a destroyed popup with a pending out must not leave a stale pointer */
+  m6_clear ();
+  M9_HOOK (_gdk_wayland_test_keyboard_enter (m9_d, main_window), "T21: enter main again");
+  m6_run_ms (30);
+  M9_HOOK (_gdk_wayland_test_keyboard_leave (m9_d, main_window), "T21: leave main (deferred)");
+  m9_destroy (p);
+  m9_sync ();
+  m6_run_ms (30);
+  M9_EQ_INT (m9_count_focus_out (main_window), 1,
+	     "T21: the pending out still arrives once the popup is gone");
+  m6_clear ();
+}
+
+static int
+m9_exercise (void)
+{
+  m9_d = gdk_display_get_default ();
+
+  /* the recorder is the application for the whole of M9 */
+  gdk_event_handler_set (m6_recorder, NULL, NULL);
+  gdk_window_set_events (main_window,
+			 GDK_EXPOSURE_MASK | GDK_KEY_PRESS_MASK |
+			 GDK_KEY_RELEASE_MASK | GDK_BUTTON_PRESS_MASK |
+			 GDK_BUTTON_RELEASE_MASK | GDK_POINTER_MOTION_MASK |
+			 GDK_ENTER_NOTIFY_MASK | GDK_LEAVE_NOTIFY_MASK |
+			 GDK_FOCUS_CHANGE_MASK | GDK_SCROLL_MASK);
+  M9_HOOK (_gdk_wayland_test_seat_set_version (m9_d, 5), "seat version");
+  m9_sync ();
+  m6_clear ();
+  m9_base = m9_oc ();
+
+  m9_version ();
+  m9_chain ();
+  m9_grabs ();
+  m9_done ();
+  m9_fallback_and_transient ();
+  m9_inputonly ();
+  m9_pointer_in_popup ();
+  m9_surfaceless ();
+  m9_reparent ();
+  m9_cycles ();
+  m9_focus ();
+
+  /* leave nothing behind */
+  M9_HOOK (_gdk_wayland_test_popup_virtual_seat (m9_d, FALSE), "virtual seat off");
+  _gdk_wayland_test_pointer_leave (m9_d, main_window);
+  _gdk_wayland_test_keyboard_leave (m9_d, main_window);
+  m6_drain ();
+  m6_clear ();
+  m9_sync ();
+  m9_counts_are (&m9_base, "M9 end");
+
+  gdk_event_handler_set (event_handler, NULL, NULL);
+  gdk_window_invalidate_rect (main_window, NULL, TRUE);
+
+  g_print ("ydk_demo: M9: %d checks run\n", m9_checks);
+  if (m9_failures)
+    g_printerr ("ydk_demo: M9: FAIL (%d)\n", m9_failures);
+  else
+    g_print ("ydk_demo: M9: PASS\n");
+
+  return m9_failures;
+}
+
 
 
 int
@@ -7432,6 +9010,7 @@ main (int argc, char **argv)
       failed |= m6b_exercise () != 0;
       failed |= m7_exercise () != 0;
       failed |= m8_exercise () != 0;
+      failed |= m9_exercise () != 0;
       if (failed)
 	return 1;
 

@@ -36,6 +36,7 @@
 #include "gdkprivate-wayland.h"
 #include "gdkseat-wayland.h"
 #include "gdkm8-wayland.h"
+#include "gdkm9-wayland.h"
 
 /* M6B PROTOTYPES */
 void _gdk_wayland_window_hints_apply (GDKWWindowImplWayland *impl);
@@ -782,6 +783,7 @@ _gdk_wayland_window_set_transient_for (GdkWindow *window, GdkWindow *parent)
       h->parent_sent = FALSE;
       if (can_send (impl))
         xdg_toplevel_set_parent (impl->xdg_toplevel, NULL);
+      _gdk_wayland_popup_transient_changed (window);
       return;
     }
 
@@ -797,6 +799,29 @@ _gdk_wayland_window_set_transient_for (GdkWindow *window, GdkWindow *parent)
   set_weak (&h->transient_for, parent);
   h->parent_sent = FALSE;
   sync_parent (impl, h);
+
+  /* M9: a live popup is re-created under the new parent (D10) */
+  _gdk_wayland_popup_transient_changed (window);
+}
+
+/* M9 accessors for the popup piece (declared in gdkm9-wayland.h) */
+
+GdkWindow *
+_gdk_wayland_window_get_transient_for (GdkWindow *window)
+{
+  GDKWWindowImplWayland *impl = resolve (window);
+  GDKWHints *h = impl ? hints_peek (impl) : NULL;
+
+  return h ? h->transient_for : NULL;
+}
+
+gboolean
+_gdk_wayland_window_get_override_redirect (GdkWindow *window)
+{
+  GDKWWindowImplWayland *impl = resolve (window);
+  GDKWHints *h = impl ? hints_peek (impl) : NULL;
+
+  return h ? h->override_redirect : FALSE;
 }
 
 /*************** size hints ***************/
@@ -1074,11 +1099,22 @@ _gdk_wayland_window_begin_resize_drag (GdkWindow *window, GdkWindowEdge edge,
 void
 _gdk_wayland_window_get_root_origin (GdkWindow *window, gint *x, gint *y)
 {
-  /* Toplevels sit at the root origin, as in get_root_coords. */
+  GDKWWindowImplWayland *impl = NULL;
+  gint ox = 0, oy = 0;
+
+  /* Toplevels sit at the root origin, as in get_root_coords; a popup sits at
+   * its root position (M9 D2). */
+  if (window != NULL && GDK_IS_WINDOW (window) &&
+      !GDK_WINDOW_DESTROYED (window))
+    impl = _gdk_wayland_window_get_impl (gdk_window_get_toplevel (window));
+
+  if (impl != NULL)
+    _gdk_wayland_popup_root_origin (impl, &ox, &oy);
+
   if (x != NULL)
-    *x = 0;
+    *x = ox;
   if (y != NULL)
-    *y = 0;
+    *y = oy;
 }
 
 void
@@ -1099,6 +1135,11 @@ _gdk_wayland_window_get_frame_extents (GdkWindow *window, GdkRectangle *rect)
   /* No decorations are known, so the frame equals the window. */
   if (impl != NULL)
     {
+      gint ox = 0, oy = 0;
+
+      _gdk_wayland_popup_root_origin (impl, &ox, &oy);
+      rect->x = ox;
+      rect->y = oy;
       rect->width = impl->width;
       rect->height = impl->height;
     }

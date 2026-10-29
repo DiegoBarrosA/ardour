@@ -59,6 +59,9 @@ typedef struct _GDKWScreenWaylandClass GDKWScreenWaylandClass;
 typedef struct _GDKWWindowImplWayland GDKWWindowImplWayland;
 typedef struct _GDKWWindowImplWaylandClass GDKWWindowImplWaylandClass;
 
+/* M9: popup record, defined in gdkpopup-wayland.c */
+struct _GDKWPopup;
+
 struct _GDKWDisplayWayland
 {
   GdkDisplay parent_instance;
@@ -171,6 +174,9 @@ struct _GDKWWindowImplWayland
   cairo_surface_t *backing;
 
   gboolean configured;
+
+  /* M9: NULL unless this impl is a PENDING or live xdg_popup */
+  struct _GDKWPopup *popup;
 };
 
 struct _GDKWWindowImplWaylandClass

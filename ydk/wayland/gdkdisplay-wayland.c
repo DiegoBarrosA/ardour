@@ -29,6 +29,7 @@
 #include "gdkseat-wayland.h"
 #include "gdkm7-wayland.h"
 #include "gdkm8-wayland.h"
+#include "gdkm9-wayland.h"
 
 #ifdef GDK_COMPILATION
 #include "gdkalias.h"
@@ -72,6 +73,10 @@ void
 _gdk_wayland_display_present_all (GDKWDisplayWayland *display)
 {
   GSList *l;
+
+  /* M9: pending popups make their first commit here (gdk_flush and display
+   * sync both come through).  It may add nodes to display->windows. */
+  _gdk_wayland_popup_commit_pending (display);
 
   for (l = display->windows; l; l = l->next)
     {
@@ -155,6 +160,10 @@ gdkw_display_wayland_dispose (GObject *object)
 	}
     }
 
+  /* Popups must go before the windows they hang from and before
+   * xdg_wm_base.  Idempotent. */
+  _gdk_wayland_popup_display_finalize (GDK_DISPLAY_OBJECT (display));
+
   /* Data device proxies must go before wl_seat and the connection. */
   _gdk_wayland_dd_display_finalize (GDK_DISPLAY_OBJECT (display));
 
@@ -172,6 +181,9 @@ static void
 gdkw_display_wayland_finalize (GObject *object)
 {
   GDKWDisplayWayland *display = GDKW_DISPLAY_WAYLAND (object);
+
+  /* popups first: top-down, silent (the wrappers may be gone) */
+  _gdk_wayland_popup_display_finalize (GDK_DISPLAY_OBJECT (display));
 
   /* give the running window impls (their wl objects are already gone if
    * gdk_window_destroy ran) a last chance to release their surfaces */
@@ -383,7 +395,8 @@ wl_registry_global (void *data,
   else if (strcmp (interface, "xdg_wm_base") == 0 && !display->xdg_wm_base)
     {
       display->xdg_wm_base =
-	wl_registry_bind (registry, name, &xdg_wm_base_interface, 1);
+	wl_registry_bind (registry, name, &xdg_wm_base_interface,
+			  MIN (version, GDKW_XDG_WM_BASE_MAX_VERSION));
       xdg_wm_base_add_listener (display->xdg_wm_base,
 				&xdg_wm_base_listener, display);
       display->xdg_shell_supported = TRUE;
@@ -512,10 +525,7 @@ _gdk_wayland_windowing_get_pointer (GdkDisplay *display,
    * position when the pointer is outside every surface of ours.  Toplevels
    * sit at the root origin, so surface coordinates are root coordinates.  A
    * pointer that was never seen reads (0, 0). */
-  if (x)
-    *x = (gint) seat->px;
-  if (y)
-    *y = (gint) seat->py;
+  _gdk_wayland_pointer_root_position (display, x, y);
   if (mask)
     *mask = _gdk_wayland_seat_get_state (seat);
 }
@@ -580,7 +590,9 @@ _gdk_wayland_windowing_pointer_grab (GdkWindow *window,
 
   impl = _gdk_wayland_window_get_impl (native);
   if (impl == NULL || GDK_WINDOW_DESTROYED (native) ||
-      !GDK_WINDOW_IS_MAPPED (native) || impl->wl_surface == NULL)
+      !GDK_WINDOW_IS_MAPPED (native) ||
+      (impl->wl_surface == NULL &&
+       !_gdk_wayland_inputonly_grab_viewable (native)))
     return GDK_GRAB_NOT_VIEWABLE;
 
   display = gdk_drawable_get_display (GDK_DRAWABLE (native));
@@ -684,7 +696,9 @@ _gdk_wayland_keyboard_grab (GdkWindow *window,
   if (GDK_WINDOW_DESTROYED (native))
     return GDK_GRAB_ALREADY_GRABBED;
 
-  if (!GDK_WINDOW_IS_MAPPED (native) || impl->wl_surface == NULL)
+  if (!GDK_WINDOW_IS_MAPPED (native) ||
+      (impl->wl_surface == NULL &&
+       !_gdk_wayland_inputonly_grab_viewable (native)))
     return GDK_GRAB_NOT_VIEWABLE;
 
   display = gdk_drawable_get_display (GDK_DRAWABLE (native));

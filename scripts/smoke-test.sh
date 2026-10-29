@@ -16,7 +16,9 @@
 # checks plus the audit gaps ("ydk_demo: M6B: PASS"), and since M7 the cursor,
 # shape and font checks ("ydk_demo: M7: PASS"), and since M8 the property, selection,
 # clipboard and drag and drop checks on the virtual data device
-# ("ydk_demo: M8: PASS"), with CRITICAL log
+# ("ydk_demo: M8: PASS"), and since M9 the popup, input-only window
+# and reparent checks on headless weston and the virtual seat
+# ("ydk_demo: M9: PASS"), with CRITICAL log
 # messages fatal in the demo.  Backends without window support exit 77,
 # which still proves the display open/roundtrip works.
 #
@@ -146,6 +148,11 @@ fi
 
 if [ "$DEMO_RC" -eq 0 ] && ! grep -q "ydk_demo: M8: PASS" "$RUNTIME/wayland-demo.log"; then
   echo "smoke-test: wayland demo exited 0 but did not report M8: PASS" >&2
+  exit 1
+fi
+
+if [ "$DEMO_RC" -eq 0 ] && ! grep -q "ydk_demo: M9: PASS" "$RUNTIME/wayland-demo.log"; then
+  echo "smoke-test: wayland demo exited 0 but did not report M9: PASS" >&2
   exit 1
 fi
 
