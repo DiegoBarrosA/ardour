@@ -42,6 +42,7 @@
 #include "gdkseat-wayland.h"
 #include "gdkpixmap-wayland.h"
 #include "gdkm7-wayland.h"
+#include "gdkm8-wayland.h"
 
 #ifdef GDK_COMPILATION
 #include "gdkalias.h"
@@ -925,7 +926,10 @@ gdk_window_wayland_destroy (GdkWindow *window,
    * native window.  X11 lets the next event end the grab; there may be no
    * next event here, so end it now (same as when the window is hidden). */
   if (impl->screen != NULL && gdk_screen_get_display (impl->screen) != NULL)
-    grab_check_unmap (window);
+    {
+      grab_check_unmap (window);
+      _gdk_wayland_selection_window_destroyed (window);
+    }
 
   _gdk_wayland_window_impl_teardown (impl);
 }

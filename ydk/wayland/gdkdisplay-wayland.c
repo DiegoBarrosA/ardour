@@ -28,6 +28,7 @@
 #include "gdkprivate-wayland.h"
 #include "gdkseat-wayland.h"
 #include "gdkm7-wayland.h"
+#include "gdkm8-wayland.h"
 
 #ifdef GDK_COMPILATION
 #include "gdkalias.h"
@@ -154,6 +155,9 @@ gdkw_display_wayland_dispose (GObject *object)
 	}
     }
 
+  /* Data device proxies must go before wl_seat and the connection. */
+  _gdk_wayland_dd_display_finalize (GDK_DISPLAY_OBJECT (display));
+
   /* Cursor buffers and the cursor surface must go before the connection. */
   _gdk_wayland_cursor_display_finalize (GDK_DISPLAY_OBJECT (display));
 
@@ -183,6 +187,9 @@ gdkw_display_wayland_finalize (GObject *object)
       g_slist_free (display->windows);
       display->windows = NULL;
     }
+
+  /* Idempotent; destroys the data device proxies first. */
+  _gdk_wayland_dd_display_finalize (GDK_DISPLAY_OBJECT (display));
 
   /* before wl_shm and wl_compositor are destroyed */
   _gdk_wayland_cursor_display_finalize (GDK_DISPLAY_OBJECT (display));
@@ -385,6 +392,14 @@ wl_registry_global (void *data,
     {
       /* the events piece binds at MIN (version, 5) and adds the listener */
       _gdk_wayland_seat_bind (display, registry, name, version);
+    }
+  else if (strcmp (interface, "wl_data_device_manager") == 0)
+    {
+      _gdk_wayland_dd_bind_manager (display, registry, name, version);
+    }
+  else if (strcmp (interface, "zwp_primary_selection_device_manager_v1") == 0)
+    {
+      _gdk_wayland_dd_bind_primary_manager (display, registry, name, version);
     }
 }
 

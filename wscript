@@ -69,6 +69,8 @@ libydk_wayland_sources = [
     'ydk/wayland/gdkcursor-wayland.c',
     'ydk/wayland/gdkdisplay-misc-wayland.c',
     'ydk/wayland/gdkdisplay-wayland.c',
+    'ydk/wayland/gdkdatadevice-wayland.c',
+    'ydk/wayland/gdkdnd-source-wayland.c',
     'ydk/wayland/gdkdnd-wayland.c',
     'ydk/wayland/gdkdrawable-wayland.c',
     'ydk/wayland/gdkevents-wayland.c',
@@ -86,6 +88,7 @@ libydk_wayland_sources = [
     'ydk/wayland/gdkwindowimpl-wayland.c',
     'ydk/wayland/gdkx11-guards-wayland.c',
     'ydk/wayland/gdkxhandles-wayland.c',
+    'ydk/wayland/primary-selection-unstable-v1-protocol.c',
     'ydk/wayland/xdg-shell-protocol.c',
 ]
 

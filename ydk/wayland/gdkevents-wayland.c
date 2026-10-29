@@ -44,6 +44,7 @@
 #include "gdkprivate-wayland.h"
 #include "gdkseat-wayland.h"
 #include "gdkm7-wayland.h"
+#include "gdkm8-wayland.h"
 
 #ifdef GDK_COMPILATION
 #include "gdkalias.h"
@@ -1047,7 +1048,10 @@ wl_pointer_button (void *data,
 	seat->button_mask &= ~mask;
     }
 
-  seat->button_serial = serial;
+  /* Only a press serial can start a grab (move, resize, drag): a release
+   * serial would be refused when another button is still held. */
+  if (pressed)
+    seat->button_serial = serial;
   seat->last_serial = serial;
   seat->last_time = time;
 
@@ -1380,6 +1384,8 @@ _gdk_wayland_seat_bind (GDKWDisplayWayland *display,
   seat->seat_version = wl_seat_get_version (display->wl_seat);
 
   wl_seat_add_listener (display->wl_seat, &wl_seat_listener, display);
+
+  _gdk_wayland_dd_seat_ready (display);
 }
 
 static GdkDeviceAxis core_axes[] = {

@@ -319,9 +319,9 @@ Real versus stubbed:
 > Shapes and input shapes were stubbed (FALSE) until M7. They are real now,
 > see the M7 section.
 
-- Stubbed and reporting a safe value: selection notification and clipboard persistence (FALSE until M8), composite
+- Stubbed and reporting a safe value: selection notification and clipboard persistence (FALSE on purpose, see M8), composite
   (FALSE), device history, extension events, startup notification, client
-  message send and filters, foreign windows and lookups (NULL), icons
+  message send and filters, foreign windows and lookups (NULL; native ids exist for selections since M8), icons
   (stored, never sent: xdg-shell has no icon request), type hints, keep
   above / below, sticky, skip taskbar / pager, urgency, modal (stored only),
   override redirect (until M9).
@@ -413,14 +413,159 @@ Known gaps (deliberately left, in addition to the M6 and M6b lists):
 - Verified only against headless Weston and the hooks; the real
   `wl_pointer.set_cursor` request has not been seen by a compositor.
 
-### M8 - Selection, clipboard, DnD
+### M8 - Selection, clipboard, DnD (DONE)
 
-- bind `wl_data_device_manager`; implement `gdk_selection_*` over
-  `wl_data_offer` (needed by ytkmm `selectiondata.cc`, gtk_editable etc).
-- `gdk_drag_*` over `wl_data_device`/`wl_source` for text/URI drag
-  (gtkdnd.c, tree/icon view drag-reorder).
+Contract header: `ydk/wayland/ydk/gdkm8-wayland.h` (installed; the public
+section holds the test hooks, the top comment holds every decision). Four
+pieces, no file shared between them:
 
-Verification: demo copies/pastes between two windows and drops a text drag.
+- Property table (`gdkproperty-wayland.c`): real per window table kept as qdata
+  on any Wayland `GdkWindow` (no `wl_surface` needed, unmapped TEMP windows work).
+  X11 semantics: formats 8, 16, 32 (32 is C long), `ATOM` and `ATOM_PAIR` kept as
+  `GdkAtom`, REPLACE / PREPEND / APPEND, offset in 32 bit wire units, `length` in
+  bytes rounded up to 4 (for format 32 a wire unit is one long, so a partial
+  read returns whole items), pdelete, type mismatch returns FALSE with the actual
+  type filled and no warning, 64 MiB cap per window, no `PropertyNotify`.
+- Selection (`gdkselection-wayland.c`): every transfer is expressed in GDK terms
+  (a window, a property and a requestor token), so copy in window A and paste in
+  window B of one process is the X11 sequence with no compositor (loopback) and
+  works with no seat and no data device. Protocol work is a layer on top:
+  - owner_set records a local owner and returns TRUE at once. For CLIPBOARD and
+    PRIMARY with a usable device it queues an asynchronous `TARGETS`
+    SELECTION_REQUEST to the owner (ytk adds the owner to its list only after
+    owner_set returns), builds the source from the answer and sends
+    `set_selection` with the newest seat serial. A generation counter drops
+    stale probes. Replacing an owner in process queues no SELECTION_CLEAR (GTK
+    does that); `cancelled` queues exactly one.
+  - convert always answers with one SELECTION_NOTIFY from the main loop: local
+    owner (loopback request), else external offer (TARGETS synthesized, DELETE
+    answered, TIMESTAMP / MULTIPLE / INCR refused, other targets read through a
+    non blocking pipe with conversion), else NONE.
+  - serving (`wl_data_source.send`): SELECTION_REQUEST to the owner with a SEND
+    token and one of 16 private reply properties, reply read and written to the
+    fd asynchronously; INCR refused; SIGPIPE ignored only when it is SIG_DFL.
+  - native ids (per display, from 0x10000) are the requestor tokens. They are
+    wired to `gdk_window_foreign_new_for_display` and the lookups, so ytk's
+    unmodified `_gtk_selection_request` works.
+  - mime map (pure, tested): text is one group served from the first of
+    UTF8_STRING, STRING, text/plain;charset=utf-8, text/plain; STRING is
+    Latin-1 converted, text/plain targets CRLF to LF; `text/uri-list` verbatim;
+    every other atom under its own name. Inbound text advertises UTF8_STRING
+    then STRING only.
+- Data device (`gdkdatadevice-wayland.c`, new): the only file that calls
+  `wl_data_*` and `zwp_primary_selection_*` requests. Registry binding, device
+  per seat, offer and source records, one listener table for CLIPBOARD, PRIMARY
+  and DND, async pipe reader and writer (64 KiB chunks, idle timeouts 5 s receive,
+  10 s send, 2 s probe, 5 s local request, all test overridable), and the VIRTUAL
+  device with all event injection hooks. PRIMARY is real when the compositor has
+  `zwp_primary_selection_device_manager_v1` (generated client header and C in
+  `ydk/wayland/`, like xdg-shell), else a local selection.
+- Drag and drop (`gdkdnd-wayland.c`, `gdkdnd-source-wayland.c`): the Wayland
+  `GdkDragContext` is a SUBCLASS (`GDKWDragContext`) of the X11 registered type;
+  `windowing_data` is untouched and the protocol is always `LOCAL`, so the parent
+  finalize never runs Xlib. Source: `gdk_drag_begin` always returns a context; a
+  drag that cannot start (no device, no pressed button, no focus surface, no
+  press serial, no window, no offerable target, manager older than v3) is FAILED
+  and a `GDK_DROP_FINISHED` is queued, because that event is the only terminator
+  ytk sees once the compositor owns the pointer. The start is deferred to the
+  first `gdk_drag_motion` (it carries the possible actions), with a 100 ms
+  fallback. `dnd_finished` with MOVE and no local destination synthesizes the
+  `DELETE` request on `XdndSelection`. Destination: events only for toplevels
+  passed to `gdk_window_register_dnd`; `x_root` is `x` plus the toplevel position;
+  `source_window` is the local source's ipc window or the root; status, reply and
+  finish map to `accept`, `set_actions`, `finish`; a leave after a drop is ignored.
+
+Shared files touched: registry binding, display dispose and finalize
+(`gdkdisplay-wayland.c`), `_gdk_wayland_dd_seat_ready` (`gdkevents-wayland.c`),
+`_gdk_wayland_selection_window_destroyed` (`gdkwindowimpl-wayland.c`), the three
+native id stubs (`gdkwindow-hints-wayland.c`), the NON-X11 branch of
+`gdk_x11_window_foreign_new_for_display` and `gdk_x11_window_lookup_for_display`
+(`x11/gdkwindow-x11.c`), `wscript`, `flake.nix` (header install). No dispatcher
+and no rename macro was needed: every public name M8 touches was dispatched
+already, and `scripts/audit-x11-symbols.sh` still passes with the same 30 name
+allowlist and 94 dispatched names.
+
+Fixes made while integrating (found by review or by the new demo):
+
+- `wl_pointer.button` now stores `button_serial` only on a press. A release
+  serial is refused by compositors for `start_drag` and for move / resize grabs
+  when a second button is still held.
+- `gdk_window_new` dereferenced `GDK_DISPLAY_X11` of a Wayland display for a
+  toplevel `GDK_INPUT_ONLY` window (crash); the Xorg workaround is now guarded
+  with `GDK_IS_DISPLAY_X11`.
+- `gdk_drag_begin` fails instead of starting an untracked drag when it gets no
+  live window, and when the target list maps to no mime.
+
+Verification: `m8_exercise` in the demo (prints `ydk_demo: M8: PASS`, required by
+`scripts/smoke-test.sh` and `scripts/valgrind-smoke.sh`; it also prints how many
+checks ran). A headless Weston has no seat, so the protocol side runs on the
+virtual device (`_gdk_wayland_test_dd_init`): the real listeners run with fake
+proxies and every request is recorded. The demo's event handler answers
+SELECTION_REQUEST like ytk. Covered: property round trips for all formats and
+partial reads; loopback copy and paste of 100 KB for CLIPBOARD, PRIMARY and a
+local selection, with and without a device; external offers (TARGETS, 100 KB
+across the 64 KiB pipe, Latin-1, uri-list, refusals, stall, empty read, offer
+withdrawn); ownership change, rapid replace, `cancelled`, the X time rule;
+serving with CRLF, Latin-1, custom mimes, refusal, INCR, timeout, slot reuse and
+owner death mid transfer; drag source (failed begin, press serial, deferred and
+fallback start, action events, serve, DELETE ordering, cancel, abort); drag
+destination (registered and unregistered windows, coordinates, status
+deduplication, drop, leave after drop, finish and reply variants, local source,
+window death). The three M4 checks that asserted stubs were rewritten. Leak
+gauges (offers, sources, pipes, writes, drag contexts) are checked to be zero at
+the end and valgrind reports 0 errors; a `--leak-check=full --track-fds=yes` run
+shows no leak owned by the M8 code and no open pipe at exit (the leaks it shows
+are fontconfig, pango and the M7 font and M5C colormap code).
+
+Known gaps (deliberately left):
+
+- No drag icon. `start_drag` is sent with icon NULL. A wl_surface used as drag
+  icon must have no role, but ytk's icon window is a TEMP window. Follow up: an
+  own ARGB shm snapshot of the drag window passed to `find_window`.
+- `gdk_display_supports_selection_notification` stays FALSE and there is no
+  `GDK_OWNER_CHANGE`; clipboard persistence stays FALSE, so the clipboard content
+  is lost when the process exits. (A wrong TARGETS cache would be worse.)
+- No INCR (neither sent nor accepted), MULTIPLE and TIMESTAMP are refused,
+  TEXT and COMPOUND_TEXT are never requested from the owner.
+- `gdk_selection_owner_get` reports only local owners (a foreign owner cannot be
+  discovered on Wayland); ytk uses that for its in process shortcuts.
+- One seat, one data device, one drag at a time. `LINK` degrades to copy; `ASK` is
+  passed through.
+- A SEND or PROBE reply that arrives after the request timed out leaves its
+  reply property on the owner window until the same slot is used again (bounded:
+  16 send slots and the probe properties).
+- Every distinct mime string an offering client sends is interned in the process
+  wide atom table, which never shrinks.
+- Verified only against Weston headless and the virtual device. No real compositor
+  has seen `set_selection`, `start_drag` or the primary selection requests from
+  this code, and no real ytk widget has used any of it (M11).
+
+M11 call sites that need a `gdk_x11_display_is_x11 (display)` guard (found by
+reading `~/Projects/Personal/ardour`, lines checked against the working tree):
+
+- `libs/tk/ytk/gtkdnd.c`: `grab_dnd_keys` (line 458, `XKeysymToKeycode` at 472,
+  `XGrabKey` at 475, `gdk_window_add_filter (NULL, root_key_filter, GDK_WINDOW_XID)`
+  at 486) and `ungrab_dnd_keys` (line 490, filter removal at 500, `XUngrabKey` at
+  509); callers at 2355 (drag start) and 4116 (drag end), and 552. `root_key_filter`
+  (line 415) uses `XEvent`. Both would run Xlib on a Wayland window when a drag
+  starts. Make both functions return at once unless the display is X11.
+- `libs/tk/ytk/gtkselection.c`: `GTK_SELECTION_MAX_SIZE` (lines 80 to 84,
+  `XExtendedMaxRequestSize (GDK_DISPLAY_XDISPLAY (display))`), used at 2259 and
+  2539, crashes the first time something asks us for a selection. Return `G_MAXINT`
+  unless the display is X11 (the INCR path is then never taken). Also check
+  line 1322 (`gdk_x11_display_utf8_to_compound_text` in
+  `gtk_selection_data_set_text`; the X11 function is called with a Wayland
+  display) and lines 2330 to 2341 (`gdk_x11_xatom_to_atom_for_display` for
+  MULTIPLE, not reachable because M8 refuses MULTIPLE). Line 2287
+  (`gdk_x11_window_foreign_new_for_display`) works through the M8 wiring.
+- `gtk2_ardour/screensaver.cc` lines 66 to 84: `reset_screensaver_timer` opens
+  its own X connection with `XOpenDisplay (NULL)` and calls `XResetScreenSaver`.
+  On Wayland it does the wrong thing (no connection, or an Xwayland one). Use the
+  idle inhibit protocol or D-Bus when the display is not X11.
+- `gtk2_ardour/ardour_ui_dependents.cc` lines 341 to 344 (inside
+  `#ifdef GDK_WINDOWING_X11`, which is always defined in the dual backend build):
+  `GDK_DRAWABLE_XID (_main_window.get_window()->gobj())` is passed to
+  `LV2Plugin::set_main_window_id`. The window has no XID on Wayland.
 
 ### M9 - Popups and non-toplevel windows
 

@@ -9,17 +9,18 @@
  * exits.  Exit codes are meaningful to the harness:
  *
  *   0  window created and drawn (X11 baseline and Wayland since M2); under
- *      GDK_BACKEND=wayland also every M4, M5, M5C, M5V, M6, M6B and M7 check
+ *      GDK_BACKEND=wayland also every M4, M5, M5C, M5V, M6, M6B, M7 and M8 check
  *      passed (see m4_exercise, m5_exercise, m5c_exercise, m5v_exercise,
- *      m6_exercise, m6b_exercise, m7_exercise); under GDK_BACKEND=x11 the dispatched M6b
+ *      m6_exercise, m6b_exercise, m7_exercise, m8_exercise); under GDK_BACKEND=x11 the dispatched M6b
  *      functions are checked to still reach X11 (m6b_x11_exercise)
  *   77 skipped: backend has no window support yet
  *   78 skipped: display opened but primary screen unavailable
- *   1  nothing worked (display open failed), an M4 / M5 / M5C / M5V / M6 / M6B / M7 check
+ *   1  nothing worked (display open failed), an M4 / M5 / M5C / M5V / M6 / M6B / M7 / M8 check
  *      failed, or a g_critical / g_error was logged (see fatal_log_handler)
  */
 
 #include <stdio.h>
+#include <stdarg.h>
 #include <string.h>
 #include <unistd.h>
 #include <sys/types.h>
@@ -32,6 +33,7 @@
 #include <ydk/gdkkeysyms.h>
 #include <ydk/gdkseat-wayland.h>
 #include <ydk/gdkm7-wayland.h>
+#include <ydk/gdkm8-wayland.h>
 
 #define WINDOW_WIDTH  640
 #define WINDOW_HEIGHT 480
@@ -251,8 +253,20 @@ m4_selection (GdkDisplay *display)
 
   M4_CHECK (gdk_selection_owner_get_for_display (display, clipboard) == NULL,
 	    "selection: unexpected owner on a fresh display");
-  gdk_selection_owner_set_for_display (display, main_window, clipboard,
+  /* M8: a local owner is recorded for real, and a conversion with an owner
+   * becomes a SELECTION_REQUEST that nobody answers here.  Release the
+   * ownership first: the convert below is then the "no owner, no offer" case
+   * and is refused. */
+  M4_CHECK (gdk_selection_owner_set_for_display (display, main_window,
+						 clipboard, GDK_CURRENT_TIME,
+						 FALSE),
+	    "selection: owner_set failed");
+  M4_CHECK (gdk_selection_owner_get_for_display (display, clipboard)
+	    == main_window, "selection: owner_get after owner_set");
+  gdk_selection_owner_set_for_display (display, NULL, clipboard,
 				       GDK_CURRENT_TIME, FALSE);
+  M4_CHECK (gdk_selection_owner_get_for_display (display, clipboard) == NULL,
+	    "selection: owner_get after release");
 
   /* A conversion must be answered (here: refused) rather than hang. */
   selection_notify_seen = FALSE;
@@ -264,7 +278,7 @@ m4_selection (GdkDisplay *display)
   M4_CHECK (selection_notify_seen,
 	    "selection: convert produced no SelectionNotify");
   M4_CHECK (!selection_notify_seen || selection_notify_refused,
-	    "selection: stub convert should refuse (property NONE)");
+	    "selection: convert without owner should refuse (property NONE)");
 
   M4_CHECK (gdk_selection_property_get (main_window, &data, &type,
 					&format) == 0 && data == NULL,
@@ -294,24 +308,51 @@ m4_selection (GdkDisplay *display)
   }
 }
 
+/* M8: gdk_drag_begin always returns a context.  Without a data device (the
+ * headless Weston has no seat) or a pressed button the context is FAILED and a
+ * GDK_DROP_FINISHED for it is queued; ytk ends its drag on that event. */
+static gint m4_drop_finished;
+
+static void
+m4_drag_recorder (GdkEvent *event, gpointer data)
+{
+  if (event->type == GDK_DROP_FINISHED && event->dnd.window == main_window)
+    m4_drop_finished++;
+  else
+    event_handler (event, data);
+}
+
 static void
 m4_drag (void)
 {
   GList *targets = NULL;
   GdkDragContext *ctx;
+  gint i;
 
   targets = g_list_append (targets,
 			   GDK_ATOM_TO_POINTER (gdk_atom_intern ("text/plain",
 								 FALSE)));
+  gdk_event_handler_set (m4_drag_recorder, NULL, NULL);
+  m4_drop_finished = 0;
   ctx = gdk_drag_begin (main_window, targets);
-  M4_CHECK (ctx == NULL, "drag: begin is a stub (M8) and returns NULL");
+  M4_CHECK (ctx != NULL, "drag: begin returns a context (M8)");
   if (ctx)
-    g_object_unref (ctx);
+    {
+      for (i = 0; i < 50 && m4_drop_finished == 0; i++)
+	g_main_context_iteration (NULL, FALSE);
+      M4_CHECK (m4_drop_finished == 1,
+		"drag: a failed begin queues one GDK_DROP_FINISHED");
+      M4_CHECK (!gdk_drag_drop_succeeded (ctx),
+		"drag: a failed begin did not succeed");
+      g_object_unref (ctx);
+    }
+  gdk_event_handler_set (event_handler, NULL, NULL);
   g_list_free (targets);
 
   /* destination-side hooks must not run Xlib on a Wayland window */
   gdk_window_register_dnd (main_window);
 }
+
 
 static void
 m4_property (void)
@@ -344,14 +385,23 @@ m4_property (void)
   M4_CHECK (gdk_atom_intern ("CLIPBOARD", FALSE) == GDK_SELECTION_CLIPBOARD,
 	    "property: predefined CLIPBOARD atom");
 
-  /* properties are safe no-ops on Wayland */
+  /* M8: window properties are a real per window table */
   gdk_property_change (main_window, a, GDK_TARGET_STRING, 8,
 		       GDK_PROP_MODE_REPLACE, bytes, 3);
+  M4_CHECK (gdk_property_get (main_window, a, GDK_NONE, 0, 16, FALSE,
+			      &actual_type, &actual_format, &actual_length,
+			      &data)
+	    && actual_type == GDK_TARGET_STRING && actual_format == 8
+	    && actual_length == 3 && data && memcmp (data, bytes, 3) == 0,
+	    "property: change/get round trip");
+  g_free (data);
+  data = NULL;
+  gdk_property_delete (main_window, a);
   M4_CHECK (!gdk_property_get (main_window, a, GDK_NONE, 0, 16, FALSE,
 			       &actual_type, &actual_format, &actual_length,
-			       &data), "property: get should find nothing");
-  gdk_property_delete (main_window, a);
+			       &data), "property: get after delete finds nothing");
 }
+
 
 static int
 m4_exercise (void)
@@ -5282,6 +5332,2035 @@ m7_exercise (void)
 }
 
 
+/* ---- M8 exercise ------------------------------------------------------
+ *
+ * Selection, clipboard and drag and drop (gdkm8-wayland.h).  Headless Weston
+ * has no seat, so there is no wl_data_device: the protocol side runs on the
+ * VIRTUAL data device (_gdk_wayland_test_dd_init), which calls the real
+ * listeners with fake proxies and records every request.  The recorder below
+ * doubles as the application: it answers SELECTION_REQUEST exactly like ytk's
+ * _gtk_selection_request (wrap the requestor with gdk_window_foreign_new_for_
+ * display, gdk_property_change, gdk_selection_send_notify_for_display).
+ * With a real device the protocol parts print SKIP; the property and loopback
+ * parts always run.
+ *
+ *   A = main_window (toplevel, registered for DnD)   B, C, D other toplevels
+ *   ipc = an unmapped TEMP window, the "GtkInvisible" of a drag source
+ */
+
+static int m8_failures;
+static int m8_checks;
+
+#define M8_CHECK(cond, what)						\
+  G_STMT_START {							\
+    m8_checks++;							\
+    if (!(cond))							\
+      {									\
+	g_printerr ("ydk_demo: M8 check failed: %s\n", what);		\
+	m8_failures++;							\
+      }									\
+  } G_STMT_END
+
+#define M8_EQ_INT(got, want, what)					\
+  G_STMT_START {							\
+    m8_checks++;							\
+    long g_ = (long) (got), w_ = (long) (want);				\
+    if (g_ != w_)							\
+      {									\
+	g_printerr ("ydk_demo: M8 check failed: %s: got %ld want %ld\n", \
+		    what, g_, w_);					\
+	m8_failures++;							\
+      }									\
+  } G_STMT_END
+
+#define M8_HOOK(call, what)						\
+  G_STMT_START {							\
+    m8_checks++;							\
+    if (!(call))							\
+      {									\
+	g_printerr ("ydk_demo: M8 check failed: %s: hook refused\n", what); \
+	m8_failures++;							\
+      }									\
+  } G_STMT_END
+
+#define M8_ATOM(s)  gdk_atom_intern (s, FALSE)
+#define M8_SELPROP  M8_ATOM ("GDK_SELECTION")
+#define M8_CLIP     GDK_SELECTION_CLIPBOARD
+#define M8_PRIMARY  GDK_SELECTION_PRIMARY
+#define M8_XDND     M8_ATOM ("XdndSelection")
+#define M8_BTN_LEFT   0x110
+#define M8_BTN_RIGHT  0x111
+
+static GdkDisplay *m8_d;
+static GdkWindow  *m8_A, *m8_B, *m8_C, *m8_ipc;
+static GQueue      m8_events = G_QUEUE_INIT;
+static guint32     m8_time = 5000;
+static guint8     *m8_big;
+static gsize       m8_big_len;
+static const gchar m8_small[] = "h\xc3\xa9llo w\xc3\xb6rld \xe2\x9c\x93\nline2";
+
+/* ---- the application: a scriptable selection owner ---------------------- */
+
+typedef struct
+{
+  GdkAtom        target;
+  GdkAtom        type;
+  const guint8  *data;
+  gsize          len;
+} M8Row;
+
+enum { M8_ANSWER, M8_SILENT, M8_REFUSE, M8_INCR, M8_DESTROY };
+
+static struct
+{
+  gboolean enabled;
+  gint     mode;
+  M8Row    rows[8];
+  gint     n_rows;
+  GdkAtom  targets[16];
+  gint     n_targets;
+  guint    answered;
+} m8_resp;
+
+static void
+m8_resp_off (void)
+{
+  memset (&m8_resp, 0, sizeof m8_resp);
+}
+
+static void
+m8_resp_reset (void)
+{
+  m8_resp_off ();
+  m8_resp.enabled = TRUE;
+}
+
+static void
+m8_resp_add (const gchar *target, const gchar *type, const guint8 *data,
+	     gsize len)
+{
+  M8Row *r = &m8_resp.rows[m8_resp.n_rows++];
+
+  r->target = M8_ATOM (target);
+  r->type = M8_ATOM (type);
+  r->data = data;
+  r->len = len;
+}
+
+/* NULL terminated vector of target names the TARGETS reply carries */
+static void
+m8_resp_targets (const gchar * const *names)
+{
+  m8_resp.n_targets = 0;
+  for (; *names != NULL; names++)
+    m8_resp.targets[m8_resp.n_targets++] = M8_ATOM (*names);
+}
+
+static void
+m8_answer (GdkEvent *ev)
+{
+  GdkNativeWindow id = ev->selection.requestor;
+  GdkAtom sel = ev->selection.selection, target = ev->selection.target;
+  GdkAtom prop = ev->selection.property;
+  const M8Row *row = NULL;
+  GdkWindow *req;
+  gint i;
+
+  if (m8_resp.mode == M8_SILENT)
+    return;
+  if (m8_resp.mode == M8_DESTROY)
+    {
+      m8_resp.mode = M8_ANSWER;
+      gdk_window_destroy (ev->selection.window);
+      return;
+    }
+
+  m8_resp.answered++;
+  if (m8_resp.mode == M8_REFUSE)
+    {
+      gdk_selection_send_notify_for_display (m8_d, id, sel, target, GDK_NONE,
+					     ev->selection.time);
+      return;
+    }
+
+  req = gdk_window_foreign_new_for_display (m8_d, id);
+  if (target != M8_ATOM ("TARGETS"))
+    for (i = 0; i < m8_resp.n_rows; i++)
+      if (m8_resp.rows[i].target == target)
+	row = &m8_resp.rows[i];
+
+  if (req == NULL || prop == GDK_NONE ||
+      (target != M8_ATOM ("TARGETS") && row == NULL))
+    {
+      gdk_selection_send_notify_for_display (m8_d, id, sel, target, GDK_NONE,
+					     ev->selection.time);
+      if (req)
+	g_object_unref (req);
+      return;
+    }
+
+  if (target == M8_ATOM ("TARGETS"))
+    gdk_property_change (req, prop, M8_ATOM ("ATOM"), 32, GDK_PROP_MODE_REPLACE,
+			 (const guchar *) m8_resp.targets, m8_resp.n_targets);
+  else
+    gdk_property_change (req, prop,
+			 m8_resp.mode == M8_INCR ? M8_ATOM ("INCR") : row->type,
+			 8, GDK_PROP_MODE_REPLACE, row->data, row->len);
+  gdk_selection_send_notify_for_display (m8_d, id, sel, target, prop,
+					 ev->selection.time);
+  g_object_unref (req);
+}
+
+static void
+m8_recorder (GdkEvent *event, gpointer data)
+{
+  g_queue_push_tail (&m8_events, gdk_event_copy (event));
+  if (event->type == GDK_SELECTION_REQUEST && m8_resp.enabled)
+    m8_answer (event);
+}
+
+/* ---- event queue helpers ------------------------------------------------ */
+
+static void
+m8_drain (void)
+{
+  while (g_main_context_iteration (NULL, FALSE))
+    ;
+}
+
+static void
+m8_clear (void)
+{
+  GdkEvent *ev;
+
+  while ((ev = g_queue_pop_head (&m8_events)) != NULL)
+    gdk_event_free (ev);
+}
+
+static GdkEvent *
+m8_find (GdkEventType type, GdkWindow *window)
+{
+  GList *l;
+
+  for (l = m8_events.head; l; l = l->next)
+    {
+      GdkEvent *ev = l->data;
+
+      if (ev->type == type && (window == NULL || ev->any.window == window))
+	return ev;
+    }
+  return NULL;
+}
+
+static int
+m8_count (GdkEventType type, GdkWindow *window)
+{
+  GList *l;
+  int n = 0;
+
+  for (l = m8_events.head; l; l = l->next)
+    {
+      GdkEvent *ev = l->data;
+
+      if (ev->type == type && (window == NULL || ev->any.window == window))
+	n++;
+    }
+  return n;
+}
+
+static GdkEvent *
+m8_find_req (GdkWindow *window, GdkAtom target)
+{
+  GList *l;
+
+  for (l = m8_events.head; l; l = l->next)
+    {
+      GdkEvent *ev = l->data;
+
+      if (ev->type == GDK_SELECTION_REQUEST &&
+	  (window == NULL || ev->selection.window == window) &&
+	  ev->selection.target == target)
+	return ev;
+    }
+  return NULL;
+}
+
+static void
+m8_run_ms (guint ms)
+{
+  gint64 end = g_get_monotonic_time () + (gint64) ms * 1000;
+
+  do
+    {
+      m8_drain ();
+      g_usleep (500);
+    }
+  while (g_get_monotonic_time () < end);
+  m8_drain ();
+}
+
+static gboolean
+m8_wait_notify (GdkWindow *window, guint ms)
+{
+  gint64 end = g_get_monotonic_time () + (gint64) ms * 1000;
+
+  for (;;)
+    {
+      m8_drain ();
+      if (m8_find (GDK_SELECTION_NOTIFY, window))
+	return TRUE;
+      if (g_get_monotonic_time () > end)
+	return FALSE;
+      g_usleep (500);
+    }
+}
+
+/* ---- paste -------------------------------------------------------------- */
+
+typedef struct
+{
+  gboolean notified;
+  GdkAtom  property;
+  GdkAtom  type;
+  gint     format;
+  gint     len;
+  guchar  *data;
+} M8Paste;
+
+/* gdk_selection_convert + wait for the NOTIFY + read the property and delete
+ * it, like gtk_selection_data_get.  The events of the transfer stay in the
+ * queue for the caller. */
+static void
+m8_paste (GdkWindow *req, GdkAtom sel, const gchar *target, guint ms,
+	  M8Paste *p)
+{
+  GdkEvent *ev;
+
+  memset (p, 0, sizeof *p);
+  m8_drain ();
+  m8_clear ();
+  gdk_selection_convert (req, sel, M8_ATOM (target), GDK_CURRENT_TIME);
+  M8_CHECK (m8_find (GDK_SELECTION_NOTIFY, req) == NULL,
+	    "paste: NOTIFY delivered from inside convert");
+  p->notified = m8_wait_notify (req, ms);
+  if (!p->notified)
+    return;
+
+  ev = m8_find (GDK_SELECTION_NOTIFY, req);
+  M8_CHECK (ev->selection.selection == sel && ev->selection.target == M8_ATOM (target),
+	    "paste: NOTIFY selection or target differs");
+  M8_CHECK (m8_count (GDK_SELECTION_NOTIFY, req) == 1,
+	    "paste: more than one NOTIFY");
+  p->property = ev->selection.property;
+  if (p->property != GDK_NONE)
+    {
+      p->len = gdk_selection_property_get (req, &p->data, &p->type, &p->format);
+      gdk_property_delete (req, M8_SELPROP);
+    }
+}
+
+static void
+m8_paste_free (M8Paste *p)
+{
+  g_free (p->data);
+  p->data = NULL;
+}
+
+static gboolean
+m8_paste_is (const M8Paste *p, const guint8 *data, gsize len)
+{
+  return p->notified && p->property == M8_SELPROP && p->data != NULL &&
+    (gsize) p->len == len && memcmp (p->data, data, len) == 0 &&
+    p->data[len] == 0;
+}
+
+/* @p carries an ATOM array equal to the NULL terminated @names */
+static gboolean
+m8_atoms_are (const M8Paste *p, const gchar * const *names)
+{
+  gint i, n = 0;
+  GdkAtom *atoms = (GdkAtom *) p->data;
+
+  while (names[n] != NULL)
+    n++;
+  if (!p->notified || p->property != M8_SELPROP || p->data == NULL ||
+      p->type != M8_ATOM ("ATOM") || p->format != 32 ||
+      (gsize) p->len != n * sizeof (GdkAtom))
+    return FALSE;
+  for (i = 0; i < n; i++)
+    if (atoms[i] != M8_ATOM (names[i]))
+      return FALSE;
+  return TRUE;
+}
+
+static gboolean
+m8_strv_is (gchar **v, const gchar * const *want)
+{
+  gint i;
+
+  if (v == NULL)
+    return FALSE;
+  for (i = 0; want[i] != NULL; i++)
+    if (v[i] == NULL || strcmp (v[i], want[i]) != 0)
+      return FALSE;
+  return v[i] == NULL;
+}
+
+/* @info mimes of set_selection[@kind] equal the NULL terminated @want */
+static gboolean
+m8_set_mimes_are (const GDKWTestDDInfo *info, gint kind,
+		  const gchar * const *want)
+{
+  guint i;
+
+  for (i = 0; want[i] != NULL; i++)
+    if (i >= info->set_selection[kind].n_mimes ||
+	strcmp (info->set_selection[kind].mimes[i], want[i]) != 0)
+      return FALSE;
+  return i == info->set_selection[kind].n_mimes;
+}
+
+static GdkWindow *
+m8_toplevel (gint w, gint h)
+{
+  GdkWindowAttr attr;
+
+  memset (&attr, 0, sizeof attr);
+  attr.window_type = GDK_WINDOW_TOPLEVEL;
+  attr.wclass = GDK_INPUT_OUTPUT;
+  attr.width = w;
+  attr.height = h;
+  attr.event_mask = GDK_EXPOSURE_MASK;
+  return gdk_window_new (gdk_get_default_root_window (), &attr, 0);
+}
+
+static GdkWindow *
+m8_temp (void)
+{
+  GdkWindowAttr attr;
+
+  memset (&attr, 0, sizeof attr);
+  attr.window_type = GDK_WINDOW_TEMP;
+  attr.wclass = GDK_INPUT_OUTPUT;
+  attr.width = 1;
+  attr.height = 1;
+  return gdk_window_new (gdk_get_default_root_window (), &attr, 0);
+}
+
+static GDKWTestDDInfo
+m8_dd (void)
+{
+  GDKWTestDDInfo info;
+
+  memset (&info, 0, sizeof info);
+  if (!_gdk_wayland_test_dd_info (m8_d, &info))
+    {
+      g_printerr ("ydk_demo: M8 check failed: dd_info refused\n");
+      m8_failures++;
+    }
+  return info;
+}
+
+static GDKWTestSelectionInfo
+m8_sel (GdkAtom selection)
+{
+  GDKWTestSelectionInfo si;
+
+  memset (&si, 0, sizeof si);
+  if (!_gdk_wayland_test_selection_info (m8_d, selection, &si))
+    {
+      g_printerr ("ydk_demo: M8 check failed: selection_info refused\n");
+      m8_failures++;
+    }
+  return si;
+}
+
+static GdkEvent *
+m8_check_no_events (const gchar *what)
+{
+  m8_drain ();
+  if (g_queue_get_length (&m8_events) != 0)
+    {
+      g_printerr ("ydk_demo: M8 check failed: %s: %u unexpected event(s)\n",
+		  what, g_queue_get_length (&m8_events));
+      m8_failures++;
+    }
+  return NULL;
+}
+
+static GList *
+m8_targets (const gchar *first, ...)
+{
+  GList *l = NULL;
+  const gchar *s;
+  va_list ap;
+
+  va_start (ap, first);
+  for (s = first; s != NULL; s = va_arg (ap, const gchar *))
+    l = g_list_append (l, GDK_ATOM_TO_POINTER (M8_ATOM (s)));
+  va_end (ap);
+  return l;
+}
+
+/* ---- P: property table (no compositor) --------------------------------- */
+
+static void
+m8_property (void)
+{
+  GdkWindow *w = m8_B;
+  GdkAtom p = M8_ATOM ("YDK_M8_P");
+  GdkAtom t = GDK_NONE;
+  GdkAtom string = GDK_TARGET_STRING, cardinal = M8_ATOM ("CARDINAL");
+  GdkAtom atom = M8_ATOM ("ATOM");
+  gint f = 0, l = 0;
+  guchar *data = NULL;
+  const guint16 shorts[4] = { 1, 2, 0xfffe, 4 };
+  const glong longs[3] = { 7, 0x7fffffff, -3 };
+  GdkAtom atoms[3];
+  GdkWindow *tmp;
+  gint i;
+
+  M8_EQ_INT (_gdk_wayland_test_property_count (w), 0, "P: starts empty");
+
+  /* format 8, slicing in 32 bit units */
+  gdk_property_change (w, p, string, 8, GDK_PROP_MODE_REPLACE,
+		       (const guchar *) "abcdefgh", 8);
+  M8_EQ_INT (_gdk_wayland_test_property_count (w), 1, "P: count after change");
+  M8_EQ_INT (_gdk_wayland_test_property_bytes (w), 8, "P: bytes after change");
+  M8_CHECK (gdk_property_get (w, p, GDK_NONE, 0, 100, FALSE, &t, &f, &l, &data)
+	    && t == string && f == 8 && l == 8 && data
+	    && memcmp (data, "abcdefgh", 8) == 0, "P: format 8 round trip");
+  g_free (data);
+  data = NULL;
+  M8_CHECK (gdk_property_get (w, p, GDK_NONE, 0, 4, FALSE, &t, &f, &l, &data)
+	    && l == 4 && memcmp (data, "abcd", 4) == 0, "P: length 4 slice");
+  g_free (data);
+  data = NULL;
+  M8_CHECK (gdk_property_get (w, p, GDK_NONE, 0, 1, FALSE, &t, &f, &l, &data)
+	    && l == 4 && memcmp (data, "abcd", 4) == 0,
+	    "P: length 1 rounds up to 4 bytes");
+  g_free (data);
+  data = NULL;
+  M8_CHECK (gdk_property_get (w, p, GDK_NONE, 1, 100, FALSE, &t, &f, &l, &data)
+	    && l == 4 && memcmp (data, "efgh", 4) == 0, "P: offset 1 slice");
+  g_free (data);
+  data = NULL;
+  M8_CHECK (!gdk_property_get (w, p, GDK_NONE, 3, 100, FALSE, &t, &f, &l, &data),
+	    "P: offset beyond the end fails");
+  M8_CHECK (!gdk_property_get (w, M8_ATOM ("YDK_M8_NOPE"), GDK_NONE, 0, 4,
+			       FALSE, &t, &f, &l, &data),
+	    "P: unknown property fails");
+
+  /* type mismatch: FALSE, actual type and format filled */
+  t = GDK_NONE;
+  f = 0;
+  M8_CHECK (!gdk_property_get (w, p, cardinal, 0, 100, FALSE, &t, &f, &l, &data)
+	    && t == string && f == 8, "P: type mismatch fills the actual type");
+
+  /* PREPEND / APPEND */
+  gdk_property_change (w, p, string, 8, GDK_PROP_MODE_REPLACE,
+		       (const guchar *) "bcd", 3);
+  gdk_property_change (w, p, string, 8, GDK_PROP_MODE_APPEND,
+		       (const guchar *) "ef", 2);
+  gdk_property_change (w, p, string, 8, GDK_PROP_MODE_PREPEND,
+		       (const guchar *) "a", 1);
+  gdk_property_change (w, p, cardinal, 8, GDK_PROP_MODE_APPEND,
+		       (const guchar *) "ZZ", 2);   /* type mismatch: ignored */
+  gdk_property_change (w, p, string, 16, GDK_PROP_MODE_APPEND,
+		       (const guchar *) "ZZ", 1);   /* format mismatch: ignored */
+  M8_CHECK (gdk_property_get (w, p, GDK_NONE, 0, 100, FALSE, &t, &f, &l, &data)
+	    && l == 6 && memcmp (data, "abcdef", 6) == 0,
+	    "P: prepend and append, mismatches ignored");
+  g_free (data);
+  data = NULL;
+
+  /* pdelete deletes when the whole value was returned */
+  M8_CHECK (gdk_property_get (w, p, GDK_NONE, 0, 4, TRUE, &t, &f, &l, &data)
+	    && l == 4, "P: partial get with pdelete");
+  g_free (data);
+  data = NULL;
+  M8_EQ_INT (_gdk_wayland_test_property_count (w), 1,
+	     "P: partial get keeps the property");
+  M8_CHECK (gdk_property_get (w, p, GDK_NONE, 0, 100, TRUE, &t, &f, &l, &data)
+	    && l == 6, "P: full get with pdelete");
+  g_free (data);
+  data = NULL;
+  M8_EQ_INT (_gdk_wayland_test_property_count (w), 0,
+	     "P: full get with pdelete deletes");
+  M8_EQ_INT (_gdk_wayland_test_property_bytes (w), 0, "P: bytes back to 0");
+
+  /* format 16 */
+  gdk_property_change (w, p, cardinal, 16, GDK_PROP_MODE_REPLACE,
+		       (const guchar *) shorts, 4);
+  M8_CHECK (gdk_property_get (w, p, cardinal, 0, 100, FALSE, &t, &f, &l, &data)
+	    && f == 16 && l == 8 && memcmp (data, shorts, 8) == 0,
+	    "P: format 16 round trip");
+  g_free (data);
+  data = NULL;
+
+  /* format 32 is C longs; offset and length count items (32 bit wire units) */
+  gdk_property_change (w, p, cardinal, 32, GDK_PROP_MODE_REPLACE,
+		       (const guchar *) longs, 3);
+  M8_CHECK (gdk_property_get (w, p, GDK_NONE, 0, 100, FALSE, &t, &f, &l, &data)
+	    && f == 32 && l == 3 * (gint) sizeof (long)
+	    && memcmp (data, longs, 3 * sizeof (long)) == 0,
+	    "P: format 32 round trip");
+  g_free (data);
+  data = NULL;
+  M8_CHECK (gdk_property_get (w, p, GDK_NONE, 1, 4, FALSE, &t, &f, &l, &data)
+	    && l == (gint) sizeof (long)
+	    && memcmp (data, &longs[1], sizeof (long)) == 0,
+	    "P: format 32 partial read (offset 1, one item)");
+  g_free (data);
+  data = NULL;
+  M8_CHECK (gdk_property_get (w, p, GDK_NONE, 1, 100, FALSE, &t, &f, &l, &data)
+	    && l == 2 * (gint) sizeof (long)
+	    && memcmp (data, &longs[1], 2 * sizeof (long)) == 0,
+	    "P: format 32 partial read (offset 1, rest)");
+  g_free (data);
+  data = NULL;
+  M8_CHECK (gdk_property_get (w, p, GDK_NONE, 0, 8, FALSE, &t, &f, &l, &data)
+	    && l == 2 * (gint) sizeof (long)
+	    && memcmp (data, longs, 2 * sizeof (long)) == 0,
+	    "P: format 32 length 8 bytes is 2 wire units");
+  g_free (data);
+  data = NULL;
+
+  /* ATOM stays GdkAtom verbatim */
+  atoms[0] = string;
+  atoms[1] = cardinal;
+  atoms[2] = M8_ATOM ("UTF8_STRING");
+  gdk_property_change (w, p, atom, 32, GDK_PROP_MODE_REPLACE,
+		       (const guchar *) atoms, 3);
+  M8_CHECK (gdk_property_get (w, p, atom, 0, 100, FALSE, &t, &f, &l, &data)
+	    && t == atom && f == 32 && l == 3 * (gint) sizeof (GdkAtom)
+	    && memcmp (data, atoms, sizeof atoms) == 0, "P: ATOM round trip");
+  g_free (data);
+  data = NULL;
+
+  /* an empty property exists and returns no data */
+  gdk_property_change (w, p, string, 8, GDK_PROP_MODE_REPLACE, NULL, 0);
+  M8_EQ_INT (_gdk_wayland_test_property_count (w), 1, "P: empty property stored");
+  M8_CHECK (gdk_property_get (w, p, GDK_NONE, 0, 100, FALSE, &t, &f, &l, &data)
+	    && l == 0 && data == NULL, "P: empty property returns TRUE, no data");
+
+  /* delete, and delete of something that is not there */
+  gdk_property_delete (w, p);
+  gdk_property_delete (w, p);
+  M8_EQ_INT (_gdk_wayland_test_property_count (w), 0, "P: count after delete");
+  M8_EQ_INT (_gdk_wayland_test_property_bytes (w), 0, "P: bytes after delete");
+
+  /* the cap per window is 64 MiB: a change that would exceed it is dropped */
+  for (i = 0; i < 3; i++)
+    gdk_property_change (w, p, string, 8, GDK_PROP_MODE_REPLACE,
+			 (const guchar *) "x", 1);
+  gdk_property_delete (w, p);
+
+  /* a destroyed window: FALSE, no CRITICAL, nothing stored */
+  tmp = m8_toplevel (20, 20);
+  g_object_ref (tmp);
+  gdk_property_change (tmp, p, string, 8, GDK_PROP_MODE_REPLACE,
+		       (const guchar *) "x", 1);
+  M8_EQ_INT (_gdk_wayland_test_property_count (tmp), 1, "P: tmp window property");
+  gdk_window_destroy (tmp);
+  M8_CHECK (!gdk_property_get (tmp, p, GDK_NONE, 0, 4, FALSE, &t, &f, &l, &data),
+	    "P: get on a destroyed window fails");
+  gdk_property_change (tmp, p, string, 8, GDK_PROP_MODE_REPLACE,
+		       (const guchar *) "x", 1);
+  gdk_property_delete (tmp, p);
+  g_object_unref (tmp);
+}
+
+/* ---- pure mime helpers -------------------------------------------------- */
+
+static void
+m8_helpers (void)
+{
+  GdkAtom t1[] = { M8_ATOM ("TARGETS"), M8_ATOM ("UTF8_STRING"),
+		   GDK_TARGET_STRING, M8_ATOM ("TIMESTAMP"),
+		   M8_ATOM ("text/uri-list"), M8_ATOM ("application/x-ydk"),
+		   M8_ATOM ("MULTIPLE") };
+  GdkAtom t2[] = { GDK_TARGET_STRING };
+  GdkAtom t3[] = { M8_ATOM ("application/x-ydk"), M8_ATOM ("text/plain"),
+		   M8_ATOM ("application/x-ydk"), M8_ATOM ("image/png") };
+  const gchar *w1[] = { "text/plain;charset=utf-8", "text/plain", "UTF8_STRING",
+			"text/uri-list", "application/x-ydk", NULL };
+  const gchar *w2[] = { "text/plain;charset=utf-8", "text/plain", "UTF8_STRING",
+			NULL };
+  const gchar *w3[] = { "application/x-ydk", "text/plain;charset=utf-8",
+			"text/plain", "UTF8_STRING", "image/png", NULL };
+  const gchar *i1[] = { "text/plain;charset=utf-8", "text/uri-list",
+			"application/x-ydk", NULL };
+  const gchar *i2[] = { "text/plain", "text/uri-list", NULL };
+  const gchar *i3[] = { "TARGETS", "", NULL };
+  const gchar *i4[] = { "x-ardour/region", "UTF8_STRING", "text/plain", NULL };
+  const gchar *e1[] = { "UTF8_STRING", "STRING", "text/uri-list",
+			"application/x-ydk", NULL };
+  const gchar *e2[] = { "UTF8_STRING", "STRING", "text/uri-list", NULL };
+  const gchar *e4[] = { "x-ardour/region", "UTF8_STRING", "STRING", NULL };
+  gchar **v;
+  GdkAtom *a;
+  gint n = -1, i;
+
+  v = _gdk_wayland_selection_mimes_for_targets (t1, G_N_ELEMENTS (t1));
+  M8_CHECK (m8_strv_is (v, w1), "helpers: outbound mimes, pseudo targets ignored");
+  g_strfreev (v);
+  v = _gdk_wayland_selection_mimes_for_targets (t2, G_N_ELEMENTS (t2));
+  M8_CHECK (m8_strv_is (v, w2), "helpers: STRING alone offers the text group");
+  g_strfreev (v);
+  v = _gdk_wayland_selection_mimes_for_targets (t3, G_N_ELEMENTS (t3));
+  M8_CHECK (m8_strv_is (v, w3),
+	    "helpers: text group at its first member, duplicates dropped");
+  g_strfreev (v);
+  v = _gdk_wayland_selection_mimes_for_targets (NULL, 0);
+  M8_CHECK (v != NULL && v[0] == NULL, "helpers: no targets, empty vector");
+  g_strfreev (v);
+
+  a = _gdk_wayland_selection_targets_for_mimes (i1, &n);
+  M8_CHECK (a != NULL && n == 4 && a[0] == M8_ATOM (e1[0]) &&
+	    a[1] == M8_ATOM (e1[1]) && a[2] == M8_ATOM (e1[2]) &&
+	    a[3] == M8_ATOM (e1[3]), "helpers: inbound text/plain;charset=utf-8");
+  g_free (a);
+  a = _gdk_wayland_selection_targets_for_mimes (i2, &n);
+  M8_CHECK (a != NULL && n == 3 && a[0] == M8_ATOM (e2[0]) &&
+	    a[1] == M8_ATOM (e2[1]) && a[2] == M8_ATOM (e2[2]),
+	    "helpers: inbound text/plain");
+  g_free (a);
+  a = _gdk_wayland_selection_targets_for_mimes (i3, &n);
+  M8_CHECK (a == NULL && n == 0, "helpers: inbound pseudo names ignored");
+  g_free (a);
+  a = _gdk_wayland_selection_targets_for_mimes (i4, &n);
+  M8_CHECK (a != NULL && n == 3, "helpers: inbound order");
+  for (i = 0; a != NULL && i < 3 && i < n; i++)
+    M8_CHECK (a[i] == M8_ATOM (e4[i]), "helpers: inbound order entry");
+  g_free (a);
+}
+
+/* ---- S1/S6: loopback copy A, paste B ------------------------------------ */
+
+/* @probe: a TARGETS probe, a wl source and set_selection[@kind] are expected
+ * (a usable device and a protocol selection); otherwise none of them. */
+static void
+m8_loopback (GdkAtom sel, gboolean probe, gint kind, const gchar *tag)
+{
+  const gchar *tnames[] = { "UTF8_STRING", "application/x-ydk", NULL };
+  const gchar *want_mimes[] = { "text/plain;charset=utf-8", "text/plain",
+				"UTF8_STRING", "application/x-ydk", NULL };
+  static const guint8 ydk_bytes[] = { 1, 2, 0, 0xff, 0x80, 0 };
+  const guint8 *pay[2] = { (const guint8 *) m8_small, m8_big };
+  gsize pay_len[2] = { strlen (m8_small), 0 };
+  GDKWTestDDInfo info;
+  GDKWTestSelectionInfo si;
+  M8Paste p;
+  GdkEvent *ev;
+  guint probes0;
+  gchar what[160];
+  gint i;
+
+  pay_len[1] = m8_big_len;
+  probes0 = m8_sel (sel).probes_started;
+
+  for (i = 0; i < 2; i++)
+    {
+      m8_resp_reset ();
+      m8_resp_targets (tnames);
+      m8_resp_add ("UTF8_STRING", "UTF8_STRING", pay[i], pay_len[i]);
+      m8_resp_add ("application/x-ydk", "application/x-ydk", ydk_bytes,
+		   sizeof ydk_bytes);
+      m8_drain ();
+      m8_clear ();
+      _gdk_wayland_test_dd_reset_requests (m8_d);
+
+      g_snprintf (what, sizeof what, "%s: owner_set (%s)", tag, i ? "big" : "small");
+      M8_CHECK (gdk_selection_owner_set_for_display (m8_d, m8_A, sel,
+						     GDK_CURRENT_TIME, FALSE),
+		what);
+      M8_CHECK (gdk_selection_owner_get_for_display (m8_d, sel) == m8_A,
+		"loopback: owner_get returns the owner window");
+      M8_CHECK (m8_find (GDK_SELECTION_REQUEST, NULL) == NULL,
+		"loopback: the probe is asynchronous, never inside owner_set");
+      m8_drain ();
+
+      ev = m8_find_req (m8_A, M8_ATOM ("TARGETS"));
+      info = m8_dd ();
+      si = m8_sel (sel);
+      if (probe)
+	{
+	  g_snprintf (what, sizeof what, "%s: TARGETS probe request", tag);
+	  M8_CHECK (ev != NULL && ev->selection.requestor != 0 &&
+		    ev->selection.selection == sel, what);
+	  M8_EQ_INT (si.probes_started, probes0 + i + 1, "loopback: probes_started");
+	  M8_EQ_INT (si.probes_completed, probes0 + i + 1,
+		     "loopback: probes_completed");
+	  M8_EQ_INT (info.set_selection[kind].count, 1,
+		     "loopback: exactly one set_selection");
+	  M8_EQ_INT (info.set_selection[kind].serial,
+		     _gdk_wayland_test_dd_seat_serial (m8_d),
+		     "loopback: set_selection carries the seat serial");
+	  M8_CHECK (info.set_selection[kind].serial != 0,
+		    "loopback: seat serial is not 0");
+	  M8_CHECK (!info.set_selection[kind].cleared &&
+		    m8_set_mimes_are (&info, kind, want_mimes),
+		    "loopback: set_selection mimes");
+	  M8_CHECK (si.source_alive, "loopback: a wl source exists");
+	}
+      else
+	{
+	  M8_CHECK (ev == NULL, "loopback: no probe without device or protocol");
+	  M8_EQ_INT (si.probes_started, probes0, "loopback: probes_started unchanged");
+	  M8_EQ_INT (info.set_selection[0].count + info.set_selection[1].count,
+		     0, "loopback: no set_selection");
+	  M8_CHECK (!si.source_alive, "loopback: no wl source");
+	}
+
+      /* paste in B */
+      m8_paste (m8_B, sel, "UTF8_STRING", 5000, &p);
+      g_snprintf (what, sizeof what, "%s: UTF8_STRING %s payload", tag,
+		  i ? "big" : "small");
+      M8_CHECK (m8_paste_is (&p, pay[i], pay_len[i]), what);
+      M8_CHECK (p.type == M8_ATOM ("UTF8_STRING") && p.format == 8,
+		"loopback: type UTF8_STRING format 8");
+      ev = m8_find_req (m8_A, M8_ATOM ("UTF8_STRING"));
+      M8_CHECK (ev != NULL, "loopback: SELECTION_REQUEST on the owner");
+      if (ev)
+	{
+	  M8_EQ_INT (ev->selection.requestor, _gdk_wayland_test_native_id (m8_B),
+		     "loopback: requestor is the native id of B");
+	  M8_CHECK (ev->selection.property == M8_SELPROP &&
+		    ev->selection.selection == sel,
+		    "loopback: request property GDK_SELECTION");
+	}
+      M8_EQ_INT (_gdk_wayland_test_property_count (m8_B), 0,
+		 "loopback: nothing left on the requestor");
+      info = m8_dd ();
+      M8_EQ_INT (info.receive_count, 0, "loopback: no compositor round trip");
+      m8_paste_free (&p);
+    }
+
+  /* a binary custom target survives (NULs, high bytes) */
+  m8_paste (m8_B, sel, "application/x-ydk", 5000, &p);
+  M8_CHECK (m8_paste_is (&p, ydk_bytes, sizeof ydk_bytes) &&
+	    p.type == M8_ATOM ("application/x-ydk"), "loopback: binary target");
+  m8_paste_free (&p);
+
+  /* an unknown target: the owner answers NONE, NOTIFY carries NONE */
+  m8_paste (m8_B, sel, "application/x-nope", 5000, &p);
+  M8_CHECK (p.notified && p.property == GDK_NONE,
+	    "loopback: refused target gives NOTIFY with NONE");
+  M8_EQ_INT (_gdk_wayland_test_property_count (m8_B), 0,
+	     "loopback: refusal leaves nothing on the requestor");
+
+  /* TARGETS reaches the application, which answers ATOM / 32 */
+  m8_paste (m8_B, sel, "TARGETS", 5000, &p);
+  M8_CHECK (m8_atoms_are (&p, tnames), "loopback: TARGETS is ATOM, 32, n atoms");
+  m8_paste_free (&p);
+
+  /* a requestor that is the owner itself works too */
+  m8_paste (m8_A, sel, "UTF8_STRING", 5000, &p);
+  M8_CHECK (m8_paste_is (&p, pay[1], pay_len[1]), "loopback: paste into the owner");
+  m8_paste_free (&p);
+
+  /* release: no CLEAR, no owner */
+  m8_clear ();
+  M8_CHECK (gdk_selection_owner_set_for_display (m8_d, NULL, sel,
+						 GDK_CURRENT_TIME, FALSE),
+	    "loopback: release owner_set (NULL)");
+  m8_drain ();
+  M8_CHECK (gdk_selection_owner_get_for_display (m8_d, sel) == NULL,
+	    "loopback: no owner after release");
+  M8_EQ_INT (m8_count (GDK_SELECTION_CLEAR, NULL), 0,
+	     "loopback: release queues no SELECTION_CLEAR");
+  m8_resp_off ();
+}
+
+/* ---- S2/S3: external offers --------------------------------------------- */
+
+static void
+m8_offer_targets_and_paste (GdkAtom sel, GDKWSelKind kind, const gchar *tag)
+{
+  const gchar *mimes[] = { "text/plain;charset=utf-8", "text/uri-list",
+			   "application/x-ydk", NULL };
+  const gchar *advert[] = { "UTF8_STRING", "STRING", "text/uri-list",
+			    "application/x-ydk", NULL };
+  GDKWTestDDInfo info, base;
+  GDKWTestSelectionInfo si;
+  M8Paste p;
+  guint id;
+  guint8 latin[] = "a\xc3\xa9\xe2\x9c\x93";    /* a, e acute, check mark */
+  const guint8 latin_want[] = { 'a', 0xe9, '?' };
+  const guint8 uri[] = "file:///tmp/a\r\nfile:///tmp/b\r\n";
+  gchar what[160];
+  guint reads0;
+
+  base = m8_dd ();
+  reads0 = base.receive_count;
+  M8_CHECK (gdk_selection_owner_get_for_display (m8_d, sel) == NULL,
+	    "offer: starts without a local owner");
+
+  id = _gdk_wayland_test_dd_offer_new (m8_d, kind, 1, mimes);
+  M8_CHECK (id != 0, "offer: offer_new");
+  M8_CHECK (m8_dd ().offers_alive == base.offers_alive + 1,
+	    "offer: offers_alive counts the pending offer");
+  M8_HOOK (_gdk_wayland_test_dd_selection (m8_d, kind, id), "offer: selection");
+  si = m8_sel (sel);
+  M8_CHECK (si.external_offer && si.external_offer_id == id,
+	    "offer: selection piece sees the external offer");
+  M8_CHECK (gdk_selection_owner_get_for_display (m8_d, sel) == NULL,
+	    "offer: owner_get stays NULL for an external owner");
+
+  /* S2 TARGETS from the offer */
+  m8_paste (m8_B, sel, "TARGETS", 5000, &p);
+  g_snprintf (what, sizeof what, "%s: external TARGETS", tag);
+  M8_CHECK (m8_atoms_are (&p, advert), what);
+  M8_CHECK (m8_find_req (NULL, M8_ATOM ("TARGETS")) == NULL,
+	    "offer: TARGETS asked nobody");
+  m8_paste_free (&p);
+
+  /* S3: 100 KB crosses the 64 KiB pipe */
+  M8_HOOK (_gdk_wayland_test_dd_offer_data (m8_d, id, "text/plain;charset=utf-8",
+					    m8_big, m8_big_len, GDKW_TEST_FEED_NORMAL),
+	   "offer: offer_data");
+  _gdk_wayland_test_dd_reset_requests (m8_d);
+  m8_paste (m8_A, sel, "UTF8_STRING", 8000, &p);
+  g_snprintf (what, sizeof what, "%s: external UTF8_STRING 100 KB", tag);
+  M8_CHECK (m8_paste_is (&p, m8_big, m8_big_len), what);
+  M8_CHECK (p.type == M8_ATOM ("UTF8_STRING") && p.format == 8,
+	    "offer: type UTF8_STRING");
+  m8_paste_free (&p);
+  info = m8_dd ();
+  M8_EQ_INT (info.receive_count, 1, "offer: one receive");
+  M8_CHECK (strcmp (info.receive_mime, "text/plain;charset=utf-8") == 0,
+	    "offer: receive mime");
+  M8_EQ_INT (info.receive_kind, kind, "offer: receive kind");
+  M8_EQ_INT (info.pending_reads, 0, "offer: no pipe left open");
+  M8_EQ_INT (_gdk_wayland_test_property_count (m8_A), 0,
+	     "offer: nothing left on the requestor");
+  M8_CHECK (gdk_selection_owner_get_for_display (m8_d, sel) == NULL,
+	    "offer: owner_get still NULL after paste");
+
+  /* STRING: UTF-8 to Latin-1, '?' for what does not fit */
+  M8_HOOK (_gdk_wayland_test_dd_offer_data (m8_d, id, "text/plain;charset=utf-8",
+					    latin, strlen ((char *) latin),
+					    GDKW_TEST_FEED_NORMAL), "offer: offer_data 2");
+  m8_paste (m8_A, sel, "STRING", 5000, &p);
+  M8_CHECK (m8_paste_is (&p, latin_want, sizeof latin_want) &&
+	    p.type == GDK_TARGET_STRING, "offer: STRING is Latin-1 with '?'");
+  m8_paste_free (&p);
+
+  /* text/uri-list verbatim */
+  M8_HOOK (_gdk_wayland_test_dd_offer_data (m8_d, id, "text/uri-list", uri,
+					    strlen ((char *) uri),
+					    GDKW_TEST_FEED_NORMAL), "offer: offer_data uri");
+  m8_paste (m8_A, sel, "text/uri-list", 5000, &p);
+  M8_CHECK (m8_paste_is (&p, uri, strlen ((char *) uri)) &&
+	    p.type == M8_ATOM ("text/uri-list"), "offer: text/uri-list verbatim");
+  m8_paste_free (&p);
+
+  /* refused: unsupported target, TIMESTAMP, MULTIPLE; no receive for them */
+  _gdk_wayland_test_dd_reset_requests (m8_d);
+  m8_paste (m8_A, sel, "application/x-nope", 5000, &p);
+  M8_CHECK (p.notified && p.property == GDK_NONE, "offer: unsupported target");
+  m8_paste (m8_A, sel, "TIMESTAMP", 5000, &p);
+  M8_CHECK (p.notified && p.property == GDK_NONE, "offer: TIMESTAMP refused");
+  m8_paste (m8_A, sel, "MULTIPLE", 5000, &p);
+  M8_CHECK (p.notified && p.property == GDK_NONE, "offer: MULTIPLE refused");
+  M8_EQ_INT (m8_dd ().receive_count, 0, "offer: refusals read nothing");
+
+  /* STALL: idle timeout, NOTIFY NONE, nothing left behind */
+  M8_HOOK (_gdk_wayland_test_dd_set_timeouts (m8_d, 200, 0, 0, 0), "offer: timeouts");
+  M8_HOOK (_gdk_wayland_test_dd_offer_data (m8_d, id, "text/plain;charset=utf-8",
+					    m8_big, 1000, GDKW_TEST_FEED_STALL),
+	   "offer: offer_data stall");
+  m8_paste (m8_A, sel, "UTF8_STRING", 5000, &p);
+  M8_CHECK (p.notified && p.property == GDK_NONE, "offer: stalled read gives NONE");
+  M8_EQ_INT (_gdk_wayland_test_property_count (m8_A), 0,
+	     "offer: stalled read leaves no property");
+  M8_EQ_INT (m8_dd ().pending_reads, 0, "offer: stalled read closed its pipe");
+  M8_HOOK (_gdk_wayland_test_dd_set_timeouts (m8_d, 5000, 10000, 2000, 5000),
+	   "offer: timeouts restored");
+
+  /* ERROR feed: the pipe closes at once, an empty value is a valid answer */
+  M8_HOOK (_gdk_wayland_test_dd_offer_data (m8_d, id, "text/plain;charset=utf-8",
+					    NULL, 0, GDKW_TEST_FEED_ERROR),
+	   "offer: offer_data error");
+  m8_paste (m8_A, sel, "UTF8_STRING", 5000, &p);
+  M8_CHECK (p.notified && p.property == M8_SELPROP && p.len == 0 && p.data != NULL,
+	    "offer: empty read gives an empty property and a non NULL buffer");
+  m8_paste_free (&p);
+
+  /* the offer goes away: the paste is refused */
+  M8_HOOK (_gdk_wayland_test_dd_selection (m8_d, kind, 0), "offer: selection (0)");
+  M8_CHECK (!m8_sel (sel).external_offer, "offer: cleared");
+  m8_paste (m8_A, sel, "UTF8_STRING", 5000, &p);
+  M8_CHECK (p.notified && p.property == GDK_NONE, "offer: refused after clear");
+  M8_EQ_INT (m8_dd ().offers_alive, base.offers_alive, "offer: offer record freed");
+  (void) reads0;
+}
+
+/* ---- S4: ownership change and clear -------------------------------------- */
+
+static void
+m8_ownership (GdkAtom sel, gint kind, GDKWSelKind skind, const gchar *tag)
+{
+  const gchar *tnames[] = { "UTF8_STRING", NULL };
+  const gchar *tnames2[] = { "application/x-ydk", "text/uri-list", NULL };
+  const gchar *mimes1[] = { "text/plain;charset=utf-8", "text/plain",
+			    "UTF8_STRING", NULL };
+  const gchar *mimes2[] = { "application/x-ydk", "text/uri-list", NULL };
+  GDKWTestDDInfo info;
+  GDKWTestSelectionInfo si, si1;
+  guint clears0, completed0;
+  gchar what[160];
+
+  m8_resp_reset ();
+  m8_resp_targets (tnames);
+  m8_drain ();
+  m8_clear ();
+
+  M8_CHECK (gdk_selection_owner_set_for_display (m8_d, m8_A, sel,
+						 GDK_CURRENT_TIME, FALSE),
+	    "own: A owns");
+  m8_drain ();
+  M8_CHECK (m8_sel (sel).source_alive, "own: A has a source");
+
+  /* replace A by B inside the process: no CLEAR, old source destroyed, new set */
+  m8_resp_targets (tnames2);
+  _gdk_wayland_test_dd_reset_requests (m8_d);
+  m8_clear ();
+  M8_CHECK (gdk_selection_owner_set_for_display (m8_d, m8_B, sel,
+						 GDK_CURRENT_TIME, FALSE),
+	    "own: B takes over");
+  M8_CHECK (gdk_selection_owner_get_for_display (m8_d, sel) == m8_B,
+	    "own: owner_get is B");
+  m8_drain ();
+  M8_EQ_INT (m8_count (GDK_SELECTION_CLEAR, NULL), 0,
+	     "own: replacing an owner queues no SELECTION_CLEAR");
+  info = m8_dd ();
+  g_snprintf (what, sizeof what, "%s: old source destroyed", tag);
+  M8_CHECK (info.source_destroy_count == 1, what);
+  M8_EQ_INT (info.set_selection[kind].count, 1, "own: new set_selection");
+  M8_CHECK (m8_set_mimes_are (&info, kind, mimes2), "own: new mimes");
+
+  /* rapid A then B before the first probe is answered */
+  m8_resp_targets (tnames);
+  m8_drain ();
+  m8_clear ();
+  _gdk_wayland_test_dd_reset_requests (m8_d);
+  completed0 = m8_sel (sel).probes_completed;
+  M8_CHECK (gdk_selection_owner_set_for_display (m8_d, m8_A, sel,
+						 GDK_CURRENT_TIME, FALSE) &&
+	    gdk_selection_owner_set_for_display (m8_d, m8_B, sel,
+						 GDK_CURRENT_TIME, FALSE),
+	    "own: rapid A then B");
+  m8_drain ();
+  info = m8_dd ();
+  si = m8_sel (sel);
+  M8_EQ_INT (info.set_selection[kind].count, 1,
+	     "own: the stale probe answer is ignored, one set_selection");
+  M8_CHECK (m8_set_mimes_are (&info, kind, mimes1), "own: mimes of the last owner");
+  M8_EQ_INT (si.probes_completed, completed0 + 1,
+	     "own: probes_completed counts only the current probe");
+  M8_CHECK (si.owner == m8_B, "own: B is the owner");
+
+  /* the compositor takes the selection away: exactly one CLEAR */
+  clears0 = m8_sel (sel).clear_events;
+  m8_clear ();
+  M8_HOOK (_gdk_wayland_test_dd_source_event (m8_d, skind, GDKW_TEST_SRC_CANCELLED,
+					      NULL, 0), "own: cancelled");
+  m8_drain ();
+  M8_EQ_INT (m8_count (GDK_SELECTION_CLEAR, NULL), 1, "own: one SELECTION_CLEAR");
+  {
+    GdkEvent *ev = m8_find (GDK_SELECTION_CLEAR, NULL);
+
+    M8_CHECK (ev != NULL && ev->selection.window == m8_B &&
+	      ev->selection.selection == sel, "own: CLEAR names B and the selection");
+  }
+  M8_CHECK (gdk_selection_owner_get_for_display (m8_d, sel) == NULL,
+	    "own: no owner after cancelled");
+  si1 = m8_sel (sel);
+  M8_EQ_INT (si1.clear_events, clears0 + 1, "own: clear_events");
+  M8_CHECK (!si1.source_alive, "own: source gone after cancelled");
+  M8_CHECK (!_gdk_wayland_test_dd_source_event (m8_d, skind,
+						GDKW_TEST_SRC_CANCELLED, NULL, 0),
+	    "own: a second cancelled finds no source");
+  m8_drain ();
+  M8_EQ_INT (m8_count (GDK_SELECTION_CLEAR, NULL), 1,
+	     "own: the second cancelled queued nothing");
+
+  /* the time rule */
+  m8_clear ();
+  M8_CHECK (gdk_selection_owner_set_for_display (m8_d, m8_A, sel, 1000, FALSE),
+	    "own: owner_set at time 1000");
+  M8_CHECK (!gdk_selection_owner_set_for_display (m8_d, m8_B, sel, 500, FALSE),
+	    "own: owner_set with an older time returns FALSE");
+  M8_CHECK (gdk_selection_owner_get_for_display (m8_d, sel) == m8_A,
+	    "own: the older time did not take over");
+  M8_CHECK (gdk_selection_owner_set_for_display (m8_d, m8_B, sel, 2000, FALSE),
+	    "own: a newer time takes over");
+  m8_drain ();
+  M8_CHECK (gdk_selection_owner_set_for_display (m8_d, NULL, sel, 0, FALSE),
+	    "own: release");
+  m8_drain ();
+  M8_CHECK (gdk_selection_owner_get_for_display (m8_d, sel) == NULL,
+	    "own: released");
+  M8_EQ_INT (m8_count (GDK_SELECTION_CLEAR, NULL), 0, "own: release queues no CLEAR");
+  M8_CHECK (!m8_sel (sel).source_alive, "own: release destroys the source");
+  m8_resp_off ();
+}
+
+/* ---- S5: serving ---------------------------------------------------------- */
+
+static gboolean
+m8_serve (GDKWSelKind kind, const gchar *mime, guint8 **data, gsize *len)
+{
+  *data = NULL;
+  *len = 0;
+  return _gdk_wayland_test_dd_source_send (m8_d, kind, mime, data, len);
+}
+
+static void
+m8_serving (void)
+{
+  const gchar *t_utf8[] = { "UTF8_STRING", "application/x-ydk", NULL };
+  const gchar *t_plain[] = { "text/plain;charset=utf-8", NULL };
+  const gchar *t_string[] = { "STRING", NULL };
+  const gchar *t_custom[] = { "x-ardour/region", NULL };
+  static const guint8 raw[] = { 0, 1, 2, 0xff, 0x80, 0, 9 };
+  guint8 *out;
+  gsize len;
+  GdkEvent *ev;
+  gchar *name;
+  GDKWTestDDInfo info;
+
+  /* UTF8_STRING owner, 100 KB */
+  m8_resp_reset ();
+  m8_resp_targets (t_utf8);
+  m8_resp_add ("UTF8_STRING", "UTF8_STRING", m8_big, m8_big_len);
+  m8_resp_add ("application/x-ydk", "application/x-ydk", raw, sizeof raw);
+  m8_clear ();
+  M8_CHECK (gdk_selection_owner_set_for_display (m8_d, m8_A, M8_CLIP,
+						 GDK_CURRENT_TIME, FALSE), "serve: own");
+  m8_drain ();
+  m8_clear ();
+
+  M8_CHECK (m8_serve (GDKW_SEL_CLIPBOARD, "text/plain;charset=utf-8", &out, &len) &&
+	    len == m8_big_len && memcmp (out, m8_big, len) == 0,
+	    "serve: text/plain;charset=utf-8 from UTF8_STRING, 100 KB");
+  g_free (out);
+  ev = m8_find_req (m8_A, M8_ATOM ("UTF8_STRING"));
+  M8_CHECK (ev != NULL && ev->selection.requestor != 0 &&
+	    ev->selection.selection == M8_CLIP, "serve: SELECTION_REQUEST on the owner");
+  if (ev)
+    {
+      name = gdk_atom_name (ev->selection.property);
+      M8_CHECK (name && strncmp (name, "YDK_WL_SEND_", 12) == 0,
+		"serve: reply property is a YDK_WL_SEND_ slot");
+      g_free (name);
+      M8_CHECK (ev->selection.requestor != _gdk_wayland_test_native_id (m8_B),
+		"serve: requestor is a SEND token, not a window id");
+    }
+  M8_EQ_INT (_gdk_wayland_test_property_count (m8_A), 0,
+	     "serve: reply property deleted");
+  M8_EQ_INT (m8_sel (M8_CLIP).send_pending, 0, "serve: send_pending back to 0");
+  M8_EQ_INT (m8_dd ().pending_writes, 0, "serve: pending_writes back to 0");
+
+  M8_CHECK (m8_serve (GDKW_SEL_CLIPBOARD, "text/plain", &out, &len) &&
+	    len == m8_big_len && memcmp (out, m8_big, len) == 0,
+	    "serve: text/plain from the same target");
+  g_free (out);
+  M8_CHECK (m8_serve (GDKW_SEL_CLIPBOARD, "UTF8_STRING", &out, &len) &&
+	    len == m8_big_len && memcmp (out, m8_big, len) == 0,
+	    "serve: UTF8_STRING raw");
+  g_free (out);
+  M8_CHECK (m8_serve (GDKW_SEL_CLIPBOARD, "application/x-ydk", &out, &len) &&
+	    len == sizeof raw && memcmp (out, raw, len) == 0,
+	    "serve: a custom mime is served raw");
+  g_free (out);
+
+  /* refusals give EOF with no byte: TRUE and length 0 */
+  M8_CHECK (m8_serve (GDKW_SEL_CLIPBOARD, "application/x-notoffered", &out, &len) &&
+	    len == 0, "serve: a mime that is not offered");
+  g_free (out);
+  m8_resp.mode = M8_REFUSE;
+  M8_CHECK (m8_serve (GDKW_SEL_CLIPBOARD, "UTF8_STRING", &out, &len) && len == 0,
+	    "serve: owner answers NONE");
+  g_free (out);
+  m8_resp.mode = M8_INCR;
+  M8_CHECK (m8_serve (GDKW_SEL_CLIPBOARD, "UTF8_STRING", &out, &len) && len == 0,
+	    "serve: INCR reply refused");
+  g_free (out);
+  M8_EQ_INT (_gdk_wayland_test_property_count (m8_A), 0,
+	     "serve: INCR reply property deleted");
+  m8_resp.mode = M8_SILENT;
+  M8_HOOK (_gdk_wayland_test_dd_set_timeouts (m8_d, 0, 200, 0, 0), "serve: timeouts");
+  M8_CHECK (m8_serve (GDKW_SEL_CLIPBOARD, "UTF8_STRING", &out, &len) && len == 0,
+	    "serve: no reply times out");
+  g_free (out);
+  M8_HOOK (_gdk_wayland_test_dd_set_timeouts (m8_d, 5000, 10000, 2000, 5000),
+	   "serve: timeouts restored");
+  M8_EQ_INT (m8_sel (M8_CLIP).send_pending, 0, "serve: no pending send after refusals");
+  m8_resp.mode = M8_ANSWER;
+  M8_CHECK (m8_serve (GDKW_SEL_CLIPBOARD, "UTF8_STRING", &out, &len) && len == m8_big_len,
+	    "serve: a slot is free again");
+  g_free (out);
+
+  /* 20 refused transfers do not exhaust the 16 slots */
+  {
+    gint i;
+    gboolean ok = TRUE;
+
+    m8_resp.mode = M8_REFUSE;
+    for (i = 0; i < 20; i++)
+      {
+	ok &= m8_serve (GDKW_SEL_CLIPBOARD, "UTF8_STRING", &out, &len) && len == 0;
+	g_free (out);
+      }
+    M8_CHECK (ok, "serve: 20 refused transfers");
+    m8_resp.mode = M8_ANSWER;
+    M8_CHECK (m8_serve (GDKW_SEL_CLIPBOARD, "UTF8_STRING", &out, &len) &&
+	      len == m8_big_len, "serve: still works after 20 refusals");
+    g_free (out);
+  }
+
+  /* text/plain target only: CRLF becomes LF */
+  m8_resp_reset ();
+  m8_resp_targets (t_plain);
+  m8_resp_add ("text/plain;charset=utf-8", "text/plain;charset=utf-8",
+	       (const guint8 *) "a\r\nb", 4);
+  M8_CHECK (gdk_selection_owner_set_for_display (m8_d, m8_A, M8_CLIP,
+						 GDK_CURRENT_TIME, FALSE), "serve: own 2");
+  m8_drain ();
+  M8_CHECK (m8_serve (GDKW_SEL_CLIPBOARD, "text/plain;charset=utf-8", &out, &len) &&
+	    len == 3 && memcmp (out, "a\nb", 3) == 0,
+	    "serve: CRLF to LF for text/plain;charset=utf-8");
+  g_free (out);
+  M8_CHECK (m8_serve (GDKW_SEL_CLIPBOARD, "UTF8_STRING", &out, &len) &&
+	    len == 3 && memcmp (out, "a\nb", 3) == 0,
+	    "serve: the whole text group is served from that target");
+  g_free (out);
+
+  /* STRING owner: Latin-1 to UTF-8 */
+  m8_resp_reset ();
+  m8_resp_targets (t_string);
+  m8_resp_add ("STRING", "STRING", (const guint8 *) "caf\xe9", 4);
+  M8_CHECK (gdk_selection_owner_set_for_display (m8_d, m8_A, M8_CLIP,
+						 GDK_CURRENT_TIME, FALSE), "serve: own 3");
+  m8_drain ();
+  M8_CHECK (m8_serve (GDKW_SEL_CLIPBOARD, "text/plain;charset=utf-8", &out, &len) &&
+	    len == 5 && memcmp (out, "caf\xc3\xa9", 5) == 0,
+	    "serve: STRING owner, Latin-1 becomes UTF-8");
+  g_free (out);
+
+  /* a custom atom is offered under its own name */
+  m8_resp_reset ();
+  m8_resp_targets (t_custom);
+  m8_resp_add ("x-ardour/region", "x-ardour/region", raw, sizeof raw);
+  M8_CHECK (gdk_selection_owner_set_for_display (m8_d, m8_A, M8_CLIP,
+						 GDK_CURRENT_TIME, FALSE), "serve: own 4");
+  m8_drain ();
+  info = m8_dd ();
+  M8_CHECK (info.set_selection[0].n_mimes == 1 &&
+	    strcmp (info.set_selection[0].mimes[0], "x-ardour/region") == 0,
+	    "serve: custom mime offered under its own name");
+  M8_CHECK (m8_serve (GDKW_SEL_CLIPBOARD, "x-ardour/region", &out, &len) &&
+	    len == sizeof raw && memcmp (out, raw, len) == 0,
+	    "serve: custom mime raw");
+  g_free (out);
+
+  /* the owner window is destroyed during the transfer: no crash, fd closed */
+  {
+    GdkWindow *victim = m8_toplevel (30, 30);
+    GDKWTestSelectionInfo si;
+
+    g_object_ref (victim);
+    gdk_window_show (victim);
+    m8_drain ();
+    m8_resp_reset ();
+    m8_resp_targets (t_custom);
+    m8_resp_add ("x-ardour/region", "x-ardour/region", raw, sizeof raw);
+    M8_CHECK (gdk_selection_owner_set_for_display (m8_d, victim, M8_CLIP,
+						   GDK_CURRENT_TIME, FALSE),
+	      "serve: victim owns");
+    m8_drain ();
+    m8_resp.mode = M8_DESTROY;
+    M8_CHECK (m8_serve (GDKW_SEL_CLIPBOARD, "x-ardour/region", &out, &len) &&
+	      len == 0, "serve: owner destroyed mid transfer gives EOF");
+    g_free (out);
+    m8_drain ();
+    si = m8_sel (M8_CLIP);
+    M8_CHECK (!si.has_owner && !si.source_alive && si.send_pending == 0,
+	      "serve: destroying the owner dropped record, source and transfer");
+    M8_CHECK (gdk_selection_owner_get_for_display (m8_d, M8_CLIP) == NULL,
+	      "serve: no owner after the window died");
+    M8_EQ_INT (m8_dd ().pending_writes, 0, "serve: no write left after destroy");
+    g_object_unref (victim);
+  }
+
+  M8_CHECK (gdk_selection_owner_set_for_display (m8_d, NULL, M8_CLIP, 0, FALSE),
+	    "serve: release");
+  m8_resp_off ();
+  m8_drain ();
+  m8_clear ();
+}
+
+/* ---- the selection tests in order -------------------------------------- */
+
+static void
+m8_selection_all (gboolean protocol)
+{
+  GDKWTestDDInfo info;
+
+  /* S1: CLIPBOARD, with or without the data device */
+  m8_loopback (M8_CLIP, protocol, 0, "S1 clipboard");
+  if (protocol)
+    {
+      /* S6: PRIMARY is a protocol selection too; SECONDARY is local */
+      m8_loopback (M8_PRIMARY, TRUE, 1, "S6 primary");
+      info = m8_dd ();
+      M8_EQ_INT (info.set_selection[0].count, 0,
+		 "S6: PRIMARY traffic never touches CLIPBOARD");
+      m8_loopback (GDK_SELECTION_SECONDARY, FALSE, -1, "S6 secondary");
+
+      /* S2, S3 */
+      m8_offer_targets_and_paste (M8_CLIP, GDKW_SEL_CLIPBOARD, "S3 clipboard");
+      m8_offer_targets_and_paste (M8_PRIMARY, GDKW_SEL_PRIMARY, "S6 primary");
+
+      /* S4 */
+      m8_ownership (M8_CLIP, 0, GDKW_SEL_CLIPBOARD, "S4 clipboard");
+      m8_ownership (M8_PRIMARY, 1, GDKW_SEL_PRIMARY, "S6 primary");
+
+      /* S5 */
+      m8_serving ();
+    }
+}
+
+/* ---- D: drag and drop ----------------------------------------------------- */
+
+static guint32
+m8_tick (void)
+{
+  m8_time += 10;
+  return m8_time;
+}
+
+static guint32 m8_seat_serial (void) { return _gdk_wayland_test_dd_seat_serial (m8_d); }
+
+static void
+m8_pointer_down (GdkWindow *w, guint32 button)
+{
+  M8_HOOK (_gdk_wayland_test_pointer_enter (m8_d, w, 100, 100), "pointer enter");
+  M8_HOOK (_gdk_wayland_test_pointer_button (m8_d, m8_tick (), button, TRUE),
+	   "pointer button down");
+  m8_drain ();
+  m8_clear ();
+}
+
+static void
+m8_pointer_release (guint32 button)
+{
+  M8_HOOK (_gdk_wayland_test_pointer_button (m8_d, m8_tick (), button, FALSE),
+	   "pointer button up");
+  m8_drain ();
+}
+
+/* begin a drag with the standard targets and make it start through motion */
+static GdkDragContext *
+m8_drag_start (GList *targets, GdkDragAction possible)
+{
+  GdkDragContext *ctx = gdk_drag_begin (m8_ipc, targets);
+  GdkWindow *dest = NULL;
+  GdkDragProtocol proto = GDK_DRAG_PROTO_XDND;
+
+  M8_CHECK (ctx != NULL, "drag: begin returns a context");
+  if (ctx == NULL)
+    return NULL;
+  gdk_drag_find_window_for_screen (ctx, NULL, gdk_screen_get_default (), 100, 100,
+				   &dest, &proto);
+  M8_CHECK (dest == NULL && proto == GDK_DRAG_PROTO_NONE,
+	    "drag: find_window gives no destination");
+  M8_CHECK (!gdk_drag_motion (ctx, NULL, GDK_DRAG_PROTO_NONE, 100, 100,
+			      GDK_ACTION_COPY, possible, m8_tick ()),
+	    "drag: motion returns FALSE");
+  return ctx;
+}
+
+static void
+m8_drag_source (void)
+{
+  const gchar *want_mimes[] = { "text/plain;charset=utf-8", "text/plain",
+				"UTF8_STRING", "text/uri-list", NULL };
+  const guint8 uri[] = "file:///tmp/a\r\n";
+  GDKWTestDDInfo info;
+  GDKWTestDndSourceInfo si;
+  GDKWTestDragContextInfo ci;
+  GDKWTestSelectionInfo xs;
+  GdkDragContext *ctx;
+  GdkEvent *ev, *req;
+  GList *targets;
+  guint contexts0, sources0, probes0, i;
+  guint32 right_serial;
+  guint8 *out;
+  gsize len;
+
+  contexts0 = _gdk_wayland_test_dnd_contexts_alive ();
+  sources0 = m8_dd ().sources_alive;
+  targets = m8_targets ("UTF8_STRING", "text/uri-list", NULL);
+
+  /* D1, D2: no pressed button, the begin is FAILED */
+  m8_drain ();
+  m8_clear ();
+  _gdk_wayland_test_dd_reset_requests (m8_d);
+  ctx = gdk_drag_begin (m8_ipc, targets);
+  M8_CHECK (ctx != NULL && GDK_IS_DRAG_CONTEXT (ctx), "D1: begin returns a GdkDragContext");
+  M8_HOOK (_gdk_wayland_test_drag_context_info (ctx, &ci), "D1: context info");
+  M8_CHECK (ci.is_wayland && ci.protocol == GDK_DRAG_PROTO_LOCAL && ci.is_source &&
+	    ci.n_targets == 2, "D1: context is a Wayland source, protocol LOCAL");
+  M8_CHECK (ctx->source_window == m8_ipc, "D1: source_window is the ipc window");
+  m8_drain ();
+  ev = m8_find (GDK_DROP_FINISHED, m8_ipc);
+  M8_CHECK (ev != NULL && ev->dnd.context == ctx, "D2: DROP_FINISHED for a failed begin");
+  M8_EQ_INT (m8_count (GDK_DROP_FINISHED, NULL), 1, "D2: exactly one");
+  M8_HOOK (_gdk_wayland_test_dnd_source_info (m8_d, &si), "D2: source info");
+  M8_CHECK (si.failed && !si.started && !si.active && !si.succeeded,
+	    "D2: failed, not started, not active");
+  M8_EQ_INT (m8_dd ().start_drag_count, 0, "D2: no start_drag");
+  M8_CHECK (!gdk_drag_drop_succeeded (ctx), "D2: drop_succeeded FALSE");
+  gdk_drag_abort (ctx, m8_tick ());                /* harmless on a dead drag */
+  g_object_unref (ctx);
+  m8_clear ();
+  M8_EQ_INT (_gdk_wayland_test_dnd_contexts_alive (), contexts0,
+	     "D2: no context left");
+  M8_EQ_INT (m8_dd ().sources_alive, sources0, "D2: no source left");
+
+  /* D3: two buttons, the second released: the grab serial is a press serial */
+  m8_pointer_down (m8_A, M8_BTN_LEFT);
+  M8_HOOK (_gdk_wayland_test_pointer_button (m8_d, m8_tick (), M8_BTN_RIGHT, TRUE),
+	   "D3: right press");
+  right_serial = m8_seat_serial ();
+  m8_pointer_release (M8_BTN_RIGHT);
+  M8_CHECK (m8_seat_serial () != right_serial, "D3: the release has its own serial");
+  m8_clear ();
+  _gdk_wayland_test_dd_reset_requests (m8_d);
+  probes0 = m8_sel (M8_XDND).probes_started;
+
+  ctx = gdk_drag_begin (m8_ipc, targets);
+  M8_CHECK (ctx != NULL, "D3: begin");
+  M8_EQ_INT (m8_dd ().start_drag_count, 0, "D3: begin does not start the drag");
+  {
+    GdkWindow *dest = (GdkWindow *) 0x1;
+    GdkDragProtocol proto = GDK_DRAG_PROTO_XDND;
+
+    gdk_drag_find_window_for_screen (ctx, NULL, gdk_screen_get_default (), 100,
+				     100, &dest, &proto);
+    M8_CHECK (dest == NULL && proto == GDK_DRAG_PROTO_NONE,
+	      "D3: find_window: no destination, protocol NONE");
+    M8_CHECK (!gdk_drag_motion (ctx, NULL, GDK_DRAG_PROTO_NONE, 100, 100,
+				GDK_ACTION_COPY, GDK_ACTION_COPY | GDK_ACTION_MOVE,
+				m8_tick ()),
+	      "D3: motion returns FALSE");
+  }
+  info = m8_dd ();
+  M8_EQ_INT (info.start_drag_count, 1, "D3: motion started the drag");
+  M8_EQ_INT (info.start_drag_serial, right_serial,
+	     "D3: start_drag uses the newest PRESS serial");
+  M8_CHECK (info.start_drag_serial != m8_seat_serial (),
+	    "D3: not the release serial");
+  M8_CHECK (info.start_drag_origin == m8_A && !info.start_drag_icon,
+	    "D3: origin is the toplevel of the pointer focus, no icon");
+  M8_CHECK (info.start_drag_n_mimes == 4, "D3: four mimes");
+  for (i = 0; i < 4 && i < info.start_drag_n_mimes; i++)
+    M8_CHECK (strcmp (info.start_drag_mimes[i], want_mimes[i]) == 0,
+	      "D3: start_drag mime");
+  M8_CHECK (info.source_actions_set && info.source_actions_mask == 3,
+	    "D3: source actions COPY|MOVE");
+  M8_CHECK (gdk_drag_get_selection (ctx) == M8_XDND, "D3: get_selection is XdndSelection");
+  M8_HOOK (_gdk_wayland_test_dnd_source_info (m8_d, &si), "D3: source info");
+  M8_CHECK (si.started && si.active && !si.failed, "D3: started and active");
+
+  /* the ipc window owns XdndSelection: no probe, no set_selection */
+  m8_resp_reset ();
+  m8_resp_add ("text/uri-list", "text/uri-list", uri, strlen ((char *) uri));
+  M8_CHECK (gdk_selection_owner_set_for_display (m8_d, m8_ipc, M8_XDND,
+						 GDK_CURRENT_TIME, FALSE),
+	    "D3: owner_set XdndSelection");
+  m8_drain ();
+  xs = m8_sel (M8_XDND);
+  M8_EQ_INT (xs.probes_started, probes0, "D3: XdndSelection is never probed");
+  info = m8_dd ();
+  M8_EQ_INT (info.set_selection[0].count + info.set_selection[1].count, 0,
+	     "D3: XdndSelection does not set_selection");
+  M8_CHECK (m8_find_req (m8_ipc, M8_ATOM ("TARGETS")) == NULL, "D3: no TARGETS request");
+
+  /* source events */
+  m8_clear ();
+  M8_HOOK (_gdk_wayland_test_dd_source_event (m8_d, GDKW_SEL_DND, GDKW_TEST_SRC_TARGET,
+					      "text/uri-list", 0), "D3: target event");
+  m8_drain ();
+  M8_EQ_INT (m8_count (GDK_DRAG_STATUS, NULL), 0, "D3: TARGET (v3) raises nothing");
+  M8_HOOK (_gdk_wayland_test_dd_source_event (m8_d, GDKW_SEL_DND, GDKW_TEST_SRC_ACTION,
+					      NULL, GDKW_TEST_WL_ACTION_COPY), "D3: action copy");
+  m8_drain ();
+  ev = m8_find (GDK_DRAG_STATUS, m8_ipc);
+  M8_CHECK (ev != NULL && ev->dnd.context == ctx && ctx->action == GDK_ACTION_COPY,
+	    "D3: ACTION(COPY) raises DRAG_STATUS with COPY");
+  M8_HOOK (_gdk_wayland_test_dd_source_event (m8_d, GDKW_SEL_DND, GDKW_TEST_SRC_ACTION,
+					      NULL, GDKW_TEST_WL_ACTION_MOVE), "D3: action move");
+  m8_drain ();
+  M8_EQ_INT (m8_count (GDK_DRAG_STATUS, m8_ipc), 2, "D3: ACTION(MOVE) raises a second one");
+  M8_CHECK (ctx->action == GDK_ACTION_MOVE, "D3: selected action MOVE");
+  M8_HOOK (_gdk_wayland_test_dd_source_event (m8_d, GDKW_SEL_DND, GDKW_TEST_SRC_ACTION,
+					      NULL, GDKW_TEST_WL_ACTION_MOVE), "D3: action move again");
+  m8_drain ();
+  M8_EQ_INT (m8_count (GDK_DRAG_STATUS, m8_ipc), 2, "D3: a repeated action raises nothing");
+
+  /* the compositor asks for the data */
+  M8_CHECK (m8_serve (GDKW_SEL_DND, "text/uri-list", &out, &len) &&
+	    len == strlen ((char *) uri) && memcmp (out, uri, len) == 0,
+	    "D3: source_send(DND, text/uri-list)");
+  g_free (out);
+  req = m8_find_req (m8_ipc, M8_ATOM ("text/uri-list"));
+  M8_CHECK (req != NULL && req->selection.selection == M8_XDND,
+	    "D3: the request names XdndSelection");
+
+  /* drop performed raises nothing; finished with MOVE and no local destination */
+  m8_clear ();
+  M8_HOOK (_gdk_wayland_test_dd_source_event (m8_d, GDKW_SEL_DND,
+					      GDKW_TEST_SRC_DROP_PERFORMED, NULL, 0),
+	   "D3: drop performed");
+  m8_check_no_events ("D3: DROP_PERFORMED");
+  M8_HOOK (_gdk_wayland_test_dd_source_event (m8_d, GDKW_SEL_DND, GDKW_TEST_SRC_FINISHED,
+					      NULL, 0), "D3: finished");
+  m8_drain ();
+  req = m8_find_req (m8_ipc, M8_ATOM ("DELETE"));
+  ev = m8_find (GDK_DROP_FINISHED, m8_ipc);
+  M8_CHECK (req != NULL && req->selection.selection == M8_XDND &&
+	    ev != NULL && ev->dnd.context == ctx,
+	    "D3: DELETE request and DROP_FINISHED");
+  M8_CHECK (req && ev && g_queue_index (&m8_events, req) < g_queue_index (&m8_events, ev),
+	    "D3: the DELETE request comes before DROP_FINISHED");
+  M8_CHECK (gdk_drag_drop_succeeded (ctx), "D3: drop_succeeded TRUE");
+  M8_HOOK (_gdk_wayland_test_dnd_source_info (m8_d, &si), "D3: source info 2");
+  M8_CHECK (si.succeeded && si.delete_requested && !si.active && !si.local_dest,
+	    "D3: succeeded, delete requested, not active, no local destination");
+  info = m8_dd ();
+  M8_EQ_INT (info.sources_alive, sources0, "D3: the drag source is freed");
+  M8_EQ_INT (info.source_destroy_count, 1, "D3: source destroyed once");
+  M8_CHECK (gdk_selection_owner_set_for_display (m8_d, NULL, M8_XDND, 0, FALSE),
+	    "D3: release XdndSelection");
+  m8_resp_off ();
+  g_object_unref (ctx);
+  m8_clear ();
+  m8_drain ();
+
+  /* the fallback timer starts a drag that never gets a motion call */
+  _gdk_wayland_test_dd_reset_requests (m8_d);
+  ctx = gdk_drag_begin (m8_ipc, targets);
+  M8_EQ_INT (m8_dd ().start_drag_count, 0, "D3b: not started inside begin");
+  for (i = 0; i < 100 && m8_dd ().start_drag_count == 0; i++)
+    m8_run_ms (20);
+  info = m8_dd ();
+  M8_EQ_INT (info.start_drag_count, 1, "D3b: the 100 ms fallback started it");
+  M8_CHECK (info.source_actions_set && info.source_actions_mask == 3,
+	    "D3b: fallback actions COPY|MOVE");
+
+  /* D4: cancelled */
+  m8_clear ();
+  M8_HOOK (_gdk_wayland_test_dd_source_event (m8_d, GDKW_SEL_DND,
+					      GDKW_TEST_SRC_CANCELLED, NULL, 0),
+	   "D4: cancelled");
+  m8_drain ();
+  M8_EQ_INT (m8_count (GDK_DROP_FINISHED, m8_ipc), 1, "D4: DROP_FINISHED");
+  M8_EQ_INT (m8_count (GDK_SELECTION_REQUEST, NULL), 0, "D4: no DELETE request");
+  M8_EQ_INT (m8_count (GDK_DRAG_STATUS, NULL), 0, "D4: no status");
+  M8_CHECK (!gdk_drag_drop_succeeded (ctx), "D4: not succeeded");
+  M8_HOOK (_gdk_wayland_test_dnd_source_info (m8_d, &si), "D4: source info");
+  M8_CHECK (!si.active && si.cancelled && !si.succeeded, "D4: cancelled and inactive");
+  M8_EQ_INT (m8_dd ().sources_alive, sources0, "D4: source freed");
+  g_object_unref (ctx);
+  m8_clear ();
+
+  /* D5: abort after the start: source destroyed, no event */
+  _gdk_wayland_test_dd_reset_requests (m8_d);
+  ctx = m8_drag_start (targets, GDK_ACTION_COPY | GDK_ACTION_MOVE);
+  M8_EQ_INT (m8_dd ().start_drag_count, 1, "D5: started");
+  gdk_drag_abort (ctx, m8_tick ());
+  m8_drain ();
+  M8_EQ_INT (g_queue_get_length (&m8_events), 0, "D5: abort queues no event");
+  M8_HOOK (_gdk_wayland_test_dnd_source_info (m8_d, &si), "D5: source info");
+  M8_CHECK (!si.active, "D5: inactive after abort");
+  info = m8_dd ();
+  M8_EQ_INT (info.sources_alive, sources0, "D5: source destroyed");
+  M8_EQ_INT (info.source_destroy_count, 1, "D5: destroyed once");
+  gdk_drag_abort (ctx, m8_tick ());              /* twice is harmless */
+  g_object_unref (ctx);
+  m8_clear ();
+
+  /* D5b: abort of a drag that never started */
+  ctx = gdk_drag_begin (m8_ipc, targets);
+  gdk_drag_abort (ctx, m8_tick ());
+  m8_run_ms (250);
+  M8_EQ_INT (m8_dd ().sources_alive, sources0, "D5b: aborted before start, no source");
+  M8_EQ_INT (m8_dd ().start_drag_count, 1, "D5b: and it never started (still 1)");
+  g_object_unref (ctx);
+  m8_clear ();
+
+  /* D5c: no offerable target, the begin fails */
+  {
+    GList *none = m8_targets ("TARGETS", "TIMESTAMP", NULL);
+
+    _gdk_wayland_test_dd_reset_requests (m8_d);
+    ctx = gdk_drag_begin (m8_ipc, none);
+    m8_drain ();
+    M8_EQ_INT (m8_count (GDK_DROP_FINISHED, m8_ipc), 1, "D5c: empty source map fails");
+    M8_EQ_INT (m8_dd ().start_drag_count, 0, "D5c: no start_drag");
+    g_object_unref (ctx);
+    m8_clear ();
+    g_list_free (none);
+  }
+
+  /* D5d: a begin on a window that is not alive still gives a context */
+  ctx = gdk_drag_begin (NULL, targets);
+  M8_CHECK (ctx != NULL, "D5d: begin (NULL) returns a context");
+  g_object_unref (ctx);
+  m8_clear ();
+
+  m8_pointer_release (M8_BTN_LEFT);
+  M8_HOOK (_gdk_wayland_test_pointer_leave (m8_d, m8_A), "pointer leave");
+  m8_drain ();
+  m8_clear ();
+  g_list_free (targets);
+  M8_EQ_INT (_gdk_wayland_test_dnd_contexts_alive (), contexts0, "D5: no context left");
+}
+
+/* ---- destination ----------------------------------------------------------- */
+
+static guint
+m8_new_dnd_offer (guint version)
+{
+  const gchar *mimes[] = { "text/plain;charset=utf-8", "text/uri-list", NULL };
+  guint id = _gdk_wayland_test_dd_offer_new (m8_d, GDKW_SEL_DND, version, mimes);
+
+  M8_CHECK (id != 0, "dest: offer_new");
+  if (version >= 3)
+    {
+      M8_HOOK (_gdk_wayland_test_dd_offer_source_actions (m8_d, id, 3),
+	       "dest: source actions");
+      M8_HOOK (_gdk_wayland_test_dd_offer_action (m8_d, id, GDKW_TEST_WL_ACTION_COPY),
+	       "dest: action");
+    }
+  return id;
+}
+
+/* variant 0: finish (TRUE) with a data transfer, 1: finish (FALSE), 2: reply (FALSE) */
+static void
+m8_dest_cycle (gint variant)
+{
+  const gchar *want_t[] = { "UTF8_STRING", "STRING", "text/uri-list", NULL };
+  GDKWTestDDInfo info;
+  GDKWTestDndDestInfo di;
+  GdkEvent *enter, *motion, *drop;
+  GdkDragContext *ctx;
+  M8Paste p;
+  GList *l;
+  guint offers0, id, i;
+  guint32 serial = 0;
+  gint px = 0, py = 0;
+  gchar what[96];
+
+  g_snprintf (what, sizeof what, "dest[%d]", variant);
+  gdk_window_get_position (m8_A, &px, &py);
+  offers0 = m8_dd ().offers_alive;
+  id = m8_new_dnd_offer (3);
+  m8_drain ();
+  m8_clear ();
+  _gdk_wayland_test_dd_reset_requests (m8_d);
+
+  M8_HOOK (_gdk_wayland_test_dd_dnd_enter (m8_d, m8_A, id, 120, 40, &serial), "dest: enter");
+  m8_drain ();
+  enter = m8_find (GDK_DRAG_ENTER, m8_A);
+  motion = m8_find (GDK_DRAG_MOTION, m8_A);
+  M8_CHECK (enter != NULL && motion != NULL &&
+	    g_queue_index (&m8_events, enter) < g_queue_index (&m8_events, motion),
+	    "D6: DRAG_ENTER then DRAG_MOTION");
+  if (enter == NULL || motion == NULL)
+    return;
+  M8_EQ_INT (motion->dnd.x_root, 120 + px, "D6: x_root is x + toplevel x");
+  M8_EQ_INT (motion->dnd.y_root, 40 + py, "D6: y_root is y + toplevel y");
+  ctx = enter->dnd.context;
+  M8_CHECK (ctx == motion->dnd.context, "D6: one context for both events");
+  M8_CHECK (ctx->protocol == GDK_DRAG_PROTO_LOCAL && !ctx->is_source &&
+	    ctx->dest_window == m8_A, "D6: destination context, protocol LOCAL");
+  M8_CHECK (ctx->source_window == gdk_get_default_root_window (),
+	    "D6: source_window is the screen root without a local source");
+  M8_CHECK (ctx->actions == (GDK_ACTION_COPY | GDK_ACTION_MOVE) &&
+	    ctx->suggested_action == GDK_ACTION_COPY, "D6: actions and suggested action");
+  M8_EQ_INT (g_list_length (ctx->targets), 3, "D6: three targets");
+  for (l = ctx->targets, i = 0; l != NULL && want_t[i] != NULL; l = l->next, i++)
+    M8_CHECK (GDK_POINTER_TO_ATOM (l->data) == M8_ATOM (want_t[i]), "D6: target order");
+  M8_HOOK (_gdk_wayland_test_dnd_dest_info (m8_d, &di), "D6: dest info");
+  M8_CHECK (di.active && !di.ignored && !di.dropped && di.context == ctx &&
+	    di.dest_window == m8_A, "D6: dest info");
+  M8_EQ_INT (m8_dd ().last_enter_serial, serial, "D6: enter serial recorded");
+
+  m8_clear ();
+  M8_HOOK (_gdk_wayland_test_dd_dnd_motion (m8_d, m8_tick (), 130, 50), "D6: motion");
+  m8_drain ();
+  motion = m8_find (GDK_DRAG_MOTION, m8_A);
+  M8_CHECK (motion != NULL && motion->dnd.x_root == 130 + px &&
+	    motion->dnd.y_root == 50 + py && motion->dnd.context == ctx,
+	    "D6: motion coordinates");
+  M8_EQ_INT (m8_count (GDK_DRAG_ENTER, NULL), 0, "D6: no second ENTER");
+
+  /* gdk_drag_status maps to accept + set_actions, deduplicated */
+  _gdk_wayland_test_dd_reset_requests (m8_d);
+  gdk_drag_status (ctx, GDK_ACTION_COPY, m8_tick ());
+  info = m8_dd ();
+  M8_EQ_INT (info.accept_count, 1, "D6: status sends accept");
+  M8_CHECK (info.accept_serial == serial && !info.accept_null &&
+	    strcmp (info.accept_mime, "text/plain;charset=utf-8") == 0,
+	    "D6: accept (enter serial, first offer mime)");
+  M8_CHECK (info.set_actions_count == 1 && info.offer_actions_mask == 1 &&
+	    info.offer_actions_preferred == 1, "D6: set_actions (COPY, COPY)");
+  gdk_drag_status (ctx, GDK_ACTION_COPY, m8_tick ());
+  info = m8_dd ();
+  M8_CHECK (info.accept_count == 1 && info.set_actions_count == 1,
+	    "D6: the same status again sends nothing");
+  gdk_drag_status (ctx, 0, m8_tick ());
+  info = m8_dd ();
+  M8_CHECK (info.accept_count == 2 && info.accept_null && info.offer_actions_mask == 0,
+	    "D6: status (0) is accept NULL with mask 0");
+  gdk_drag_status (ctx, GDK_ACTION_MOVE, m8_tick ());
+  info = m8_dd ();
+  M8_CHECK (info.offer_actions_mask == 2 && info.offer_actions_preferred == 2 &&
+	    !info.accept_null, "D6: status (MOVE) is mask 2");
+  M8_CHECK (ctx->action == GDK_ACTION_MOVE, "D6: context action follows the status");
+
+  /* drop, then a leave after the drop is ignored */
+  m8_clear ();
+  M8_HOOK (_gdk_wayland_test_dd_dnd_drop (m8_d), "D6: drop");
+  m8_drain ();
+  drop = m8_find (GDK_DROP_START, m8_A);
+  M8_CHECK (drop != NULL && drop->dnd.x_root == 130 + px && drop->dnd.y_root == 50 + py &&
+	    drop->dnd.context == ctx, "D6: DROP_START at the last position");
+  m8_clear ();
+  M8_HOOK (_gdk_wayland_test_dd_dnd_leave (m8_d), "D6: leave after drop");
+  m8_check_no_events ("D6: a leave after a drop");
+  M8_EQ_INT (m8_dd ().offers_alive, offers0 + 1, "D6: the offer stays alive after drop");
+  M8_HOOK (_gdk_wayland_test_dnd_dest_info (m8_d, &di), "D6: dest info 2");
+  M8_CHECK (di.active && di.dropped, "D6: still active and dropped");
+
+  if (variant == 0)
+    {
+      /* cut on a line end so that the prefix is valid UTF-8 */
+      gsize cut = 70000;
+
+      while (m8_big[cut - 1] != 0x0a)
+	cut++;
+      M8_HOOK (_gdk_wayland_test_dd_offer_data (m8_d, id, "text/plain;charset=utf-8",
+						m8_big, cut, GDKW_TEST_FEED_NORMAL),
+	       "D6: offer_data");
+      _gdk_wayland_test_dd_reset_requests (m8_d);
+      M8_CHECK (gdk_drag_get_selection (ctx) == M8_XDND, "D6: destination get_selection");
+      m8_paste (m8_A, gdk_drag_get_selection (ctx), "UTF8_STRING", 5000, &p);
+      M8_CHECK (m8_paste_is (&p, m8_big, cut), "D6: data over XdndSelection");
+      m8_paste_free (&p);
+      M8_EQ_INT (m8_dd ().receive_kind, GDKW_SEL_DND, "D6: receive kind DND");
+      m8_paste (m8_A, M8_XDND, "DELETE", 5000, &p);
+      M8_CHECK (p.notified && p.property != GDK_NONE, "D6: DELETE answered as success");
+      m8_paste_free (&p);
+      M8_EQ_INT (_gdk_wayland_test_property_count (m8_A), 0, "D6: nothing left on A");
+
+      _gdk_wayland_test_dd_reset_requests (m8_d);
+      gdk_drop_finish (ctx, TRUE, m8_tick ());
+      info = m8_dd ();
+      M8_EQ_INT (info.finish_count, 1, "D6: drop_finish (TRUE) sends finish");
+      M8_EQ_INT (info.offer_destroy_count, 1, "D6: and destroys the offer");
+    }
+  else if (variant == 1)
+    {
+      _gdk_wayland_test_dd_reset_requests (m8_d);
+      gdk_drop_finish (ctx, FALSE, m8_tick ());
+      info = m8_dd ();
+      M8_EQ_INT (info.finish_count, 0, "D6b: drop_finish (FALSE) sends no finish");
+      M8_EQ_INT (info.offer_destroy_count, 1, "D6b: but destroys the offer");
+    }
+  else
+    {
+      _gdk_wayland_test_dd_reset_requests (m8_d);
+      gdk_drop_reply (ctx, FALSE, m8_tick ());
+      info = m8_dd ();
+      M8_CHECK (info.accept_count == 1 && info.accept_null && info.offer_actions_mask == 0,
+		"D6c: drop_reply (FALSE) is accept NULL and set_actions 0");
+      M8_EQ_INT (info.finish_count, 0, "D6c: no finish");
+      M8_EQ_INT (info.offer_destroy_count, 1, "D6c: offer destroyed");
+    }
+  M8_EQ_INT (m8_dd ().offers_alive, offers0, what);
+  M8_HOOK (_gdk_wayland_test_dnd_dest_info (m8_d, &di), "D6: dest info 3");
+  M8_CHECK (!di.active, "D6: inactive after finish");
+  m8_clear ();
+}
+
+static void
+m8_drag_dest (void)
+{
+  const gchar *mimes[] = { "text/plain;charset=utf-8", NULL };
+  GDKWTestDndDestInfo di;
+  GDKWTestDndSourceInfo si;
+  GDKWTestDDInfo info;
+  GdkDragContext *ctx, *dctx;
+  GdkEvent *ev;
+  GdkWindow *D;
+  GList *targets;
+  guint contexts0 = _gdk_wayland_test_dnd_contexts_alive ();
+  guint offers0 = m8_dd ().offers_alive;
+  M8Paste p;
+  guint id;
+  guint32 serial = 0;
+
+  gdk_window_register_dnd (m8_A);
+
+  m8_dest_cycle (0);
+  m8_dest_cycle (1);
+  m8_dest_cycle (2);
+
+  /* D7: leave without a drop */
+  id = m8_new_dnd_offer (3);
+  m8_clear ();
+  M8_HOOK (_gdk_wayland_test_dd_dnd_enter (m8_d, m8_A, id, 50, 60, &serial), "D7: enter");
+  M8_HOOK (_gdk_wayland_test_dd_dnd_motion (m8_d, m8_tick (), 55, 65), "D7: motion");
+  M8_HOOK (_gdk_wayland_test_dd_dnd_leave (m8_d), "D7: leave");
+  m8_drain ();
+  M8_CHECK (m8_count (GDK_DRAG_ENTER, m8_A) == 1 && m8_count (GDK_DRAG_MOTION, m8_A) == 2 &&
+	    m8_count (GDK_DRAG_LEAVE, m8_A) == 1 && m8_count (GDK_DROP_START, NULL) == 0,
+	    "D7: ENTER, MOTION x2, LEAVE");
+  M8_HOOK (_gdk_wayland_test_dnd_dest_info (m8_d, &di), "D7: dest info");
+  M8_CHECK (!di.active, "D7: inactive after leave");
+  M8_EQ_INT (m8_dd ().offers_alive, offers0, "D7: offer destroyed by leave");
+  m8_clear ();
+
+  /* D8: a window that was not registered */
+  id = m8_new_dnd_offer (3);
+  gdk_window_show (m8_C);
+  m8_drain ();
+  _gdk_wayland_test_dd_reset_requests (m8_d);
+  m8_clear ();
+  M8_HOOK (_gdk_wayland_test_dd_dnd_enter (m8_d, m8_C, id, 10, 10, &serial), "D8: enter on C");
+  m8_drain ();
+  info = m8_dd ();
+  M8_CHECK (info.accept_count == 1 && info.accept_null, "D8: accept (NULL)");
+  M8_HOOK (_gdk_wayland_test_dnd_dest_info (m8_d, &di), "D8: dest info");
+  M8_CHECK (di.ignored && !di.active, "D8: ignored, no context");
+  M8_EQ_INT (g_queue_get_length (&m8_events), 0, "D8: no GDK DnD event");
+  M8_HOOK (_gdk_wayland_test_dd_dnd_motion (m8_d, m8_tick (), 12, 12), "D8: motion");
+  M8_HOOK (_gdk_wayland_test_dd_dnd_leave (m8_d), "D8: leave");
+  m8_drain ();
+  M8_EQ_INT (g_queue_get_length (&m8_events), 0, "D8: still no event");
+  M8_EQ_INT (m8_dd ().offers_alive, offers0, "D8: offer released by leave");
+
+  /* D10: nothing to convert */
+  m8_paste (m8_A, M8_XDND, "UTF8_STRING", 5000, &p);
+  M8_CHECK (p.notified && p.property == GDK_NONE, "D10: no offer, no owner: refused");
+
+  /* D9: a drag inside the application */
+  targets = m8_targets ("UTF8_STRING", "text/uri-list", NULL);
+  m8_pointer_down (m8_A, M8_BTN_LEFT);
+  _gdk_wayland_test_dd_reset_requests (m8_d);
+  ctx = m8_drag_start (targets, GDK_ACTION_COPY | GDK_ACTION_MOVE);
+  id = _gdk_wayland_test_dd_offer_new (m8_d, GDKW_SEL_DND, 3, mimes);
+  M8_HOOK (_gdk_wayland_test_dd_offer_source_actions (m8_d, id, 3), "D9: source actions");
+  m8_clear ();
+  M8_HOOK (_gdk_wayland_test_dd_dnd_enter (m8_d, m8_A, id, 20, 20, &serial), "D9: enter");
+  m8_drain ();
+  ev = m8_find (GDK_DRAG_ENTER, m8_A);
+  dctx = ev ? ev->dnd.context : NULL;
+  M8_CHECK (dctx != NULL && dctx->source_window == m8_ipc,
+	    "D9: destination source_window is the local source ipc window");
+  M8_HOOK (_gdk_wayland_test_dnd_source_info (m8_d, &si), "D9: source info");
+  M8_CHECK (si.local_dest, "D9: source_info.local_dest");
+  M8_HOOK (_gdk_wayland_test_dd_dnd_leave (m8_d), "D9: leave");
+  M8_HOOK (_gdk_wayland_test_dd_source_event (m8_d, GDKW_SEL_DND, GDKW_TEST_SRC_ACTION,
+					      NULL, GDKW_TEST_WL_ACTION_MOVE), "D9: action");
+  m8_clear ();
+  M8_HOOK (_gdk_wayland_test_dd_source_event (m8_d, GDKW_SEL_DND, GDKW_TEST_SRC_FINISHED,
+					      NULL, 0), "D9: finished");
+  m8_drain ();
+  M8_EQ_INT (m8_count (GDK_DROP_FINISHED, m8_ipc), 1, "D9: DROP_FINISHED");
+  M8_EQ_INT (m8_count (GDK_SELECTION_REQUEST, NULL), 0,
+	     "D9: a local destination gets no DELETE request");
+  g_object_unref (ctx);
+  m8_clear ();
+  m8_pointer_release (M8_BTN_LEFT);
+  _gdk_wayland_test_pointer_leave (m8_d, m8_A);
+  m8_drain ();
+  m8_clear ();
+  g_list_free (targets);
+
+  /* D11: the destination window dies while a context is active */
+  D = m8_toplevel (80, 60);
+  g_object_ref (D);
+  gdk_window_show (D);
+  m8_drain ();
+  gdk_window_register_dnd (D);
+  id = m8_new_dnd_offer (3);
+  M8_HOOK (_gdk_wayland_test_dd_dnd_enter (m8_d, D, id, 5, 5, &serial), "D11: enter");
+  m8_drain ();
+  M8_HOOK (_gdk_wayland_test_dnd_dest_info (m8_d, &di), "D11: dest info");
+  M8_CHECK (di.active && di.dest_window == D, "D11: active on D");
+  gdk_window_destroy (D);
+  m8_drain ();
+  M8_HOOK (_gdk_wayland_test_dnd_dest_info (m8_d, &di), "D11: dest info 2");
+  M8_CHECK (!di.active, "D11: inactive after the window died");
+  M8_EQ_INT (m8_dd ().offers_alive, offers0, "D11: offer released");
+  g_object_unref (D);
+  m8_clear ();
+  M8_EQ_INT (_gdk_wayland_test_dnd_contexts_alive (), contexts0, "D11: no context left");
+}
+
+static void
+m8_payload (void)
+{
+  GString *s = g_string_new (NULL);
+  guint i = 0;
+
+  /* valid UTF-8, no CR, every code point class: 100 KB crosses a 64 KiB pipe */
+  while (s->len < 100 * 1024)
+    g_string_append_printf (s, "%u \xc3\xa9\xc3\xb6 \xe2\x9c\x93 \xf0\x9f\x8e\xb5\n", i++);
+  m8_big_len = s->len;
+  m8_big = (guint8 *) g_string_free (s, FALSE);
+}
+
+static void
+m8_gauges_zero (const gchar *when)
+{
+  GDKWTestDDInfo info = m8_dd ();
+  gchar what[96];
+
+  g_snprintf (what, sizeof what, "%s: offers_alive", when);
+  M8_EQ_INT (info.offers_alive, 0, what);
+  g_snprintf (what, sizeof what, "%s: sources_alive", when);
+  M8_EQ_INT (info.sources_alive, 0, what);
+  g_snprintf (what, sizeof what, "%s: pending_reads", when);
+  M8_EQ_INT (info.pending_reads, 0, what);
+  g_snprintf (what, sizeof what, "%s: pending_writes", when);
+  M8_EQ_INT (info.pending_writes, 0, what);
+}
+
+static int
+m8_exercise (void)
+{
+  GDKWTestDDInfo info;
+  gboolean virtual_dd;
+  guint contexts0;
+  gint i;
+
+  m8_d = gdk_display_get_default ();
+  m8_A = main_window;
+  contexts0 = _gdk_wayland_test_dnd_contexts_alive ();
+
+  /* the recorder is the application for the whole of M8 */
+  gdk_event_handler_set (m8_recorder, NULL, NULL);
+
+  m8_B = m8_toplevel (200, 150);
+  m8_C = m8_toplevel (100, 100);
+  m8_ipc = m8_temp ();
+  M8_CHECK (m8_B != NULL && m8_C != NULL && m8_ipc != NULL, "windows created");
+  if (m8_B == NULL || m8_C == NULL || m8_ipc == NULL)
+    {
+      gdk_event_handler_set (event_handler, NULL, NULL);
+      g_printerr ("ydk_demo: M8: FAIL (%d)\n", m8_failures ? m8_failures : 1);
+      return m8_failures ? m8_failures : 1;
+    }
+  gdk_window_show (m8_B);
+  m8_drain ();
+  m8_clear ();
+  m8_payload ();
+
+  /* P: the property table needs no compositor and no device */
+  m8_property ();
+  m8_helpers ();
+
+  /* the loopback needs no device either: S1 first without one (the headless
+   * compositor has no seat, so there is none), then with the virtual one */
+  M8_EQ_INT (m8_sel (M8_CLIP).probes_started, 0, "no probe so far");
+  info = m8_dd ();
+  M8_CHECK (!info.have_device && !info.virtual_device,
+	    "headless: no data device before the virtual one");
+  m8_selection_all (FALSE);
+
+  virtual_dd = _gdk_wayland_test_dd_init (m8_d);
+  if (!virtual_dd)
+    g_print ("ydk_demo: M8: SKIP protocol parts (a real data device exists)\n");
+  else
+    {
+      info = m8_dd ();
+      M8_CHECK (info.virtual_device && info.have_device && info.have_primary &&
+		info.manager_version == 3, "virtual device is up, both managers, v3");
+
+      /* real serials from the M6 seat hooks */
+      M8_HOOK (_gdk_wayland_test_pointer_enter (m8_d, m8_A, 100, 100), "serial: enter");
+      M8_HOOK (_gdk_wayland_test_pointer_button (m8_d, m8_tick (), M8_BTN_LEFT, TRUE),
+	       "serial: press");
+      M8_HOOK (_gdk_wayland_test_pointer_button (m8_d, m8_tick (), M8_BTN_LEFT, FALSE),
+	       "serial: release");
+      M8_HOOK (_gdk_wayland_test_pointer_leave (m8_d, m8_A), "serial: leave");
+      m8_drain ();
+      m8_clear ();
+      M8_CHECK (m8_seat_serial () != 0, "the seat hooks produced a serial");
+      M8_HOOK (_gdk_wayland_test_dd_set_timeouts (m8_d, 5000, 10000, 2000, 5000),
+	       "timeouts");
+
+      m8_selection_all (TRUE);
+      m8_drag_source ();
+      m8_drag_dest ();
+
+      /* D12 teardown */
+      m8_drain ();
+      m8_clear ();
+      m8_gauges_zero ("D12 before fini");
+      M8_HOOK (_gdk_wayland_test_dd_fini (m8_d), "D12: dd_fini");
+      info = m8_dd ();
+      M8_CHECK (!info.virtual_device && !info.have_device, "D12: device gone");
+      m8_gauges_zero ("D12 after fini");
+      M8_EQ_INT (_gdk_wayland_test_dnd_contexts_alive (), contexts0,
+		 "D12: no drag context alive");
+
+      /* the loopback still works once the device is gone (no seat at all) */
+      m8_selection_all (FALSE);
+    }
+
+  /* leave no property and no event behind */
+  for (i = 0; i < 3; i++)
+    {
+      GdkWindow *w = i == 0 ? m8_A : i == 1 ? m8_B : m8_C;
+
+      M8_EQ_INT (_gdk_wayland_test_property_count (w), 0, "no property left behind");
+    }
+  m8_drain ();
+  m8_clear ();
+
+  gdk_window_destroy (m8_ipc);
+  gdk_window_destroy (m8_C);
+  gdk_window_destroy (m8_B);
+  m8_drain ();
+  g_free (m8_big);
+  m8_big = NULL;
+  m8_resp_off ();
+  m8_clear ();
+  M8_EQ_INT (_gdk_wayland_test_dnd_contexts_alive (), contexts0, "no drag context alive at the end");
+
+  gdk_event_handler_set (event_handler, NULL, NULL);
+  gdk_window_invalidate_rect (main_window, NULL, TRUE);
+
+  g_print ("ydk_demo: M8: %d checks run\n", m8_checks);
+  if (m8_failures)
+    g_printerr ("ydk_demo: M8: FAIL (%d)\n", m8_failures);
+  else
+    g_print ("ydk_demo: M8: PASS\n");
+
+  return m8_failures;
+}
+
+
 int
 main (int argc, char **argv)
 {
@@ -5352,6 +7431,7 @@ main (int argc, char **argv)
       failed |= m6_exercise () != 0;
       failed |= m6b_exercise () != 0;
       failed |= m7_exercise () != 0;
+      failed |= m8_exercise () != 0;
       if (failed)
 	return 1;
 

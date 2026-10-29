@@ -35,6 +35,7 @@
 
 #include "gdkprivate-wayland.h"
 #include "gdkseat-wayland.h"
+#include "gdkm8-wayland.h"
 
 /* M6B PROTOTYPES */
 void _gdk_wayland_window_hints_apply (GDKWWindowImplWayland *impl);
@@ -1127,25 +1128,27 @@ _gdk_wayland_window_destroy_notify (GdkWindow *window)
   g_object_unref (window);
 }
 
-/* Foreign windows are unsupported on Wayland. */
+/* "Native windows" are the selection piece's native ids (requestor tokens). */
 GdkWindow *
 _gdk_wayland_window_foreign_new_for_display (GdkDisplay *display,
                                              GdkNativeWindow anid)
 {
-  return NULL;
+  GdkWindow *w = _gdk_wayland_native_id_lookup (display, anid);
+
+  return w ? g_object_ref (w) : NULL;
 }
 
 GdkWindow *
 _gdk_wayland_window_lookup_for_display (GdkDisplay *display,
                                         GdkNativeWindow anid)
 {
-  return NULL;
+  return _gdk_wayland_native_id_lookup (display, anid);
 }
 
 GdkWindow *
 _gdk_wayland_window_lookup (GdkNativeWindow anid)
 {
-  return NULL;
+  return _gdk_wayland_native_id_lookup (gdk_display_get_default (), anid);
 }
 
 /*************** test hook (M6b) ***************/

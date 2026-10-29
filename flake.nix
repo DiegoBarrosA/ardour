@@ -66,6 +66,7 @@
             cp ydk/wayland/ydk/gdkseat-wayland.h "$out/include/ydk/"
             # M7: cursor, shape and font test hooks (public section)
             cp ydk/wayland/ydk/gdkm7-wayland.h "$out/include/ydk/"
+            cp ydk/wayland/ydk/gdkm8-wayland.h "$out/include/ydk/"
 
             # M6b: the dispatch audit (scripts/audit-x11-symbols.sh) reads the
             # per backend object files and the shared library with nm

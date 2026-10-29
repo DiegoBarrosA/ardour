@@ -1371,6 +1371,7 @@ gdk_window_new (GdkWindow     *parent,
    */
   if (attributes->wclass == GDK_INPUT_ONLY &&
       private->parent->window_type == GDK_WINDOW_ROOT &&
+      GDK_IS_DISPLAY_X11 (GDK_WINDOW_DISPLAY (parent)) &&
       !G_LIKELY (GDK_DISPLAY_X11 (GDK_WINDOW_DISPLAY (parent))->trusted_client))
     {
       g_warning ("Coercing GDK_INPUT_ONLY toplevel window to GDK_INPUT_OUTPUT to work around bug in Xorg server");
