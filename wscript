@@ -65,6 +65,8 @@ libydk_sources = [
 ]
 
 libydk_wayland_sources = [
+    'ydk/wayland/fractional-scale-v1-protocol.c',
+    'ydk/wayland/gdkbuffer-wayland.c',
     'ydk/wayland/gdkcolor-wayland.c',
     'ydk/wayland/gdkcursor-wayland.c',
     'ydk/wayland/gdkdisplay-misc-wayland.c',
@@ -75,6 +77,7 @@ libydk_wayland_sources = [
     'ydk/wayland/gdkdrawable-wayland.c',
     'ydk/wayland/gdkevents-wayland.c',
     'ydk/wayland/gdkfont-wayland.c',
+    'ydk/wayland/gdkframe-wayland.c',
     'ydk/wayland/gdkgc-wayland.c',
     'ydk/wayland/gdkinputonly-wayland.c',
     'ydk/wayland/gdkkeys-wayland.c',
@@ -83,6 +86,7 @@ libydk_wayland_sources = [
     'ydk/wayland/gdkpopup-wayland.c',
     'ydk/wayland/gdkproperty-wayland.c',
     'ydk/wayland/gdkreparent-wayland.c',
+    'ydk/wayland/gdkscale-wayland.c',
     'ydk/wayland/gdkscreen-wayland.c',
     'ydk/wayland/gdkselection-wayland.c',
     'ydk/wayland/gdkshape-wayland.c',
@@ -92,6 +96,7 @@ libydk_wayland_sources = [
     'ydk/wayland/gdkx11-guards-wayland.c',
     'ydk/wayland/gdkxhandles-wayland.c',
     'ydk/wayland/primary-selection-unstable-v1-protocol.c',
+    'ydk/wayland/viewporter-protocol.c',
     'ydk/wayland/xdg-shell-protocol.c',
 ]
 
@@ -184,7 +189,7 @@ def configure(conf):
     check_pkg('gio-2.0', 'GIO', '2.2')
     check_pkg('gobject-2.0', 'GOBJECT')
     check_pkg('pango', 'PANGO', '1.20')
-    check_pkg('cairo', 'CAIRO', '1.12')
+    check_pkg('cairo', 'CAIRO', '1.14')
     check_pkg('pangocairo', 'PANGOCAIRO')
     check_pkg('gio-unix-2.0', 'GIO-UNIX')
     check_pkg('libpng', 'LIBPNG')

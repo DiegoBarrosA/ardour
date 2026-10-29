@@ -27,6 +27,7 @@
 #include "gdkseat-wayland.h"
 #include "gdkpixmap-wayland.h"
 #include "gdkm7-wayland.h"
+#include "gdkm10-wayland.h"
 
 /* ------------------------------------------------------------------ */
 /* State                                                              */
@@ -273,7 +274,7 @@ _gdk_wayland_shape_surface_created (GDKWWindowImplWayland *impl)
   shape_send (impl, st);
 }
 
-void
+gboolean
 _gdk_wayland_shape_before_present (GDKWWindowImplWayland *impl)
 {
   GDKWShapeState *st;
@@ -283,10 +284,10 @@ _gdk_wayland_shape_before_present (GDKWWindowImplWayland *impl)
   cairo_t *cr;
 
   if (!impl || !impl->backing || impl->width == 0 || impl->height == 0)
-    return;
+    return FALSE;
   st = shape_state_get (impl, FALSE);
   if (!st || !st->bounding)
-    return;
+    return FALSE;
 
   {
     GdkRectangle all = { 0, 0, impl->width, impl->height };
@@ -310,6 +311,10 @@ _gdk_wayland_shape_before_present (GDKWWindowImplWayland *impl)
       cairo_surface_mark_dirty (impl->backing);
     }
   g_free (rects);
+
+  /* M10: TRUE when a bounding shape exists.  The clear above has no damage of
+   * its own, so the frame piece sends FULL damage for a shaped window. */
+  return TRUE;
 }
 
 GdkRegion *
@@ -410,9 +415,8 @@ _gdk_wayland_test_window_pixel (GdkWindow *window, gint x, gint y,
   if (x < 0 || y < 0 || x >= (gint) impl->width || y >= (gint) impl->height)
     return FALSE;
 
-  if (argb)
-    *argb = *(guint32 *) (impl->shm_data + (gsize) y * impl->stride + x * 4);
-  return TRUE;
+  /* M10 I12: x and y stay LOGICAL; the buffers piece reads the device pixel */
+  return _gdk_wayland_buffers_pixel (impl, x, y, argb);
 }
 
 #ifdef GDK_COMPILATION

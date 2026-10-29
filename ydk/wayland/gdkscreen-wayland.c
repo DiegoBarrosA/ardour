@@ -25,6 +25,7 @@
 
 #include "gdkprivate-wayland.h"
 #include "gdkseat-wayland.h"
+#include "gdkm10-wayland.h"
 
 #ifdef GDK_COMPILATION
 #include "gdkalias.h"
@@ -266,6 +267,16 @@ _gdk_wayland_screen_get_width_mm (GdkScreen *screen)
 {
   GDKWOutputInfo *info = screen_output_info (screen);
 
+  /* M10: mm of the logical bounding box of all outputs */
+  if (GDKW_SCREEN_WAYLAND (screen)->display != NULL)
+    {
+      gint mm = _gdk_wayland_scale_screen_width_mm
+        (GDKW_SCREEN_WAYLAND (screen)->display);
+
+      if (mm > 0)
+        return mm;
+    }
+
   return screen_dim_mm (screen, GDKW_SCREEN_WAYLAND (screen)->width,
                         info ? info->mm_width : 0);
 }
@@ -274,6 +285,15 @@ gint
 _gdk_wayland_screen_get_height_mm (GdkScreen *screen)
 {
   GDKWOutputInfo *info = screen_output_info (screen);
+
+  if (GDKW_SCREEN_WAYLAND (screen)->display != NULL)
+    {
+      gint mm = _gdk_wayland_scale_screen_height_mm
+        (GDKW_SCREEN_WAYLAND (screen)->display);
+
+      if (mm > 0)
+        return mm;
+    }
 
   return screen_dim_mm (screen, GDKW_SCREEN_WAYLAND (screen)->height,
                         info ? info->mm_height : 0);
@@ -288,6 +308,12 @@ _gdk_wayland_screen_get_number (GdkScreen *screen)
 gint
 _gdk_wayland_screen_get_n_monitors (GdkScreen *screen)
 {
+  GdkDisplay *display = screen ? GDKW_SCREEN_WAYLAND (screen)->display : NULL;
+
+  /* M10: every bound wl_output is a monitor; one without any output */
+  if (display != NULL)
+    return _gdk_wayland_scale_n_monitors (display);
+
   return 1;
 }
 
@@ -310,6 +336,14 @@ _gdk_wayland_screen_get_monitor_geometry (GdkScreen    *screen,
   dest->width = 0;
   dest->height = 0;
 
+  if (screen != NULL && GDKW_SCREEN_WAYLAND (screen)->display != NULL)
+    {
+      /* M10: logical geometry of the output */
+      _gdk_wayland_scale_monitor_geometry
+        (GDKW_SCREEN_WAYLAND (screen)->display, monitor_num, dest);
+      return;
+    }
+
   if (monitor_num == 0 && screen != NULL)
     {
       dest->width = GDKW_SCREEN_WAYLAND (screen)->width;
@@ -320,12 +354,20 @@ _gdk_wayland_screen_get_monitor_geometry (GdkScreen    *screen,
 gint
 _gdk_wayland_screen_get_monitor_width_mm (GdkScreen *screen, gint monitor_num)
 {
+  if (screen != NULL && GDKW_SCREEN_WAYLAND (screen)->display != NULL)
+    return _gdk_wayland_scale_monitor_width_mm
+      (GDKW_SCREEN_WAYLAND (screen)->display, monitor_num);
+
   return monitor_num == 0 ? _gdk_wayland_screen_get_width_mm (screen) : -1;
 }
 
 gint
 _gdk_wayland_screen_get_monitor_height_mm (GdkScreen *screen, gint monitor_num)
 {
+  if (screen != NULL && GDKW_SCREEN_WAYLAND (screen)->display != NULL)
+    return _gdk_wayland_scale_monitor_height_mm
+      (GDKW_SCREEN_WAYLAND (screen)->display, monitor_num);
+
   return monitor_num == 0 ? _gdk_wayland_screen_get_height_mm (screen) : -1;
 }
 
@@ -333,6 +375,10 @@ gchar *
 _gdk_wayland_screen_get_monitor_plug_name (GdkScreen *screen, gint monitor_num)
 {
   GDKWOutputInfo *info;
+
+  if (screen != NULL && GDKW_SCREEN_WAYLAND (screen)->display != NULL)
+    return _gdk_wayland_scale_monitor_plug_name
+      (GDKW_SCREEN_WAYLAND (screen)->display, monitor_num);
 
   if (monitor_num != 0)
     return NULL;

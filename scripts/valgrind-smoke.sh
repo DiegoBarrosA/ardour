@@ -9,7 +9,8 @@
 # timeouts) and not to leave test marks in the window (YDK_DEMO_NO_MARKS=1).
 #
 # Pass: valgrind reports "ERROR SUMMARY: 0 errors" and the demo exits 0 and
-# prints every PASS line.  A single invalid read or write, use after free or
+# prints every PASS line (M4 to M10; the scale 2 run of smoke-test.sh Phase 3
+# is not repeated here).  A single invalid read or write, use after free or
 # use of an uninitialised value that is not suppressed fails the run.
 #
 # Environment:
@@ -88,7 +89,7 @@ if ! grep -q "ERROR SUMMARY: 0 errors" "$LOG"; then
   echo "valgrind-smoke: FAIL: no 'ERROR SUMMARY: 0 errors' line" >&2
   exit 1
 fi
-for m in M4 M5 M5C M5V M6 M6B M7 M8 M9; do
+for m in M4 M5 M5C M5V M6 M6B M7 M8 M9 M10; do
   if ! grep -q "ydk_demo: $m: PASS" "$LOG"; then
     echo "valgrind-smoke: FAIL: demo did not report $m: PASS" >&2
     exit 1

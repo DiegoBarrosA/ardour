@@ -37,6 +37,7 @@
 #include "gdkseat-wayland.h"
 #include "gdkpixmap-wayland.h"
 #include "gdkm7-wayland.h"
+#include "gdkm10-wayland.h"
 
 /* declared only under GDK_PIXBUF_ENABLE_BACKEND, but part of the library */
 gboolean gdk_pixbuf_set_option (GdkPixbuf *pixbuf, const gchar *key,
@@ -184,6 +185,8 @@ typedef struct
   gboolean        theme_disabled;  /* test hook */
   gchar          *search_path;     /* XCURSOR_PATH given to the reload hook */
   gboolean        fallback_logged;
+  gint            loaded_scale;    /* M10: integer scale the theme was loaded at */
+  gint            applied_bs;      /* M10: buffer scale of the last application */
 } CursorPriv;
 
 /* A resolved image, ready to attach. */
@@ -194,6 +197,7 @@ typedef struct
   guchar            *map;
   gint               width, height;
   gint               hot_x, hot_y;
+  gint               buffer_scale;   /* M10: theme = loaded_scale, rest = 1 */
   gchar              name[64];
 } Resolved;
 
@@ -428,8 +432,13 @@ theme_load (CursorPriv *p, const gchar *search_path)
       g_setenv ("XCURSOR_PATH", search_path, TRUE);
     }
 
+  /* M10 D13: the pixel size is theme_size * the integer scale of the pointer
+   * focus window; set_buffer_scale and the hotspot divide it out again */
+  p->loaded_scale =
+    MAX (1, _gdk_wayland_scale_cursor_scale (p->base.display));
   p->base.theme = wl_cursor_theme_load (p->base.theme_name,
-					p->base.theme_size, wd->wl_shm);
+					p->base.theme_size * p->loaded_scale,
+					wd->wl_shm);
 
   if (search_path != NULL)
     {
@@ -499,6 +508,7 @@ resolve_fallback (CursorPriv *p, Resolved *r)
   r->map = p->base.fallback_map;
   r->width = r->height = 1;
   r->hot_x = r->hot_y = 0;
+  r->buffer_scale = 1;
   r->name[0] = '\0';
 }
 
@@ -533,6 +543,7 @@ resolve (CursorPriv *p, GdkCursor *cursor, Resolved *r)
 	  r->height = c->height;
 	  r->hot_x = c->hot_x;
 	  r->hot_y = c->hot_y;
+	  r->buffer_scale = 1;
 	  return;
 	}
       resolve_fallback (p, r);
@@ -584,6 +595,7 @@ resolve (CursorPriv *p, GdkCursor *cursor, Resolved *r)
   r->height = img->height;
   r->hot_x = img->hotspot_x;
   r->hot_y = img->hotspot_y;
+  r->buffer_scale = MAX (1, p->loaded_scale);
   g_strlcpy (r->name, matched, sizeof r->name);
 }
 
@@ -597,22 +609,30 @@ apply_cursor (CursorPriv *p, GdkCursor *cursor, guint32 serial)
   GDKWDisplayWayland *wd;
   GDKWCursorState *s = &p->base;
   Resolved r;
+  gint sent_hot_x, sent_hot_y;
 
   if (s->closed)
     return;
   wd = GDKW_DISPLAY_WAYLAND (s->display);
 
   resolve (p, cursor, &r);
+  if (r.buffer_scale < 1)
+    r.buffer_scale = 1;
 
   if (p->applied_valid &&
       s->applied.kind == r.kind &&
       s->applied_buffer == r.buffer &&
+      p->applied_bs == r.buffer_scale &&
       p->applied_hot_x == r.hot_x && p->applied_hot_y == r.hot_y &&
       s->applied.serial == serial)
     {
       s->applied.cursor = cursor;
       return;
     }
+
+  /* M10 D13: the hotspot is in surface-local (logical) units */
+  sent_hot_x = (r.hot_x + r.buffer_scale / 2) / r.buffer_scale;
+  sent_hot_y = (r.hot_y + r.buffer_scale / 2) / r.buffer_scale;
 
   if (r.kind == GDKW_TEST_CURSOR_HIDDEN)
     {
@@ -626,13 +646,19 @@ apply_cursor (CursorPriv *p, GdkCursor *cursor, guint32 serial)
 
       if (s->surface != NULL && r.buffer != NULL)
 	{
+	  /* buffer scale needs wl_surface v3; the compositor is bound at
+	   * MIN (version, 6) */
+	  if (wl_proxy_get_version ((struct wl_proxy *) s->surface) >= 3)
+	    wl_surface_set_buffer_scale (s->surface, r.buffer_scale);
 	  wl_surface_attach (s->surface, r.buffer, 0, 0);
-	  wl_surface_damage (s->surface, 0, 0, r.width, r.height);
+	  wl_surface_damage (s->surface, 0, 0,
+			     r.width / r.buffer_scale,
+			     r.height / r.buffer_scale);
 	  wl_surface_commit (s->surface);
 	}
       if (wd->wl_pointer != NULL && s->surface != NULL)
 	wl_pointer_set_cursor (wd->wl_pointer, serial, s->surface,
-			       r.hot_x, r.hot_y);
+			       sent_hot_x, sent_hot_y);
     }
 
   s->applied.set_count++;
@@ -648,6 +674,10 @@ apply_cursor (CursorPriv *p, GdkCursor *cursor, guint32 serial)
   s->applied_buffer = r.buffer;
   p->applied_hot_x = r.hot_x;
   p->applied_hot_y = r.hot_y;
+  p->applied_bs = r.buffer_scale;
+  _gdk_wayland_scale_note_cursor (s->display, r.buffer_scale,
+				  r.width, r.height, sent_hot_x, sent_hot_y,
+				  s->theme_size * MAX (1, p->loaded_scale));
   p->applied_map = (r.kind == GDKW_TEST_CURSOR_CUSTOM ||
 		    r.kind == GDKW_TEST_CURSOR_FALLBACK) ? r.map : NULL;
   p->applied_valid = TRUE;
@@ -717,7 +747,32 @@ _gdk_wayland_cursor_pointer_enter (GdkDisplay *display,
     return;
 
   p->applied_valid = FALSE;
+
+  /* M10: the focus window may live on an output of another scale */
+  if (p->base.theme_loaded && !p->theme_disabled &&
+      MAX (1, _gdk_wayland_scale_cursor_scale (display)) != p->loaded_scale)
+    theme_load (p, p->search_path);
+
   apply_cursor (p, effective_cursor (display, seat), serial);
+}
+
+/* M10 I8d.  The scale piece calls this when the effective scale of the
+ * pointer focus window (or the largest output scale) changed. */
+void
+_gdk_wayland_cursor_scale_changed (GdkDisplay *display)
+{
+  CursorPriv *p = cursor_priv_peek (display);
+
+  if (p == NULL || p->base.closed || !p->base.theme_loaded)
+    return;
+
+  if (MAX (1, _gdk_wayland_scale_cursor_scale (display)) == p->loaded_scale)
+    return;
+
+  if (!p->theme_disabled)
+    theme_load (p, p->search_path);
+  p->applied_valid = FALSE;
+  apply_effective (display);
 }
 
 void

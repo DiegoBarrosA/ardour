@@ -36,6 +36,7 @@
 #include <ydk/gdkm7-wayland.h>
 #include <ydk/gdkm8-wayland.h>
 #include <ydk/gdkm9-wayland.h>
+#include <ydk/gdkm10-wayland.h>
 
 #define WINDOW_WIDTH  640
 #define WINDOW_HEIGHT 480
@@ -8886,6 +8887,375 @@ m9_focus (void)
   m6_clear ();
 }
 
+/* ---- M9 audit gaps (closed with M10) ------------------------------------
+ *
+ * (a) the grab serial while a button is held, (b) root coordinates of motion,
+ * button and scroll events from a popup, (c) the picking order of overlapping
+ * siblings including input-only ones, (d) a ledger of the plain xdg_surface
+ * and xdg_toplevel proxies, (e) the demote counters.  Each one was mutation
+ * checked in a scratch copy (see PLANNING.md, M10).
+ */
+
+/* live xdg proxies according to the ledger (created - destroyed) */
+#define M9_LIVE_TOPLEVELS(c) \
+  ((long) (c).xdg_toplevels_created - (long) (c).xdg_toplevels_destroyed)
+#define M9_LIVE_XDG_SURFACES(c) \
+  ((long) (c).xdg_surfaces_created - (long) (c).xdg_surfaces_destroyed)
+
+/* A menu grab on the virtual seat: transfer window with a pointer and
+ * keyboard grab, a POPUP_MENU, a grab on its child.  Returns the popup info
+ * after the flush.  The caller cleans up through m9_audit_menu_done (). */
+static GDKWTestPopupInfo
+m9_audit_menu (GdkWindow **tw, GdkWindow **menu, GdkWindow **mchild)
+{
+  GDKWTestPopupInfo pi;
+
+  *tw = m9_transfer ();
+  *menu = NULL;
+  *mchild = NULL;
+  memset (&pi, 0, sizeof pi);
+  if (*tw == NULL)
+    return pi;
+  gdk_window_show (*tw);
+  m9_grab (*tw, "audit a: transfer window");
+  *menu = m9_menu (main_window, 100, 100, 100, 80, GDK_WINDOW_TYPE_HINT_POPUP_MENU);
+  *mchild = m9_child (*menu, 0, 0, 50, 50, FALSE, GDK_BUTTON_PRESS_MASK);
+  gdk_window_show (*menu);
+  gdk_window_show (*mchild);
+  M9_EQ_INT (gdk_pointer_grab (*mchild, FALSE, m9_grab_mask, NULL, NULL,
+			       GDK_CURRENT_TIME),
+	     GDK_GRAB_SUCCESS, "audit a: grab on the menu child");
+  m9_sync ();
+  pi = m9_pi (*menu);
+
+  return pi;
+}
+
+static void
+m9_audit_menu_done (GdkWindow *tw, GdkWindow *menu, GdkWindow *mchild)
+{
+  m9_destroy (mchild);
+  m9_destroy (menu);
+  m9_sync ();
+  m9_ungrab ();
+  m9_destroy (tw);
+  m9_sync ();
+}
+
+/* (a) */
+static void
+m9_audit_serial (void)
+{
+  GdkWindow *tw, *menu, *mchild;
+  GDKWTestPopupInfo pi;
+  guint32 bs = 0, ks = 0, ls = 0;
+
+  M9_HOOK (_gdk_wayland_test_popup_virtual_seat (m9_d, TRUE), "audit a: virtual seat");
+  M9_HOOK (_gdk_wayland_test_pointer_enter (m9_d, main_window, 300, 300),
+	   "audit a: pointer into main");
+  M9_HOOK (_gdk_wayland_test_keyboard_enter (m9_d, main_window),
+	   "audit a: keyboard into main");
+  m6_drain ();
+
+  /* the button goes down and STAYS down; a key press and release follow, so
+   * the key serial and the last serial are newer than the button serial */
+  M9_HOOK (_gdk_wayland_test_pointer_button (m9_d, m9_tick (), M9_BTN_LEFT, TRUE),
+	   "audit a: button down");
+  M9_HOOK (_gdk_wayland_test_keyboard_key (m9_d, m9_tick (), GDKW_TEST_KEY_A, TRUE),
+	   "audit a: key down");
+  M9_HOOK (_gdk_wayland_test_keyboard_key (m9_d, m9_tick (), GDKW_TEST_KEY_A, FALSE),
+	   "audit a: key up");
+  m6_drain ();
+  M9_HOOK (_gdk_wayland_test_seat_serials (m9_d, &bs, &ks, &ls), "audit a: serials");
+  M9_CHECK (bs != 0, "audit a: a button serial exists");
+  M9_CHECK ((gint32) (ks - bs) > 0, "audit a: the key serial is newer than the button serial");
+  M9_EQ_INT (ls, ks, "audit a: the last serial is the key serial");
+
+  pi = m9_audit_menu (&tw, &menu, &mchild);
+  M9_CHECK (pi.grab_sent, "audit a: the grab was sent with the button down");
+  M9_EQ_INT (pi.grab_serial, bs,
+	     "audit a: with a button held the serial is the button serial");
+  M9_CHECK (pi.grab_serial != ks, "audit a: not the key serial");
+  M9_CHECK (pi.grab_serial != ls, "audit a: not the last serial");
+  m9_audit_menu_done (tw, menu, mchild);
+
+  /* the button goes up: the newer of the key and button serials wins */
+  M9_HOOK (_gdk_wayland_test_pointer_button (m9_d, m9_tick (), M9_BTN_LEFT, FALSE),
+	   "audit a: button up");
+  m6_drain ();
+  M9_HOOK (_gdk_wayland_test_seat_serials (m9_d, &bs, &ks, &ls), "audit a: serials 2");
+  pi = m9_audit_menu (&tw, &menu, &mchild);
+  M9_CHECK (pi.grab_sent, "audit a: the grab was sent with no button down");
+  M9_EQ_INT (pi.grab_serial, ((gint32) (ks - bs) > 0) ? ks : bs,
+	     "audit a: with no button down the newer of key and button serial");
+  m9_audit_menu_done (tw, menu, mchild);
+
+  _gdk_wayland_test_keyboard_leave (m9_d, main_window);
+  _gdk_wayland_test_pointer_leave (m9_d, main_window);
+  m6_drain ();
+  m6_clear ();
+}
+
+/* (b) */
+static void
+m9_audit_popup_root (void)
+{
+  GdkWindow *p;
+  GdkEvent *ev;
+  GdkEventMask mask;
+  int i;
+
+  p = m9_menu (main_window, 50, 60, 80, 40, GDK_WINDOW_TYPE_HINT_POPUP_MENU);
+  mask = gdk_window_get_events (p);
+  gdk_window_set_events (p, mask | GDK_SCROLL_MASK);
+  gdk_window_show (p);
+  m9_sync ();
+  M9_HOOK (_gdk_wayland_test_pointer_enter (m9_d, p, 5, 6), "audit b: enter popup");
+  m6_drain ();
+  m6_clear ();
+
+  M9_HOOK (_gdk_wayland_test_pointer_motion (m9_d, m9_tick (), 7, 9), "audit b: motion");
+  m6_drain ();
+  ev = m6_find (GDK_MOTION_NOTIFY, p);
+  M9_CHECK (ev != NULL, "audit b: MOTION on the popup");
+  if (ev != NULL)
+    {
+      M9_EQ_INT ((long) ev->motion.x, 7, "audit b: motion x");
+      M9_EQ_INT ((long) ev->motion.y, 9, "audit b: motion y");
+      M9_EQ_INT ((long) ev->motion.x_root, 57, "audit b: motion x_root has the popup origin");
+      M9_EQ_INT ((long) ev->motion.y_root, 69, "audit b: motion y_root has the popup origin");
+    }
+
+  m6_clear ();
+  M9_HOOK (_gdk_wayland_test_pointer_button (m9_d, m9_tick (), M9_BTN_LEFT, TRUE),
+	   "audit b: button down");
+  M9_HOOK (_gdk_wayland_test_pointer_button (m9_d, m9_tick (), M9_BTN_LEFT, FALSE),
+	   "audit b: button up");
+  m6_drain ();
+  for (i = 0; i < 2; i++)
+    {
+      ev = m9_nth (i == 0 ? GDK_BUTTON_PRESS : GDK_BUTTON_RELEASE, p, 0);
+      M9_CHECK (ev != NULL, i == 0 ? "audit b: BUTTON_PRESS on the popup"
+		: "audit b: BUTTON_RELEASE on the popup");
+      if (ev != NULL)
+	{
+	  M9_EQ_INT ((long) ev->button.x, 7, "audit b: button x");
+	  M9_EQ_INT ((long) ev->button.y, 9, "audit b: button y");
+	  M9_EQ_INT ((long) ev->button.x_root, 57, "audit b: button x_root has the popup origin");
+	  M9_EQ_INT ((long) ev->button.y_root, 69, "audit b: button y_root has the popup origin");
+	}
+    }
+
+  m6_clear ();
+  m6_scroll_frame (m9_d, GDKW_TEST_AXIS_SOURCE_WHEEL, GDKW_TEST_AXIS_VERTICAL,
+		   10.0, 1, TRUE, FALSE);
+  M9_HOOK (_gdk_wayland_test_pointer_frame (m9_d), "audit b: frame");
+  m6_drain ();
+  ev = m6_find (GDK_SCROLL, p);
+  M9_CHECK (ev != NULL, "audit b: SCROLL on the popup");
+  if (ev != NULL)
+    {
+      M9_EQ_INT ((long) ev->scroll.x, 7, "audit b: scroll x");
+      M9_EQ_INT ((long) ev->scroll.y, 9, "audit b: scroll y");
+      M9_EQ_INT ((long) ev->scroll.x_root, 57, "audit b: scroll x_root has the popup origin");
+      M9_EQ_INT ((long) ev->scroll.y_root, 69, "audit b: scroll y_root has the popup origin");
+    }
+
+  /* and in the toplevel the root coordinates are the plain position */
+  M9_HOOK (_gdk_wayland_test_pointer_leave (m9_d, p), "audit b: leave popup");
+  m6_drain ();
+  m9_destroy (p);
+  m9_sync ();
+  m6_clear ();
+}
+
+/* (c) */
+static void
+m9_audit_pick (void)
+{
+  GdkWindow *a, *b, *got;
+  GdkEvent *ev;
+  const GdkEventMask mask = GDK_BUTTON_PRESS_MASK | GDK_BUTTON_RELEASE_MASK |
+    GDK_POINTER_MOTION_MASK | GDK_ENTER_NOTIFY_MASK | GDK_LEAVE_NOTIFY_MASK;
+  gint x, y;
+
+  /* A (input-output) at (20, 20), B (input-only) created later, so above it,
+   * at (60, 60); the overlap is (60, 60) to (120, 120) in main */
+  a = m9_child (main_window, 20, 20, 100, 100, FALSE, mask);
+  b = m9_child (main_window, 60, 60, 100, 100, TRUE, mask);
+  if (a == NULL || b == NULL)
+    return;
+  gdk_window_show (a);
+  gdk_window_show (b);
+  _gdk_wayland_test_pointer_leave (m9_d, main_window);
+  m6_drain ();
+
+  /* at_pointer answers the deepest window (main itself when no child is
+   * hit), get_pointer answers the child of main or NULL */
+#define M9_PICK(px, py, want_at, want_child, what)			\
+  G_STMT_START {							\
+    m9_to_window (main_window, (px), (py), what);			\
+    got = gdk_window_at_pointer (&x, &y);				\
+    M9_CHECK (got == (want_at), what ": gdk_window_at_pointer");	\
+    got = gdk_window_get_pointer (main_window, NULL, NULL, NULL);	\
+    M9_CHECK (got == (want_child), what ": gdk_window_get_pointer");	\
+  } G_STMT_END
+
+  M9_PICK (80, 80, b, b, "audit c: the overlap belongs to the input-only sibling above");
+  M9_PICK (30, 30, a, a, "audit c: A alone");
+  M9_PICK (150, 150, b, b, "audit c: B alone");
+  M9_PICK (300, 250, main_window, NULL, "audit c: neither");
+  /* a point inside B but outside A, then inside both, B's coordinates */
+  m9_to_window (main_window, 80, 80, "audit c: back in the overlap");
+  got = gdk_window_at_pointer (&x, &y);
+  M9_EQ_INT (x, 20, "audit c: at_pointer x is relative to B");
+  M9_EQ_INT (y, 20, "audit c: at_pointer y is relative to B");
+
+  /* the button press goes to the same window as the pick */
+  m6_clear ();
+  _gdk_wayland_test_pointer_button (m9_d, m9_tick (), M9_BTN_LEFT, TRUE);
+  _gdk_wayland_test_pointer_button (m9_d, m9_tick (), M9_BTN_LEFT, FALSE);
+  m6_drain ();
+  ev = m9_nth (GDK_BUTTON_PRESS, NULL, 0);
+  M9_CHECK (ev != NULL && ev->any.window == b, "audit c: BUTTON_PRESS goes to B in the overlap");
+
+  /* raise A above B: now the overlap is A's */
+  gdk_window_raise (a);
+  m6_run_ms (100);
+  m6_clear ();
+  got = gdk_window_at_pointer (&x, &y);
+  M9_CHECK (got == a, "audit c: after raising A the overlap is A's");
+  M9_EQ_INT (x, 60, "audit c: at_pointer x is relative to A");
+  _gdk_wayland_test_pointer_button (m9_d, m9_tick (), M9_BTN_LEFT, TRUE);
+  _gdk_wayland_test_pointer_button (m9_d, m9_tick (), M9_BTN_LEFT, FALSE);
+  m6_drain ();
+  ev = m9_nth (GDK_BUTTON_PRESS, NULL, 0);
+  M9_CHECK (ev != NULL && ev->any.window == a, "audit c: BUTTON_PRESS goes to A after the raise");
+#undef M9_PICK
+
+  m9_to_window (main_window, 300, 250, "audit c: pointer out");
+  _gdk_wayland_test_pointer_leave (m9_d, main_window);
+  m6_drain ();
+  m9_destroy (b);
+  m9_destroy (a);
+  m9_sync ();
+  m6_clear ();
+}
+
+/* (d) and (e) */
+static void
+m9_audit_proxies (void)
+{
+  GdkWindow *w, *p, *root = gdk_get_default_root_window ();
+  GdkWindowAttr attr;
+  GDKWTestObjectCounts c0, c1, c2;
+  GDKWTestRoleInfo ri;
+
+  m9_sync ();
+  c0 = m9_oc ();
+
+  /* (d) a plain toplevel: show creates one xdg_surface and one xdg_toplevel,
+   * hide destroys both, show again creates them again, destroy leaves none */
+  memset (&attr, 0, sizeof attr);
+  attr.window_type = GDK_WINDOW_TOPLEVEL;
+  attr.wclass = GDK_INPUT_OUTPUT;
+  attr.width = 120;
+  attr.height = 90;
+  attr.event_mask = GDK_EXPOSURE_MASK | GDK_STRUCTURE_MASK;
+  w = gdk_window_new (root, &attr, 0);
+  gdk_window_show (w);
+  m9_sync ();
+  c1 = m9_oc ();
+  M9_EQ_INT (M9_LIVE_TOPLEVELS (c1), M9_LIVE_TOPLEVELS (c0) + 1,
+	     "audit d: show creates one xdg_toplevel");
+  M9_EQ_INT (M9_LIVE_XDG_SURFACES (c1), M9_LIVE_XDG_SURFACES (c0) + 1,
+	     "audit d: show creates one xdg_surface");
+  M9_EQ_INT (c1.xdg_toplevels, c0.xdg_toplevels + 1, "audit d: the walk agrees (toplevels)");
+  gdk_window_hide (w);
+  m9_sync ();
+  c1 = m9_oc ();
+  M9_EQ_INT (M9_LIVE_TOPLEVELS (c1), M9_LIVE_TOPLEVELS (c0),
+	     "audit d: hide destroys the xdg_toplevel");
+  M9_EQ_INT (M9_LIVE_XDG_SURFACES (c1), M9_LIVE_XDG_SURFACES (c0),
+	     "audit d: hide destroys the xdg_surface");
+  gdk_window_show (w);
+  m9_sync ();
+  c1 = m9_oc ();
+  M9_EQ_INT (M9_LIVE_TOPLEVELS (c1), M9_LIVE_TOPLEVELS (c0) + 1,
+	     "audit d: show again creates one xdg_toplevel");
+  gdk_window_destroy (w);
+  m9_sync ();
+  c1 = m9_oc ();
+  M9_EQ_INT (M9_LIVE_TOPLEVELS (c1), M9_LIVE_TOPLEVELS (c0),
+	     "audit d: destroy leaves no xdg_toplevel (ledger)");
+  M9_EQ_INT (M9_LIVE_XDG_SURFACES (c1), M9_LIVE_XDG_SURFACES (c0),
+	     "audit d: destroy leaves no xdg_surface (ledger)");
+  M9_EQ_INT (c1.xdg_toplevels, c0.xdg_toplevels, "audit d: destroy leaves no xdg_toplevel (walk)");
+  M9_EQ_INT (c1.xdg_surfaces, c0.xdg_surfaces, "audit d: destroy leaves no xdg_surface (walk)");
+  M9_EQ_INT (c1.wl_surfaces, c0.wl_surfaces, "audit d: destroy leaves no wl_surface");
+
+  /* (e) demote of a visible toplevel to a child of main: the xdg_toplevel
+   * and the xdg_surface are gone at once, not only ENTER on W works */
+  w = gdk_window_new (root, &attr, 0);
+  gdk_window_show (w);
+  m9_sync ();
+  c1 = m9_oc ();
+  gdk_window_reparent (w, main_window, 30, 40);
+  m9_sync ();
+  c2 = m9_oc ();
+  M9_EQ_INT (c2.xdg_toplevels_destroyed, c1.xdg_toplevels_destroyed + 1,
+	     "audit e: the demote destroyed the xdg_toplevel");
+  M9_EQ_INT (c2.xdg_surfaces_destroyed, c1.xdg_surfaces_destroyed + 1,
+	     "audit e: the demote destroyed the xdg_surface");
+  M9_EQ_INT (M9_LIVE_TOPLEVELS (c2), M9_LIVE_TOPLEVELS (c1) - 1,
+	     "audit e: one live xdg_toplevel less after the demote");
+  M9_EQ_INT (M9_LIVE_XDG_SURFACES (c2), M9_LIVE_XDG_SURFACES (c1) - 1,
+	     "audit e: one live xdg_surface less after the demote");
+  ri = m9_ri (w);
+  M9_CHECK (!ri.has_xdg_toplevel && !ri.has_xdg_surface && !ri.has_wl_surface,
+	    "audit e: the demoted window has no protocol object of its own");
+  /* back up: the proxies are made again */
+  gdk_window_reparent (w, root, 0, 0);
+  m9_sync ();
+  c1 = m9_oc ();
+  M9_EQ_INT (c1.xdg_toplevels_created, c2.xdg_toplevels_created + 1,
+	     "audit e: the promotion made one xdg_toplevel");
+  M9_EQ_INT (M9_LIVE_TOPLEVELS (c1), M9_LIVE_TOPLEVELS (c2) + 1,
+	     "audit e: one live xdg_toplevel more after the promotion");
+  m9_destroy (w);
+  m9_sync ();
+
+  /* (e) a popup demoted under main: its xdg_surface goes, no toplevel moves */
+  p = m9_menu (main_window, 50, 60, 60, 40, GDK_WINDOW_TYPE_HINT_POPUP_MENU);
+  gdk_window_show (p);
+  m9_sync ();
+  c1 = m9_oc ();
+  gdk_window_reparent (p, main_window, 10, 10);
+  m9_sync ();
+  c2 = m9_oc ();
+  M9_EQ_INT (c2.xdg_surfaces_destroyed, c1.xdg_surfaces_destroyed + 1,
+	     "audit e: the popup demote destroyed the xdg_surface");
+  M9_EQ_INT (c2.xdg_toplevels_destroyed, c1.xdg_toplevels_destroyed,
+	     "audit e: the popup demote destroyed no xdg_toplevel");
+  M9_EQ_INT (c2.xdg_popups, c1.xdg_popups - 1, "audit e: one xdg_popup less");
+  m9_destroy (p);
+  m9_sync ();
+
+  c2 = m9_oc ();
+  M9_EQ_INT (M9_LIVE_TOPLEVELS (c2), M9_LIVE_TOPLEVELS (c0), "audit: toplevel ledger back");
+  M9_EQ_INT (M9_LIVE_XDG_SURFACES (c2), M9_LIVE_XDG_SURFACES (c0), "audit: xdg_surface ledger back");
+  m9_counts_are (&m9_base, "audit cleanup");
+}
+
+static void
+m9_audit (void)
+{
+  m9_audit_serial ();
+  m9_audit_popup_root ();
+  m9_audit_pick ();
+  m9_audit_proxies ();
+}
+
 static int
 m9_exercise (void)
 {
@@ -8915,6 +9285,7 @@ m9_exercise (void)
   m9_reparent ();
   m9_cycles ();
   m9_focus ();
+  m9_audit ();
 
   /* leave nothing behind */
   M9_HOOK (_gdk_wayland_test_popup_virtual_seat (m9_d, FALSE), "virtual seat off");
@@ -8937,7 +9308,8 @@ m9_exercise (void)
   return m9_failures;
 }
 
-
+/* M10: frame pacing, buffer lifecycle, output scale (tests T1 to T25) */
+#include "ydk_demo_m10.inc"
 
 int
 main (int argc, char **argv)
@@ -9002,6 +9374,15 @@ main (int argc, char **argv)
        * prints its own PASS or FAIL line */
       int failed = 0;
 
+      /* the second smoke weston runs with --scale=2 and drives only T23 */
+      if (g_strcmp0 (g_getenv ("YDK_DEMO_ONLY"), "m10real") == 0)
+	{
+	  failed = m10_real_exercise () != 0;
+	  gdk_window_destroy (main_window);
+	  gdk_display_close (gdk_display_get_default ());
+	  return failed ? 1 : 0;
+	}
+
       failed |= m4_exercise () != 0;
       failed |= m5_exercise () != 0;
       failed |= m5c_exercise () != 0;
@@ -9011,6 +9392,7 @@ main (int argc, char **argv)
       failed |= m7_exercise () != 0;
       failed |= m8_exercise () != 0;
       failed |= m9_exercise () != 0;
+      failed |= m10_exercise () != 0;
       if (failed)
 	return 1;
 

@@ -679,6 +679,7 @@ GdkRegion *_gdk_window_calculate_full_clip_region    (GdkWindow     *window,
                                                       gint          *base_x_offset,
                                                       gint          *base_y_offset);
 gboolean    _gdk_window_has_impl (GdkWindow *window);
+void        _gdk_window_detach_cairo_surfaces (GdkWindow *window);
 GdkWindow * _gdk_window_get_impl_window (GdkWindow *window);
 GdkWindow *_gdk_window_get_input_window_for_event (GdkWindow *native_window,
 						   GdkEventType event_type,

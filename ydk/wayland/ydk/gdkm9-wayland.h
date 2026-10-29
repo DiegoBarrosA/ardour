@@ -834,6 +834,13 @@ typedef struct
   guint commit_sources;           /* armed deferred commit idles, 0 or 1 */
   guint registered_windows;       /* length of display->windows */
   guint xdg_wm_base_version;      /* proxy version, 0 without xdg_wm_base */
+
+  /* M9 audit: a ledger of every xdg_surface and xdg_toplevel proxy ever
+   * created and destroyed by the backend, counted at the request sites, not
+   * by walking display->windows.  created - destroyed is the live number, so
+   * a proxy that leaked from a window that left the list still shows. */
+  guint xdg_surfaces_created, xdg_surfaces_destroyed;
+  guint xdg_toplevels_created, xdg_toplevels_destroyed;
 } GDKWTestObjectCounts;
 
 typedef struct
@@ -1026,6 +1033,11 @@ void     _gdk_wayland_popup_release_children (GDKWWindowImplWayland *impl,
  * removes @impl from the stacks.  Leaves xdg_surface and wl_surface to the
  * caller.  Idempotent. */
 void     _gdk_wayland_popup_teardown       (GDKWWindowImplWayland *impl);
+
+/* M9 audit.  The ledger of xdg_surface / xdg_toplevel proxies.  Called next to
+ * every xdg_wm_base_get_xdg_surface, xdg_surface_get_toplevel,
+ * xdg_surface_destroy and xdg_toplevel_destroy. */
+void     _gdk_wayland_ledger_xdg           (gboolean toplevel, gboolean created);
 
 /* I6.  Releases every popup, destroys the idle, drops the registry.
  * Idempotent. */

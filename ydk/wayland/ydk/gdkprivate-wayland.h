@@ -62,6 +62,12 @@ typedef struct _GDKWWindowImplWaylandClass GDKWWindowImplWaylandClass;
 /* M9: popup record, defined in gdkpopup-wayland.c */
 struct _GDKWPopup;
 
+/* M10: records defined in gdkbuffer-wayland.c, gdkframe-wayland.c and
+ * gdkscale-wayland.c */
+struct _GDKWBuffers;
+struct _GDKWFrame;
+struct _GDKWSurfaceScale;
+
 struct _GDKWDisplayWayland
 {
   GdkDisplay parent_instance;
@@ -159,14 +165,18 @@ struct _GDKWWindowImplWayland
   struct wl_surface *wl_surface;
   xdg_surface *xdg_surface;
   xdg_toplevel *xdg_toplevel;
+  /* M10: the wl_buffer of the last commit (owned by the slot pool). */
   struct wl_buffer *wl_buffer;
 
   /* M3: wmclass from the creation attributes; surfaced to the compositor
    * as the xdg_toplevel app id the first time the window is shown. */
   gchar *wmclass;
 
-  /* shm backing: the cairo image surface used for drawing is created
-   * directly over this buffer (zero-copy presents). */
+  /* M10 back store (gdkbuffer-wayland.c, D2): shm_data points at plain
+   * memory (the refcounted back store), NOT at a mapped wl_shm pool, so
+   * nothing may munmap it.  shm_size and stride are in DEVICE pixels
+   * (bytes).  shm_fd is always -1.  backing is the cairo surface over the
+   * store with the device scale set. */
   int shm_fd;
   guchar *shm_data;
   unsigned int shm_size;
@@ -177,6 +187,11 @@ struct _GDKWWindowImplWayland
 
   /* M9: NULL unless this impl is a PENDING or live xdg_popup */
   struct _GDKWPopup *popup;
+
+  /* M10: created on demand by their owners */
+  struct _GDKWBuffers      *buffers;
+  struct _GDKWFrame        *frame;
+  struct _GDKWSurfaceScale *wscale;
 };
 
 struct _GDKWWindowImplWaylandClass

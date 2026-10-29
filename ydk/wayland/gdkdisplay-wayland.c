@@ -30,6 +30,7 @@
 #include "gdkm7-wayland.h"
 #include "gdkm8-wayland.h"
 #include "gdkm9-wayland.h"
+#include "gdkm10-wayland.h"
 
 #ifdef GDK_COMPILATION
 #include "gdkalias.h"
@@ -67,23 +68,6 @@ static GdkScreen *
 gdkw_display_wayland_get_default_screen (GdkDisplay *display)
 {
   return GDKW_DISPLAY_WAYLAND (display)->default_screen;
-}
-
-void
-_gdk_wayland_display_present_all (GDKWDisplayWayland *display)
-{
-  GSList *l;
-
-  /* M9: pending popups make their first commit here (gdk_flush and display
-   * sync both come through).  It may add nodes to display->windows. */
-  _gdk_wayland_popup_commit_pending (display);
-
-  for (l = display->windows; l; l = l->next)
-    {
-      GDKWWindowImplWayland *impl = l->data;
-
-      _gdk_wayland_window_impl_present (impl);
-    }
 }
 
 static void
@@ -200,6 +184,10 @@ gdkw_display_wayland_finalize (GObject *object)
       display->windows = NULL;
     }
 
+  /* M10: outputs, viewporter and the fractional manager, after every
+   * window (and so every per surface scale object) is gone.  Idempotent. */
+  _gdk_wayland_scale_display_finalize (GDK_DISPLAY_OBJECT (display));
+
   /* Idempotent; destroys the data device proxies first. */
   _gdk_wayland_dd_display_finalize (GDK_DISPLAY_OBJECT (display));
 
@@ -235,11 +223,6 @@ gdkw_display_wayland_finalize (GObject *object)
     {
       wl_compositor_destroy (display->wl_compositor);
       display->wl_compositor = NULL;
-    }
-  if (display->wl_output)
-    {
-      wl_output_destroy (display->wl_output);
-      display->wl_output = NULL;
     }
 
   if (display->wl_display)
@@ -295,76 +278,7 @@ gdkw_display_wayland_init (GDKWDisplayWayland *display)
   display->xdg_shell_supported = FALSE;
 }
 
-/*************** wl_registry + wl_output (screen geometry) ***************/
-
-static void
-wl_output_geometry (void *data,
-		    struct wl_output *output,
-		    int32_t x,
-		    int32_t y,
-		    int32_t physical_width,
-		    int32_t physical_height,
-		    int32_t subpixel,
-		    const char *make,
-		    const char *model,
-		    int32_t transform)
-{
-  GDKWDisplayWayland *display = data;
-  GDKWOutputInfo *info =
-    _gdk_wayland_display_get_output_info (GDK_DISPLAY_OBJECT (display));
-
-  /* Only the first wl_output is bound, so there is one record. */
-  info->have_geometry = TRUE;
-  info->x = x;
-  info->y = y;
-  info->mm_width = physical_width;
-  info->mm_height = physical_height;
-  info->subpixel = subpixel;
-  info->transform = transform;
-
-  g_free (info->make);
-  g_free (info->model);
-  info->make = g_strdup (make);
-  info->model = g_strdup (model);
-}
-
-static void
-wl_output_mode (void *data,
-		struct wl_output *output,
-		uint32_t flags,
-		int32_t width,
-		int32_t height,
-		int32_t refresh)
-{
-  GDKWDisplayWayland *display = data;
-
-  /* M1 tracks a single output (the first with a current mode); multihead
-   * handling can extend this when window support lands. */
-  if (flags & WL_OUTPUT_MODE_CURRENT)
-    {
-      GDKWOutputInfo *info =
-	_gdk_wayland_display_get_output_info (GDK_DISPLAY_OBJECT (display));
-
-      display->output_width = width;
-      display->output_height = height;
-
-      info->have_mode = TRUE;
-      info->width = width;
-      info->height = height;
-      info->refresh = refresh;
-    }
-}
-
-static void
-wl_output_done (void *data, struct wl_output *output)
-{
-}
-
-static const struct wl_output_listener wl_output_listener = {
-  wl_output_geometry,
-  wl_output_mode,
-  wl_output_done
-};
+/*************** wl_registry (outputs live in gdkscale-wayland.c) ***************/
 
 static void
 wl_registry_global (void *data,
@@ -375,17 +289,16 @@ wl_registry_global (void *data,
 {
   GDKWDisplayWayland *display = data;
 
-  if (strcmp (interface, "wl_output") == 0 && !display->wl_output)
+  if (strcmp (interface, "wl_output") == 0)
     {
-      display->wl_output =
-	wl_registry_bind (registry, name, &wl_output_interface, 1);
-      wl_output_add_listener (display->wl_output, &wl_output_listener,
-			      display);
+      /* M10: every output is bound, the scale piece owns the proxies */
+      _gdk_wayland_scale_bind_output (display, registry, name, version);
     }
   else if (strcmp (interface, "wl_compositor") == 0 && !display->wl_compositor)
     {
       display->wl_compositor =
-	wl_registry_bind (registry, name, &wl_compositor_interface, 1);
+	wl_registry_bind (registry, name, &wl_compositor_interface,
+			  MIN (version, GDKW_COMPOSITOR_MAX_VERSION));
     }
   else if (strcmp (interface, "wl_shm") == 0 && !display->wl_shm)
     {
@@ -414,6 +327,11 @@ wl_registry_global (void *data,
     {
       _gdk_wayland_dd_bind_primary_manager (display, registry, name, version);
     }
+  else if (_gdk_wayland_scale_bind_global (display, registry, name,
+					   interface, version))
+    {
+      /* wp_viewporter, wp_fractional_scale_manager_v1 */
+    }
 }
 
 static void
@@ -421,6 +339,7 @@ wl_registry_global_remove (void *data,
 			   struct wl_registry *registry,
 			   uint32_t name)
 {
+  _gdk_wayland_scale_global_remove (data, name);
 }
 
 static const struct wl_registry_listener wl_registry_listener = {
@@ -470,17 +389,16 @@ _gdk_wayland_display_open (const gchar *display_name)
   wl_registry_destroy (display->wl_registry);
   display->wl_registry = NULL;
 
-  /* M1: one logical screen per display.  The depth/scale of the output is
-   * read later if the fallback is not used. */
-  if (display->output_width <= 0 || display->output_height <= 0)
-    {
-      display->output_width = 1024;
-      display->output_height = 768;
-    }
+  /* M10: one logical screen per display, sized in LOGICAL units (the
+   * bounding box of all outputs, 1024x768 without any). */
+  {
+    gint screen_w, screen_h;
 
-  display->default_screen =
-    _gdk_wayland_screen_new (GDK_DISPLAY_OBJECT (display),
-			     display->output_width, display->output_height);
+    _gdk_wayland_scale_screen_size (display, &screen_w, &screen_h);
+    display->default_screen =
+      _gdk_wayland_screen_new (GDK_DISPLAY_OBJECT (display),
+			       screen_w, screen_h);
+  }
 
   /* Wire up the input event source; seat listeners are registered as the
    * compositor announces wl_seat globals. */
@@ -724,25 +642,6 @@ _gdk_wayland_display_beep (GdkDisplay *display)
 {
 }
 
-void
-_gdk_wayland_windowing_window_process_updates_recurse (GdkWindow *window,
-						       GdkRegion *expose_region)
-{
-  /* Expose dispatch is fully handled by the core: the backend hook only
-   * needs to be a passthrough (the x11 backend does the same thing). */
-  _gdk_window_process_updates_recurse (window, expose_region);
-}
-
-void
-_gdk_wayland_windowing_before_process_all_updates (void)
-{
-}
-
-void
-_gdk_wayland_windowing_after_process_all_updates (void)
-{
-}
-
 gint
 _gdk_wayland_windowing_get_bits_for_depth (GdkDisplay *display, gint depth)
 {
@@ -777,13 +676,6 @@ _gdk_wayland_windowing_get_startup_notify_id (GAppLaunchContext *context,
 void
 _gdk_wayland_windowing_launch_failed (GAppLaunchContext *context,
 				      const char *startup_notify_id)
-{
-}
-
-void
-_gdk_wayland_windowing_set_cairo_surface_size (cairo_surface_t *surface,
-					       int width,
-					       int height)
 {
 }
 

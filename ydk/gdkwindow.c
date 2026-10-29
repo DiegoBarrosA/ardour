@@ -280,6 +280,7 @@ static cairo_surface_t *gdk_window_create_cairo_surface (GdkDrawable *drawable,
 							 int width,
 							 int height);
 static void             gdk_window_drop_cairo_surface (GdkWindowObject *private);
+static void             gdk_window_set_cairo_device_offset (GdkWindowObject *private);
 static void             gdk_window_set_cairo_clip    (GdkDrawable *drawable,
 						      cairo_t *cr);
 
@@ -1093,9 +1094,7 @@ recompute_visible_regions_internal (GdkWindowObject *private,
 
       _gdk_windowing_set_cairo_surface_size (private->cairo_surface,
 					     width, height);
-      cairo_surface_set_device_offset (private->cairo_surface,
-				       private->abs_x,
-				       private->abs_y);
+      gdk_window_set_cairo_device_offset (private);
     }
 }
 
@@ -5163,6 +5162,46 @@ gdk_window_drop_cairo_surface (GdkWindowObject *private)
     }
 }
 
+/* M10 C1.  The cairo device offset is in DEVICE pixels, not scaled by the
+ * device scale (cairo_surface_set_device_scale), so a backend whose cairo
+ * surfaces carry a device scale (Wayland output scale) needs the window
+ * origin multiplied by it.  Scale 1 behaves as before. */
+static void
+gdk_window_set_cairo_device_offset (GdkWindowObject *private)
+{
+  double sx = 1.0, sy = 1.0;
+
+  cairo_surface_get_device_scale (private->cairo_surface, &sx, &sy);
+  cairo_surface_set_device_offset (private->cairo_surface,
+				   private->abs_x * sx,
+				   private->abs_y * sy);
+}
+
+/* M10 C2.  Detach (do not finish) the cached cairo surface of @window and of
+ * every non native descendant.  A surface that someone still holds stays valid
+ * and drawable; the next ref_cairo_surface builds a fresh one. */
+void
+_gdk_window_detach_cairo_surfaces (GdkWindow *window)
+{
+  GdkWindowObject *private = (GdkWindowObject *) window;
+  GList *l;
+
+  if (private == NULL)
+    return;
+
+  if (private->cairo_surface)
+    cairo_surface_set_user_data (private->cairo_surface, &gdk_window_cairo_key,
+				 NULL, NULL);
+
+  for (l = private->children; l != NULL; l = l->next)
+    {
+      GdkWindowObject *child = l->data;
+
+      if (!gdk_window_has_impl (child))
+	_gdk_window_detach_cairo_surfaces ((GdkWindow *) child);
+    }
+}
+
 static void
 gdk_window_cairo_surface_destroy (void *data)
 {
@@ -5217,9 +5256,7 @@ gdk_window_ref_cairo_surface (GdkDrawable *drawable)
 	    {
 	      private->impl_window->outstanding_surfaces++;
 
-	      cairo_surface_set_device_offset (private->cairo_surface,
-					       private->abs_x,
-					       private->abs_y);
+	      gdk_window_set_cairo_device_offset (private);
 
 	      cairo_surface_set_user_data (private->cairo_surface, &gdk_window_cairo_key,
 					   drawable, gdk_window_cairo_surface_destroy);

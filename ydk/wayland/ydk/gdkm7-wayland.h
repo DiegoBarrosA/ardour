@@ -658,7 +658,7 @@ void  _gdk_wayland_shape_surface_created      (GDKWWindowImplWayland *impl);
 /* From _gdk_wayland_window_impl_present () before wl_surface_attach (): clears
  * the pixels of impl->backing outside the bounding shape.  Cheap no-op for an
  * unshaped window. */
-void  _gdk_wayland_shape_before_present       (GDKWWindowImplWayland *impl);
+gboolean _gdk_wayland_shape_before_present    (GDKWWindowImplWayland *impl);
 
 /* The three windowing contract functions declared in gdkprivate-wayland.h
  * (_gdk_wayland_windowing_window_get_shape, _..._get_input_shape,

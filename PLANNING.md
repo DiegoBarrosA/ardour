@@ -84,6 +84,16 @@ implementations.
 Verification: demo creates a pixmap, draws via GC ops into it, blits it to
 the window, and reads it back with get_image.
 
+> [!warning] Corrected 2026-10-29 (M10)
+> The window side had a use-after-free hazard that this milestone did not see.
+> The core caches one cairo surface per `GdkWindow` and never drops it on resize,
+> while `resize_buffer` called `munmap` on the memory under it; and
+> `gdk_window_wayland_move_resize` changed the impl size without touching the
+> buffer, so a window that grew was drawn out of bounds. M10 fixes both: the
+> window draws on a refcounted back store, every cairo surface holds a reference,
+> and a size change replaces the store and detaches (does not finish) the cached
+> surfaces through `_gdk_window_detach_cairo_surfaces`.
+
 ### M6 - Input completeness (DONE)
 
 Seat state lives in one place, `GDKWSeat` (`ydk/wayland/ydk/gdkseat-wayland.h`),
@@ -335,12 +345,25 @@ Known gaps (deliberately left, in addition to the M6 list):
 - A compositor initiated resize (a maximize answer, a tiling window manager)
   changes the shm buffer size but does not update the `GdkWindow` size and does
   not emit `GDK_CONFIGURE`.  Found while testing maximize; belongs with M10.
+
+  > [!warning] Corrected 2026-10-29 (M10)
+  > This gap is fixed. A compositor resize with `w > 0` and `h > 0` and a new
+  > size now replaces the back store, updates the `GdkWindow`, invalidates it and
+  > queues one `GDK_CONFIGURE` before the state event (M10, D9). A `0 x 0`
+  > configure and an unchanged size queue nothing.
 - The default screen is leaked on display close (root window, system visual
   and colormap with it).  The fix needs a dispose in `gdkscreen-wayland.c`
   that calls `_gdk_window_destroy (root, TRUE)` like `gdk_screen_x11_dispose`,
   then an unref in display finalize.
 - `gdk_window_wayland_hide` commits without attaching a NULL buffer, so a
   hidden window stays visible on a real compositor.
+
+  > [!warning] Corrected 2026-10-29 (M10)
+  > Fixed. Hide now attaches NULL, commits, destroys the frame callback, the
+  > timers and the slots, and destroys the `xdg_toplevel` and `xdg_surface`
+  > (D8). The `wl_surface` stays; show builds the role again and gets a new
+  > configure. Without the NULL attach weston closes the connection on the next
+  > show ("xdg_surface must not have a buffer at creation").
 - `wl_registry.global_remove` is empty: hot-unplugged outputs and seats are
   not handled.
 - `gdk_window_destroy_notify` unrefs the window like the X11 version.  Nothing
@@ -400,6 +423,12 @@ Known gaps (deliberately left, in addition to the M6 and M6b lists):
 - No built in arrow: if no theme is usable the pointer is invisible (1x1
   transparent buffer, logged once with `g_debug`).
 - No scale: cursor size and buffer scale are 1 (M10 multiplies them).
+
+  > [!warning] Corrected 2026-10-29 (M10)
+  > Done for theme cursors: the theme loads at `theme_size * k`, the cursor
+  > surface gets `set_buffer_scale (k)` and the hotspot is `(hot + k / 2) / k`,
+  > with `k` the integer scale of the pointer focus window. Custom (pixbuf,
+  > pixmap) and fallback cursors stay at buffer scale 1.
 - The opaque region is sent only for shaped depth 24 windows. Unshaped windows
   send none (follow up).
 - Theme images are not readable by `gdk_cursor_get_image` (libwayland-cursor
@@ -699,6 +728,13 @@ Known gaps (deliberately left, D16 and what the tests found):
   has seen `xdg_popup.grab` or `reposition` from this code, and no real ytk menu
   has run on it (M11).
 
+> [!warning] Corrected 2026-10-29 (M10)
+> The paragraph below listed what M10 still needed. All of it is done:
+> `wl_surface_frame` pacing and buffer release, buffer scale (the positioner
+> needed no scaling, as predicted) and the `GDK_CONFIGURE` for a compositor
+> resize. A popup resize still goes through
+> `_gdk_wayland_window_impl_resize_buffer`, now in the frame piece.
+
 What M10 still needs: `wl_surface_frame` pacing and buffer release (a popup
 resize recreates the shm buffer like a toplevel does), buffer scale (a popup
 positioner works in surface units, so the anchor rect needs no scaling), and the
@@ -708,15 +744,177 @@ bring-up (grab transfer window order, submenu timing, popup_done on click
 outside), the `gdk_x11_*` guards listed under M8, and a real compositor run for
 the grab serials.
 
-### M10 - Frame sync and scale
+### M10 - Frame pacing, buffer lifecycle, output scale (DONE)
 
-- `wl_surface_frame` pacing for redraw throttling; buffer-release handling
-  so the compositor does not read a recycled buffer mid-frame.
-- `wl_output` v2 scale + `wl_surface_set_buffer_scale` (and fractional
-  scale / viewporter beyond that).
-- real `_gdk_windowing_set_cairo_surface_size`.
+The contract is `ydk/wayland/ydk/gdkm10-wayland.h`: measured facts F1 to F14,
+decisions D1 to D17, the edits to shared files I0 to I16, the tests T1 to T25
+and every test hook. Four pieces own the code and no function has two owners:
 
-Verification: demo repaint is frame-paced under Weston.
+| File | Owns |
+|------|------|
+| `gdkbuffer-wayland.c` | back store, slot pool, `wl_buffer.release`, stale regions, device pixel damage, every cairo surface over the store |
+| `gdkframe-wayland.c` | every `wl_surface` attach, damage, frame and commit request, the state machine, resize, unmap, teardown |
+| `gdkscale-wayland.c` | `wl_output` list, scale per surface, `wp_viewport`, `wp_fractional_scale_v1`, monitors, the only `set_buffer_scale` caller |
+| `demo/ydk_demo_m10.inc` | `m10_exercise` (T1 to T22, T24) and `m10_real_exercise` (T23) |
+
+**Model (D1 to D5).** GDK draws on a refcounted back store of plain memory. The
+compositor never sees it. A pool of up to 4 shm slots (one memfd each) is
+written only while the slot is FREE, by copying the stale region of that slot
+from the store. Every cairo surface over the store holds a reference, so a
+resize replaces the store and the old surfaces stay valid (this fixes the M5
+hazard: `resize_buffer` used to `munmap` under the surfaces the core had
+cached). Damage is kept in device pixels, per frame and per slot.
+
+**Frame pacing (D6).** One commit per frame callback, coalesced:
+
+```mermaid
+stateDiagram-v2
+    [*] --> UNMAPPED
+    UNMAPPED --> IDLE: first configure acked
+    IDLE --> WAITING: commit (attach, damage, frame, commit)
+    WAITING --> WAITING: request sets commit_wanted (coalesced)
+    WAITING --> IDLE: frame done, or timeout (250 ms, doubling to 2000 ms)
+    IDLE --> WAITING: commit_wanted and a free slot
+    WAITING --> UNMAPPED: hide
+    IDLE --> UNMAPPED: hide
+```
+
+| State | Event | Action |
+|-------|-------|--------|
+| UNMAPPED | commit request | ignored |
+| UNMAPPED | first configure acked | FULL commit now |
+| IDLE | commit request | commit now, request `wl_surface.frame` |
+| WAITING | commit request | `commit_wanted`, `coalesced++`, no protocol request |
+| WAITING | frame done or timeout | destroy the callback, commit once if wanted |
+| any | no FREE slot | stall (`stalled_no_buffer++`), the release retries |
+| any | commit failed for a reason that can pass (shm) | timeout retry with backoff |
+| any | hide | `attach NULL` + commit, destroy callback, timers, slots, `xdg_toplevel`, `xdg_surface` |
+
+Commit triggers: the end of the `process_updates` hook for a native window
+(exact expose region), `present_all` (flush and sync, FULL, and inside an
+update cycle only windows with `unknown_dirty`), first configure, `present ()`,
+and the callback, timeout, release and settle paths. A settle idle forces a FULL
+commit after a resize or scale change when the redraw did not commit, so a
+cleared store is never shown. `gdk_display_sync` does not wait for callbacks
+(gdkrgb calls `gdk_flush` in loops).
+
+**Resize (D9).** A compositor configure with `w > 0` and `h > 0` and a new size
+replaces the store, updates the `GdkWindowObject`, invalidates and queues one
+`GDK_CONFIGURE` before the state event. `0 x 0` and an unchanged size queue
+nothing. A client resize queues one `GDK_CONFIGURE` too (verified against a
+real ytk window only in M11). A hidden window gets no event.
+
+**Scale (D2, D10, D11, D12, D13).** GDK units stay logical everywhere (surface,
+xdg geometry, positioner, regions, pointer, monitors, resolution). Device pixels
+are the store, `wl_buffer`, stride, `damage_buffer` and theme cursor images.
+`scale120` is 120 for 1.0 and the buffer size is `(logical * scale120 + 60) /
+120`. Source priority: fractional `preferred_scale`, then
+`wl_surface.preferred_buffer_scale`, then the largest scale of the entered
+outputs, then a hint (the largest output scale, because `wl_surface.enter`
+arrives after the first commit, F4). The integer path is `set_buffer_scale (k)`
+with no viewport. The fractional path needs `wp_viewporter`: buffer scale 1,
+destination = logical size. `set_buffer_scale` and the viewport go out in the
+same commit as the buffer. All outputs are kept; the screen is the bounding box
+of their logical sizes; `size-changed` and `monitors-changed` fire once per
+`wl_output.done`. The theme cursor loads at `theme_size * k`, goes out with
+`set_buffer_scale (k)` and the hotspot `(hot + k / 2) / k`.
+
+Core changes (X11 unaffected): C1, `cairo_surface_set_device_offset` multiplies
+the window origin by the device scale of the cached surface (the offset is in
+device pixels, F8; without it every client side child of a scaled window drew in
+the wrong place). C2, `_gdk_window_detach_cairo_surfaces` drops the cached
+surfaces of a window and its non native children without finishing them.
+`wl_compositor` is bound at `MIN (advertised, 6)` and `wl_output` at
+`MIN (advertised, 4)`. The cairo requirement is 1.14 (device scale).
+
+Fixes from the review of the four drafts: the settle idle kept a stale
+`settle_mark`; a commit that failed in `ensure` or `prepare` was dropped
+silently (now retried by the timeout); `GDK_CONFIGURE` of a client resize
+carried the old size (the core updates the `GdkWindowObject` after
+`move_resize` returns) and was sent for hidden windows; a shaped window cleared
+the store outside its shape without damage (`_gdk_wayland_shape_before_present`
+now returns TRUE for a shaped window and the commit sends FULL; `present ()`
+still clears at once, because a deferred commit would leave the store wrong for
+a reader); retired slots of a compositor that never releases were unbounded
+(capped at 4); the monitor mm of a 90 or 270 degree output used the unrotated
+panel axes; `GdkScreen` signals fired before the surfaces had their new scale.
+One review finding was wrong for this tree: the frame review said the commit of
+the `process_updates` hook happens before `gdk_window_end_implicit_paint`. The
+Wayland impl is a `GdkPaintable`, so `gdk_window_begin_implicit_paint` returns
+FALSE and no implicit paint exists.
+
+Verification: `m10_exercise` (751 checks, `ydk_demo: M10: PASS`) and
+`m10_real_exercise` (67 checks against `weston --scale=2 --renderer=pixman`,
+`ydk_demo: M10-REAL2: PASS`, smoke test Phase 3). T1 to T22 and T24 of the
+header: five redraws under a pending callback give one commit and four
+coalesced, frame HOLD and DROP, timeout backoff, hide while WAITING, buffer
+reuse, a held buffer is never written (poison pattern), stale region exactness
+in bytes, compositor resize with an old surface still held, maximize, damage
+exactness, scale 2 and 1.5 through fake outputs, multi output, monitors,
+transform, cursor scale, popup scale, shapes, 50 create, draw, resize, scale,
+hide, show, destroy cycles with every buffer, store, timer, callback and idle
+count back at the baseline. T25 is the rest of the demo (M4 to M9) plus
+`scripts/baseline-diff.sh`: the absolute error is 1.87059 both before and after
+M10 (a `DIFF`, not a `MATCH`, in this environment; the scale 1 pixels did not
+change). Valgrind reports 0 errors with no suppressions. A `--leak-check=full
+--track-fds=yes` run on a scratch copy shows no leak stack through
+`gdkbuffer-wayland.c`, `gdkframe-wayland.c` or `gdkscale-wayland.c`; the
+remaining ones are the M7 font code, the M5C colormap and the default screen
+(known gaps above) and the only open fd is the event loop wakeup plus the three
+inherited ones.
+
+Mutation checks (a scratch copy with one fix undone at a time, each fails the
+demo): write to a non FREE slot (T6), skip the stale copy (T6, T7), ignore
+`commit_wanted` (T1), commit without waiting (T1), unscaled device offset (T14),
+undivided cursor hotspot (T19). Hide without `attach NULL` (T4) makes weston
+close the connection on the next show (`xdg_surface must not have a buffer at
+creation`). Dropping the `0 x 0` guard fails M6 before M10 runs.
+
+The M9 audit test gaps are closed in `m9_audit` (mutation checked): (a) the
+grab serial with a button held is `seat->button_serial`, not the key or last
+serial; (b) `x_root` and `y_root` of motion, button and scroll events from a
+popup include the popup origin; (c) overlapping siblings including an
+input-only one, through `gdk_window_at_pointer`, `gdk_window_get_pointer` and
+the button event window; (d) a ledger of every `xdg_surface` and `xdg_toplevel`
+proxy created and destroyed (counted at the request sites, not by walking
+`display->windows`); (e) the demote assertions use that ledger. Mutation (e):
+removing the teardown from the demote alone is equivalent, because the core's
+hide destroys the role anyway; leaking the toplevel in the teardown fails (d)
+and (e).
+
+Known gaps (deliberately left, D17 and what the tests found):
+
+- No `xdg-output`: a fractional output reports the ceil of its logical size.
+- Fractional scale without `wp_viewporter` degrades to the integer path (blur).
+  Weston has no `wp_fractional_scale_manager_v1`; the fractional path is tested
+  through the force hook only.
+- Direct cairo drawing on the cached surface outside an expose handler, with no
+  `gdk_flush`, is not seen. The draw vfuncs (`gdkw_*`) are seen: they set
+  `unknown_dirty`.
+- Custom and fallback cursors stay at buffer scale 1.
+- One memfd per buffer, no shared pool.
+- Window to pixmap blits of a scaled window downsample (pixmaps are 1x).
+- A scale change repaints from scratch (the old content is not scaled for one
+  frame). `wl_surface.preferred_buffer_transform` is ignored.
+- The registry is destroyed after the display opens, so a real output
+  hot-plug is not seen. `wl_registry.global_remove` is wired (outputs,
+  viewporter, fractional manager) and driven by the test hook only.
+- Hide destroys the `xdg_toplevel`; transient children that sent `set_parent`
+  against it are not told (the M9 hints gap).
+- A frame callback after a re-map did not arrive in a 2 s probe (F7, cause not
+  known); the timeout covers it and T4 does not assert it.
+- A negative output position puts part of the output outside the screen (the
+  screen is the box from 0, 0 to the far corner).
+- `BUFFER_MODE_HOLD` does not deliver stashed releases when the mode ends, and
+  the test release hook can free a slot the compositor still holds (T7 uses
+  limit 2 and the pixman or noop timing; reachable only through the hook).
+- Verified only against headless weston plus hooks: no real HiDPI compositor and
+  no real fractional-scale manager.
+
+What M11 still needs: a real ytk window under `GDK_BACKEND=wayland` (the client
+resize `GDK_CONFIGURE`, the idle redraw priority against the settle idle, the
+`gdk_flush` loops of gdkrgb), the guards listed under M8, a real compositor for
+the grab serials, the frame callback after a re-map, and a HiDPI compositor.
 
 ### M11 - Merge and Ardour bring-up
 
@@ -738,8 +936,9 @@ Verification: demo repaint is frame-paced under Weston.
   per `GDK_BACKEND`; Wayland authors `_gdk_wayland_*` natively.  Follow this
   pattern for every newly isolated public symbol.
 - The Wayland window impl implements `GdkPaintable` with no-op
-  begin/end_paint: its shm-backed cairo surface is already the double
-  buffer, so the core skips the implicit-paint pixmap machinery
+  begin/end_paint: its back store (M10: plain memory, copied into a free shm
+  slot at commit) is already the double buffer, so the core skips the
+  implicit-paint pixmap machinery
   (gdkwindow.c `gdk_window_begin_implicit_paint` early-return).  Keep this
   strategy; offscreen pixmaps are implemented separately in M5.
 - Both backends are always compiled today (`--without-x11` would fail to

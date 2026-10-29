@@ -44,6 +44,7 @@
 #include "gdkm7-wayland.h"
 #include "gdkm8-wayland.h"
 #include "gdkm9-wayland.h"
+#include "gdkm10-wayland.h"
 
 #ifdef GDK_COMPILATION
 #include "gdkalias.h"
@@ -68,10 +69,6 @@ G_DEFINE_TYPE_WITH_CODE (GDKWWindowImplWayland,
                          G_IMPLEMENT_INTERFACE (GDK_TYPE_PAINTABLE,
                                                 gdk_paintable_iface_init));
 
-static gboolean ensure_shm_buffer (GDKWWindowImplWayland *impl);
-static void paint_background (GDKWWindowImplWayland *impl);
-static void resize_buffer (GDKWWindowImplWayland *impl,
-			   gint width, gint height);
 static void grab_check_unmap (GdkWindow *window);
 
 /*************** drawable vfuncs ***************/
@@ -142,27 +139,10 @@ gdkw_window_impl_wayland_create_cairo_surface (GdkDrawable *drawable,
 					       int height)
 {
   GDKWWindowImplWayland *impl = GDKW_WINDOW_IMPL_WAYLAND (drawable);
-  cairo_surface_t *surface;
 
-  if (!impl->backing && !ensure_shm_buffer (impl))
-    return NULL;
-
-  /* A FRESH surface over the same shm bytes.  gdkwindow.c's
-   * gdk_window_ref_cairo_surface() sets a per-window device offset and user
-   * data on whatever this returns; handing out the shared backing would shift
-   * all later drawing through the impl.  (M10: resize_buffer still munmaps
-   * the bytes while such wrapper-cached surfaces may point at them.) */
-  surface = cairo_image_surface_create_for_data (impl->shm_data,
-						 CAIRO_FORMAT_ARGB32,
-						 impl->width, impl->height,
-						 impl->stride);
-  if (cairo_surface_status (surface) != CAIRO_STATUS_SUCCESS)
-    {
-      cairo_surface_destroy (surface);
-      return NULL;
-    }
-
-  return surface;
+  /* M10: a fresh wrapper surface over the refcounted back store; the core
+   * caches it per GdkWindow and detaches it when the store is replaced */
+  return _gdk_wayland_buffers_create_wrapper (impl, width, height);
 }
 
 static cairo_surface_t *
@@ -170,11 +150,9 @@ gdkw_window_impl_wayland_ref_cairo_surface (GdkDrawable *drawable)
 {
   GDKWWindowImplWayland *impl = GDKW_WINDOW_IMPL_WAYLAND (drawable);
 
-  /* the shared backing; drawing code (the M5 draw vfuncs) paints on it */
-  if (!impl->backing && !ensure_shm_buffer (impl))
-    return NULL;
-
-  return cairo_surface_reference (impl->backing);
+  /* the shared backing; drawing code (the M5 draw vfuncs) paints on it.  A
+   * WRITER entry (damage bookkeeping, M10 D5c). */
+  return _gdk_wayland_buffers_ref_backing (impl);
 }
 
 static void
@@ -249,129 +227,6 @@ gdkw_window_impl_wayland_init (GDKWWindowImplWayland *impl)
   impl->configured = FALSE;
 }
 
-/*************** shm buffer + present ***************/
-
-static gboolean
-ensure_shm_buffer (GDKWWindowImplWayland *impl)
-{
-  GDKWDisplayWayland *display;
-  struct wl_shm_pool *pool;
-  unsigned int stride, size;
-  guint32 *pixels;
-  unsigned int i;
-  int fd;
-
-  if (impl->wl_buffer)
-    return TRUE;
-
-  display = GDKW_DISPLAY_WAYLAND (gdk_screen_get_display (impl->screen));
-  if (!display->wl_shm)
-    return FALSE;
-
-  if (impl->width <= 0 || impl->height <= 0)
-    return FALSE;
-
-  stride = cairo_format_stride_for_width (CAIRO_FORMAT_ARGB32, impl->width);
-  size = stride * impl->height;
-
-  fd = memfd_create ("ydk-wayland", MFD_CLOEXEC);
-  if (fd < 0)
-    return FALSE;
-
-  if (ftruncate (fd, size) < 0)
-    {
-      close (fd);
-      return FALSE;
-    }
-
-  impl->shm_data = mmap (NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED,
-			 fd, 0);
-  if (impl->shm_data == MAP_FAILED)
-    {
-      impl->shm_data = NULL;
-      close (fd);
-      return FALSE;
-    }
-  impl->shm_fd = fd;
-  impl->shm_size = size;
-  impl->stride = stride;
-
-  /* opaque black, matching an X11 background pixel of 0 */
-  pixels = (guint32 *) impl->shm_data;
-  for (i = 0; i < size / 4; i++)
-    pixels[i] = 0xff000000;
-
-  pool = wl_shm_create_pool (display->wl_shm, fd, size);
-  impl->wl_buffer =
-    wl_shm_pool_create_buffer (pool, 0, impl->width, impl->height, stride,
-			       WL_SHM_FORMAT_ARGB8888);
-  wl_shm_pool_destroy (pool);
-
-  impl->backing =
-    cairo_image_surface_create_for_data (impl->shm_data,
-					 CAIRO_FORMAT_ARGB32,
-					 impl->width, impl->height,
-					 stride);
-
-  paint_background (impl);
-
-  return TRUE;
-}
-
-/* M3: drop the current buffer/backing so a later present (or
- * create-cairo-surface) rebuilds them at the new geometry.  Used when the
- * compositor forces a size change via the xdg configure event. */
-static void
-resize_buffer (GDKWWindowImplWayland *impl, gint width, gint height)
-{
-  if (impl->wl_buffer)
-    {
-      wl_buffer_destroy (impl->wl_buffer);
-      impl->wl_buffer = NULL;
-    }
-  if (impl->backing)
-    {
-      cairo_surface_destroy (impl->backing);
-      impl->backing = NULL;
-    }
-  if (impl->shm_data)
-    {
-      munmap (impl->shm_data, impl->shm_size);
-      impl->shm_data = NULL;
-    }
-  if (impl->shm_fd >= 0)
-    {
-      close (impl->shm_fd);
-      impl->shm_fd = -1;
-    }
-  impl->shm_size = 0;
-  impl->stride = 0;
-
-  impl->width = width;
-  impl->height = height;
-}
-
-void
-_gdk_wayland_window_impl_present (GDKWWindowImplWayland *impl)
-{
-  if (!impl)
-    return;
-
-  /* xdg-shell forbids committing a buffer before the xdg_surface has been
-   * acked-configured at least once.  Until then, no-ops. */
-  if (!impl->wl_surface || !impl->configured)
-    return;
-
-  if (!impl->wl_buffer && !ensure_shm_buffer (impl))
-    return;
-
-  _gdk_wayland_shape_before_present (impl);
-
-  wl_surface_attach (impl->wl_surface, impl->wl_buffer, 0, 0);
-  wl_surface_damage (impl->wl_surface, 0, 0, impl->width, impl->height);
-  wl_surface_commit (impl->wl_surface);
-}
-
 GDKWWindowImplWayland *
 _gdk_wayland_impl_from_surface (GDKWDisplayWayland *display,
 				struct wl_surface *surface)
@@ -413,27 +268,10 @@ _gdk_wayland_window_impl_teardown (GDKWWindowImplWayland *impl)
 	display->windows = g_slist_remove (display->windows, impl);
     }
 
-  if (impl->backing)
-    {
-      cairo_surface_destroy (impl->backing);
-      impl->backing = NULL;
-    }
-  if (impl->wl_buffer)
-    {
-      wl_buffer_destroy (impl->wl_buffer);
-      impl->wl_buffer = NULL;
-    }
-  if (impl->shm_data)
-    {
-      munmap (impl->shm_data, impl->shm_size);
-      impl->shm_data = NULL;
-      impl->shm_size = 0;
-    }
-  if (impl->shm_fd >= 0)
-    {
-      close (impl->shm_fd);
-      impl->shm_fd = -1;
-    }
+  /* M10: frame callback, timers, idles, slot buffers and the back store.
+   * Must run before the popup record and the wl_surface go. */
+  _gdk_wayland_frame_teardown (impl);
+
   /* M9: destroys the xdg_popup and the record (idempotent); the code below
    * destroys the xdg_surface and the wl_surface */
   _gdk_wayland_popup_teardown (impl);
@@ -441,38 +279,25 @@ _gdk_wayland_window_impl_teardown (GDKWWindowImplWayland *impl)
   if (impl->xdg_toplevel)
     {
       xdg_toplevel_destroy (impl->xdg_toplevel);
+      _gdk_wayland_ledger_xdg (TRUE, FALSE);
       impl->xdg_toplevel = NULL;
     }
   if (impl->xdg_surface)
     {
       xdg_surface_destroy (impl->xdg_surface);
+      _gdk_wayland_ledger_xdg (FALSE, FALSE);
       impl->xdg_surface = NULL;
     }
   if (impl->wl_surface)
     {
+      /* M10: wp_viewport, wp_fractional_scale_v1, surface listener data */
+      _gdk_wayland_scale_surface_destroy (impl);
       wl_surface_destroy (impl->wl_surface);
       impl->wl_surface = NULL;
     }
   impl->configured = FALSE;
   g_free (impl->wmclass);
   impl->wmclass = NULL;
-}
-
-static void
-paint_background (GDKWWindowImplWayland *impl)
-{
-  cairo_t *cr;
-
-  if (!impl->backing)
-    return;
-
-  cr = cairo_create (impl->backing);
-  cairo_set_source_rgb (cr,
-			impl->background.red / 65535.0,
-			impl->background.green / 65535.0,
-			impl->background.blue / 65535.0);
-  cairo_paint (cr);
-  cairo_destroy (cr);
 }
 
 /*************** xdg-shell listeners ***************/
@@ -500,9 +325,10 @@ xdg_surface_handle_configure (void *data,
   /* children waiting for this window as their transient parent */
   _gdk_wayland_window_hints_mapped (impl);
 
-  /* first allowed buffer commit: attach the freshly-acked surface.  Later
-   * commits happen in display sync via present_all. */
-  _gdk_wayland_window_impl_present (impl);
+  /* first allowed buffer commit (M10): the frame piece commits at once on
+   * the first configure since the map and only arms the settle idle on later
+   * ones. */
+  _gdk_wayland_frame_configured (impl);
 }
 
 static const struct xdg_surface_listener xdg_surface_listener = {
@@ -518,18 +344,11 @@ xdg_toplevel_handle_configure (void *data,
 {
   GDKWWindowImplWayland *impl = data;
 
-  if (width > 0 && height > 0 &&
-      ((guint) width != impl->width || (guint) height != impl->height))
-    {
-      resize_buffer (impl, width, height);
-
-      if (impl->configured && impl->wrapper)
-	{
-	  GdkRectangle rect = { 0, 0, width, height };
-
-	  gdk_window_invalidate_rect (impl->wrapper, &rect, FALSE);
-	}
-    }
+  /* M10 D9: a compositor size replaces the back store, updates the
+   * GdkWindowObject, invalidates and queues one GDK_CONFIGURE.  0x0 and an
+   * unchanged size do nothing. */
+  if (width > 0 && height > 0)
+    _gdk_wayland_frame_apply_configure_size (impl, width, height);
 
   /* compositor window state: maximized, fullscreen, activated */
   _gdk_wayland_window_hints_configure
@@ -611,17 +430,24 @@ _gdk_wayland_window_impl_create_toplevel (GDKWWindowImplWayland *impl)
     return;
 
   if (impl->wl_surface == NULL)
-    impl->wl_surface = wl_compositor_create_surface (display->wl_compositor);
+    {
+      impl->wl_surface = wl_compositor_create_surface (display->wl_compositor);
+      /* M10: wl_surface listener, wp_viewport, wp_fractional_scale_v1.
+       * Idempotent. */
+      _gdk_wayland_scale_surface_created (impl);
+    }
 
   if (impl->xdg_surface == NULL)
     {
       impl->xdg_surface =
         xdg_wm_base_get_xdg_surface (display->xdg_wm_base, impl->wl_surface);
+      _gdk_wayland_ledger_xdg (FALSE, TRUE);
       xdg_surface_add_listener (impl->xdg_surface, &xdg_surface_listener,
                                 impl);
     }
 
   impl->xdg_toplevel = xdg_surface_get_toplevel (impl->xdg_surface);
+  _gdk_wayland_ledger_xdg (TRUE, TRUE);
   xdg_toplevel_add_listener (impl->xdg_toplevel, &xdg_toplevel_listener,
 			     impl);
 
@@ -641,13 +467,6 @@ _gdk_wayland_window_impl_create_toplevel (GDKWWindowImplWayland *impl)
    * then performs the first real present; subsequent frames are committed by
    * display sync via present_all. */
   wl_surface_commit (impl->wl_surface);
-}
-
-void
-_gdk_wayland_window_impl_resize_buffer (GDKWWindowImplWayland *impl,
-					gint width, gint height)
-{
-  resize_buffer (impl, width, height);
 }
 
 void
@@ -693,10 +512,12 @@ gdk_window_wayland_show (GdkWindow *window, gboolean already_mapped)
   if (_gdk_wayland_popup_show (window))
     return;
 
-  if (impl->wl_surface)
-    return; /* already shown */
+  /* M10 D8: hide destroys the xdg role but keeps the wl_surface, so the
+   * "already shown" test is the toplevel role, not the surface */
+  if (impl->xdg_toplevel != NULL)
+    return;
 
-  impl->wl_surface = wl_compositor_create_surface (display->wl_compositor);
+  /* creates the wl_surface when there is none */
   _gdk_wayland_window_impl_create_toplevel (impl);
 }
 
@@ -750,10 +571,9 @@ gdk_window_wayland_hide (GdkWindow *window)
 	return;
     }
 
-  resize_buffer (impl, impl->width, impl->height);
-
-  if (impl->wl_surface)
-    wl_surface_commit (impl->wl_surface);
+  /* M10 D8: attach NULL + commit, destroy callback, timers and slots, destroy
+   * xdg_toplevel and xdg_surface */
+  _gdk_wayland_frame_unmap (impl);
 }
 
 static void
@@ -794,6 +614,7 @@ gdk_window_wayland_move_resize (GdkWindow *window,
 				gint height)
 {
   GDKWWindowImplWayland *impl;
+  gboolean size_changed;
 
   impl = GDKW_WINDOW_IMPL_WAYLAND (((GdkWindowObject *) window)->impl);
   if (with_move)
@@ -801,11 +622,17 @@ gdk_window_wayland_move_resize (GdkWindow *window,
       impl->x = x;
       impl->y = y;
     }
+  size_changed = (guint) width != impl->width || (guint) height != impl->height;
   impl->width = width;
   impl->height = height;
 
   /* M9: no-op unless the impl is a popup */
   _gdk_wayland_popup_move_resize (window, with_move, x, y, width, height);
+
+  /* M10 D9: a client resize of a toplevel replaces the back store (a popup
+   * does it in its own positioner path) */
+  if (impl->popup == NULL && size_changed)
+    _gdk_wayland_frame_client_resize (impl, width, height);
 }
 
 static void
@@ -815,7 +642,7 @@ gdk_window_wayland_set_background (GdkWindow *window, const GdkColor *color)
 
   impl = GDKW_WINDOW_IMPL_WAYLAND (((GdkWindowObject *) window)->impl);
   impl->background = *color;
-  paint_background (impl);
+  _gdk_wayland_buffers_paint_background (impl);
 }
 
 static void

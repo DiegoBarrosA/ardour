@@ -18,7 +18,8 @@
 # clipboard and drag and drop checks on the virtual data device
 # ("ydk_demo: M8: PASS"), and since M9 the popup, input-only window
 # and reparent checks on headless weston and the virtual seat
-# ("ydk_demo: M9: PASS"), with CRITICAL log
+# ("ydk_demo: M9: PASS"), and since M10 the frame pacing, buffer lifecycle and
+# output scale checks ("ydk_demo: M10: PASS"), with CRITICAL log
 # messages fatal in the demo.  Backends without window support exit 77,
 # which still proves the display open/roundtrip works.
 #
@@ -26,6 +27,10 @@
 # built objects are available (YDK_AUDIT_BUILD, set by the flake app).
 # Phase 1 also requires "ydk_demo: M6B-X11: PASS": the dispatched M6b
 # functions still reach the X11 backend.
+#
+# Phase 3 (M10) starts a second headless weston with --scale=2 and the pixman
+# renderer and runs only the real scale checks of the demo
+# (YDK_DEMO_ONLY=m10real, "ydk_demo: M10-REAL2: PASS").
 #
 # Exits 0 on success.
 
@@ -156,6 +161,11 @@ if [ "$DEMO_RC" -eq 0 ] && ! grep -q "ydk_demo: M9: PASS" "$RUNTIME/wayland-demo
   exit 1
 fi
 
+if [ "$DEMO_RC" -eq 0 ] && ! grep -q "ydk_demo: M10: PASS" "$RUNTIME/wayland-demo.log"; then
+  echo "smoke-test: wayland demo exited 0 but did not report M10: PASS" >&2
+  exit 1
+fi
+
 if grep -q "GdkFont text drawing unsupported" "$RUNTIME/wayland-demo.log"; then
   echo "smoke-test: wayland phase logged the old font drawing warning" >&2
   exit 1
@@ -171,4 +181,47 @@ if grep -q "CRITICAL" "$RUNTIME/wayland-demo.log"; then
 fi
 
 echo "smoke-test: wayland phase OK (demo rc=$DEMO_RC)"
+
+echo "== Phase 3: Wayland output scale 2 (weston headless --scale=2) =="
+# M10: weston gives the output scale 2 (mode 2048x1280, logical 1024x640).  The
+# smoke test passes --no-config, so the scale is a command line option.  Only
+# the real scale checks run here (no scale hooks), see T23 in the demo.
+if [ "$DEMO_RC" -eq 0 ]; then
+  dbus-run-session --config-file="$RUNTIME/bus.conf" -- weston \
+    --backend=headless-backend.so --renderer=pixman --scale=2 \
+    --socket=smokescale --idle-time=0 --no-config &
+  WESTON2_PID=$!
+  sleep 2
+
+  set +e
+  (
+    export WAYLAND_DISPLAY=smokescale
+    export GDK_BACKEND=wayland
+    export YDK_DEMO_ONLY=m10real
+    ydk-demo
+  ) 2>&1 | tee "$RUNTIME/wayland-scale2.log"
+  SCALE_RC=${PIPESTATUS[0]}
+  set -e
+
+  pkill -TERM -P "$WESTON2_PID" 2>/dev/null || true
+  kill "$WESTON2_PID" 2>/dev/null || true
+  wait "$WESTON2_PID" 2>/dev/null || true
+
+  if [ "$SCALE_RC" -ne 0 ]; then
+    echo "smoke-test: scale 2 demo failed with rc=$SCALE_RC" >&2
+    exit 1
+  fi
+  if ! grep -q "ydk_demo: M10-REAL2: PASS" "$RUNTIME/wayland-scale2.log"; then
+    echo "smoke-test: scale 2 demo did not report M10-REAL2: PASS" >&2
+    exit 1
+  fi
+  if grep -q "CRITICAL" "$RUNTIME/wayland-scale2.log"; then
+    echo "smoke-test: scale 2 phase logged a CRITICAL:" >&2
+    grep "CRITICAL" "$RUNTIME/wayland-scale2.log" >&2
+    exit 1
+  fi
+  echo "smoke-test: scale 2 phase OK"
+else
+  echo "smoke-test: scale 2 phase skipped (wayland demo rc=$DEMO_RC)"
+fi
 echo "smoke-test: PASS"

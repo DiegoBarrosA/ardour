@@ -38,6 +38,7 @@
 #include "gdkseat-wayland.h"
 #include "gdkm7-wayland.h"
 #include "gdkm9-wayland.h"
+#include "gdkm10-wayland.h"
 
 #ifdef GDK_COMPILATION
 #include "gdkalias.h"
@@ -426,10 +427,12 @@ popup_free (GDKWPopup *p, gboolean unregister, gboolean notify_seat)
   if (impl->xdg_surface)
     {
       xdg_surface_destroy (impl->xdg_surface);
+      _gdk_wayland_ledger_xdg (FALSE, FALSE);
       impl->xdg_surface = NULL;
     }
   if (impl->wl_surface)
     {
+      _gdk_wayland_scale_surface_destroy (impl);   /* M10 */
       wl_surface_destroy (impl->wl_surface);
       impl->wl_surface = NULL;
     }
@@ -516,15 +519,18 @@ fallback_release (GDKWWindowImplWayland *impl)
   if (impl->xdg_toplevel)
     {
       xdg_toplevel_destroy (impl->xdg_toplevel);
+      _gdk_wayland_ledger_xdg (TRUE, FALSE);
       impl->xdg_toplevel = NULL;
     }
   if (impl->xdg_surface)
     {
       xdg_surface_destroy (impl->xdg_surface);
+      _gdk_wayland_ledger_xdg (FALSE, FALSE);
       impl->xdg_surface = NULL;
     }
   if (impl->wl_surface)
     {
+      _gdk_wayland_scale_surface_destroy (impl);   /* M10 */
       wl_surface_destroy (impl->wl_surface);
       impl->wl_surface = NULL;
     }
@@ -660,10 +666,12 @@ popup_recreate (GDKWPopup *p)
   if (impl->xdg_surface)
     {
       xdg_surface_destroy (impl->xdg_surface);
+      _gdk_wayland_ledger_xdg (FALSE, FALSE);
       impl->xdg_surface = NULL;
     }
   if (impl->wl_surface)
     {
+      _gdk_wayland_scale_surface_destroy (impl);   /* M10 */
       wl_surface_destroy (impl->wl_surface);
       impl->wl_surface = NULL;
     }
@@ -677,7 +685,11 @@ popup_recreate (GDKWPopup *p)
   p->state = GDKW_POPUP_PENDING;
 
   if (display->wl_compositor != NULL)
-    impl->wl_surface = wl_compositor_create_surface (display->wl_compositor);
+    {
+      impl->wl_surface = wl_compositor_create_surface (display->wl_compositor);
+      if (impl->wl_surface != NULL)
+        _gdk_wayland_scale_surface_created (impl);   /* M10 */
+    }
 
   if (impl->wl_surface != NULL)
     {
@@ -1260,6 +1272,7 @@ commit_one (PopupDisplay *pd, GDKWPopup *p)
 
   impl->xdg_surface = xdg_wm_base_get_xdg_surface (display->xdg_wm_base,
                                                    impl->wl_surface);
+  _gdk_wayland_ledger_xdg (FALSE, TRUE);
   xdg_surface_add_listener (impl->xdg_surface,
                             _gdk_wayland_window_impl_xdg_surface_listener (),
                             impl);
@@ -1434,6 +1447,7 @@ _gdk_wayland_popup_show (GdkWindow *window)
   impl->wl_surface = wl_compositor_create_surface (display->wl_compositor);
   if (impl->wl_surface == NULL)
     return TRUE;
+  _gdk_wayland_scale_surface_created (impl);   /* M10 */
 
   if (g_slist_find (display->windows, impl) == NULL)
     display->windows = g_slist_prepend (display->windows, impl);
@@ -1811,6 +1825,16 @@ _gdk_wayland_test_popup_info (GdkWindow *window, GDKWTestPopupInfo *info)
   return TRUE;
 }
 
+/* [0] created, [1] destroyed */
+static guint ledger_xdg_surfaces[2];
+static guint ledger_xdg_toplevels[2];
+
+void
+_gdk_wayland_ledger_xdg (gboolean toplevel, gboolean created)
+{
+  (toplevel ? ledger_xdg_toplevels : ledger_xdg_surfaces)[created ? 0 : 1]++;
+}
+
 gboolean
 _gdk_wayland_test_object_counts (GdkDisplay *gdk_display,
                                  GDKWTestObjectCounts *counts)
@@ -1852,6 +1876,11 @@ _gdk_wayland_test_object_counts (GdkDisplay *gdk_display,
       counts->positioners_destroyed = pd->positioners_destroyed;
       counts->commit_sources = pd->commit_source != 0 ? 1 : 0;
     }
+
+  counts->xdg_surfaces_created = ledger_xdg_surfaces[0];
+  counts->xdg_surfaces_destroyed = ledger_xdg_surfaces[1];
+  counts->xdg_toplevels_created = ledger_xdg_toplevels[0];
+  counts->xdg_toplevels_destroyed = ledger_xdg_toplevels[1];
 
   counts->xdg_wm_base_version = display->xdg_wm_base != NULL
     ? xdg_wm_base_get_version (display->xdg_wm_base) : 0;

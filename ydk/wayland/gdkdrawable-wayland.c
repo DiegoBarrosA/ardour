@@ -15,6 +15,7 @@
 
 #include "config.h"
 
+#include <math.h>
 #include <string.h>
 
 #include <ydk/gdk.h>
@@ -22,6 +23,7 @@
 
 #include "gdkpixmap-wayland.h"
 #include "gdkm7-wayland.h"
+#include "gdkm10-wayland.h"
 
 #ifdef GDK_COMPILATION
 #include "gdkalias.h"
@@ -532,8 +534,14 @@ gdkw_blit_surface (GdkDrawable    *drawable,
       /* overlapping copy (scroll): go through a temporary */
       cairo_t *tcr;
 
+      gdouble dsx = 1.0, dsy = 1.0;
+
+      /* M10 I10a: the temporary keeps the device scale of the source, so
+       * a w x h LOGICAL rectangle is copied at full device resolution */
+      cairo_surface_get_device_scale (ss, &dsx, &dsy);
       tmp = cairo_image_surface_create (_gdk_wayland_cairo_format_for_depth (sdepth == 1 ? 1 : 32),
-					w, h);
+					(gint) ceil (w * dsx), (gint) ceil (h * dsy));
+      cairo_surface_set_device_scale (tmp, dsx, dsy);
       tcr = cairo_create (tmp);
       cairo_set_operator (tcr, CAIRO_OPERATOR_SOURCE);
       cairo_set_source_surface (tcr, ss, -sx, -sy);
@@ -564,6 +572,17 @@ gdkw_blit_surface (GdkDrawable    *drawable,
     cairo_surface_destroy (tmp);
 }
 
+/* M10 I10b.  The SOURCE of a blit is only read: a window source goes through
+ * the read-only entry so it does not count as a write outside an expose. */
+static cairo_surface_t *
+gdkw_ref_surface_ro (GdkDrawable *simpl)
+{
+  if (GDKW_IS_WINDOW_IMPL_WAYLAND (simpl))
+    return _gdk_wayland_buffers_ref_backing_ro (GDKW_WINDOW_IMPL_WAYLAND (simpl));
+
+  return _gdk_drawable_ref_cairo_surface (simpl);
+}
+
 static void
 gdkw_draw_drawable_with_src (GdkDrawable *drawable,
 			     GdkGC       *gc,
@@ -581,7 +600,7 @@ gdkw_draw_drawable_with_src (GdkDrawable *drawable,
   gint sw, sh, sdepth;
 
   simpl = _gdk_wayland_drawable_get_impl (src);
-  ss = _gdk_drawable_ref_cairo_surface (simpl);
+  ss = gdkw_ref_surface_ro (simpl);
   if (!ss)
     return;
 

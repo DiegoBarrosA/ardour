@@ -18,6 +18,7 @@
 
 #include "config.h"
 
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -28,6 +29,7 @@
 #include <ydk/gdkinternals.h>
 
 #include "gdkpixmap-wayland.h"
+#include "gdkm10-wayland.h"
 
 #ifdef GDK_COMPILATION
 #include "gdkalias.h"
@@ -703,11 +705,43 @@ _gdk_wayland_drawable_copy_to_image (GdkDrawable *drawable,
   g_return_val_if_fail (width > 0 && height > 0, NULL);
 
   impl = _gdk_wayland_drawable_get_impl (drawable);
-  surface = _gdk_drawable_ref_cairo_surface (impl);
+  /* M10 I11: a window is only READ here, so it does not count as a write
+   * outside an expose scope */
+  if (GDKW_IS_WINDOW_IMPL_WAYLAND (impl))
+    surface = _gdk_wayland_buffers_ref_backing_ro (GDKW_WINDOW_IMPL_WAYLAND (impl));
+  else
+    surface = _gdk_drawable_ref_cairo_surface (impl);
   if (!surface)
     return NULL;
 
   cairo_surface_flush (surface);
+
+  /* M10 I11: a surface with a device scale holds more pixels than the
+   * logical size.  Resample it to a 1x ARGB32 image so that the pixel index
+   * is the logical coordinate again. */
+  {
+    gdouble dsx = 1.0, dsy = 1.0;
+
+    cairo_surface_get_device_scale (surface, &dsx, &dsy);
+    if ((dsx != 1.0 || dsy != 1.0) &&
+	cairo_surface_get_type (surface) == CAIRO_SURFACE_TYPE_IMAGE &&
+	cairo_image_surface_get_format (surface) != CAIRO_FORMAT_A1)
+      {
+	gint lw = (gint) ceil (cairo_image_surface_get_width (surface) / dsx);
+	gint lh = (gint) ceil (cairo_image_surface_get_height (surface) / dsy);
+	cairo_surface_t *flat = cairo_image_surface_create (CAIRO_FORMAT_ARGB32,
+							     lw, lh);
+	cairo_t *fcr = cairo_create (flat);
+
+	cairo_set_operator (fcr, CAIRO_OPERATOR_SOURCE);
+	cairo_set_source_surface (fcr, surface, 0, 0);
+	cairo_paint (fcr);
+	cairo_destroy (fcr);
+	cairo_surface_flush (flat);
+	cairo_surface_destroy (surface);
+	surface = flat;
+      }
+  }
 
   depth = gdk_drawable_get_depth (impl);
 
