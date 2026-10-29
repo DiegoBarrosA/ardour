@@ -649,12 +649,12 @@ apply_cursor (CursorPriv *p, GdkCursor *cursor, guint32 serial)
 	  /* buffer scale needs wl_surface v3; the compositor is bound at
 	   * MIN (version, 6) */
 	  if (wl_proxy_get_version ((struct wl_proxy *) s->surface) >= 3)
-	    wl_surface_set_buffer_scale (s->surface, r.buffer_scale);
-	  wl_surface_attach (s->surface, r.buffer, 0, 0);
-	  wl_surface_damage (s->surface, 0, 0,
+	    GDKW_WIRE_SET_BUFFER_SCALE (s->surface, r.buffer_scale);
+	  GDKW_WIRE_ATTACH (s->surface, r.buffer);
+	  GDKW_WIRE_DAMAGE (s->surface, 0, 0,
 			     r.width / r.buffer_scale,
 			     r.height / r.buffer_scale);
-	  wl_surface_commit (s->surface);
+	  GDKW_WIRE_COMMIT (s->surface);
 	}
       if (wd->wl_pointer != NULL && s->surface != NULL)
 	wl_pointer_set_cursor (wd->wl_pointer, serial, s->surface,
@@ -1387,3 +1387,15 @@ _gdk_wayland_test_cursor_pixel (GdkDisplay *display,
   return TRUE;
 }
 
+
+/* Wire log (gdkm10-wayland.h): identity of the pointer cursor surface. */
+gconstpointer
+_gdk_wayland_test_wire_cursor_surface (GdkDisplay *display)
+{
+  GDKWCursorState *s;
+
+  if (display == NULL)
+    return NULL;
+  s = _gdk_wayland_display_get_cursor_state (display);
+  return s != NULL ? s->surface : NULL;
+}

@@ -377,12 +377,12 @@ send_damage (GDKWWindowImplWayland *impl, const GDKWCommitInfo *info,
   guint n = 0;
   gint i;
 
-  if (wl_surface_get_version (impl->wl_surface) >= 4)
+  if (!_gdkw_damage_pre_v4 && wl_surface_get_version (impl->wl_surface) >= 4)
     {
       if (full)
         {
-          wl_surface_damage_buffer (impl->wl_surface, 0, 0,
-                                    info->buffer_width, info->buffer_height);
+          GDKW_WIRE_DAMAGE_BUFFER (impl->wl_surface, 0, 0,
+                                   info->buffer_width, info->buffer_height);
           n = 1;
         }
       else
@@ -390,8 +390,8 @@ send_damage (GDKWWindowImplWayland *impl, const GDKWCommitInfo *info,
           {
             const GdkRectangle *r = &info->rects[i];
 
-            wl_surface_damage_buffer (impl->wl_surface,
-                                      r->x, r->y, r->width, r->height);
+            GDKW_WIRE_DAMAGE_BUFFER (impl->wl_surface,
+                                     r->x, r->y, r->width, r->height);
             n++;
           }
     }
@@ -421,8 +421,8 @@ send_damage (GDKWWindowImplWayland *impl, const GDKWCommitInfo *info,
           x1 = MIN (x1, info->logical_width);
           y1 = MIN (y1, info->logical_height);
         }
-      wl_surface_damage (impl->wl_surface, x0, y0,
-                         MAX (x1 - x0, 0), MAX (y1 - y0, 0));
+      GDKW_WIRE_DAMAGE (impl->wl_surface, x0, y0,
+                        MAX (x1 - x0, 0), MAX (y1 - y0, 0));
       n = 1;
     }
 
@@ -498,19 +498,19 @@ frame_commit (GDKWWindowImplWayland *impl, GDKWFrame *f,
   _gdk_wayland_scale_send_state (impl, info.scale120, info.logical_width,
                                  info.logical_height);
 
-  wl_surface_attach (impl->wl_surface, info.wl_buffer, 0, 0);
+  GDKW_WIRE_ATTACH (impl->wl_surface, info.wl_buffer);
   f->c.attaches++;
 
   full = info.full || info.n_rects <= 0;
   f->c.damage_calls += send_damage (impl, &info, full);
 
   frame_destroy_callback (f);
-  f->callback = wl_surface_frame (impl->wl_surface);
+  f->callback = GDKW_WIRE_FRAME (impl->wl_surface);
   wl_callback_add_listener (f->callback, &frame_listener, f);
   ds->callbacks++;
   f->c.frame_requests++;
 
-  wl_surface_commit (impl->wl_surface);
+  GDKW_WIRE_COMMIT (impl->wl_surface);
 
   _gdk_wayland_buffers_commit_done (impl, &info);
 
@@ -941,8 +941,8 @@ _gdk_wayland_frame_unmap (GDKWWindowImplWayland *impl)
   if (impl->wl_surface != NULL)
     {
       f = frame_get (impl, TRUE, FALSE);
-      wl_surface_attach (impl->wl_surface, NULL, 0, 0);
-      wl_surface_commit (impl->wl_surface);
+      GDKW_WIRE_ATTACH (impl->wl_surface, NULL);
+      GDKW_WIRE_COMMIT (impl->wl_surface);
       if (f != NULL)
         {
           f->c.attach_null++;
@@ -1363,3 +1363,86 @@ _gdk_wayland_test_frame_present (GdkWindow *window)
 #ifdef GDK_COMPILATION
 #include "gdkalias.h"
 #endif
+
+/* ------------------------------------------------------------------------
+ * Wire log and pre-v4 damage switch (audit gaps of M10)
+ *
+ * The GDKW_WIRE_* wrappers of gdkm10-wayland.h call _gdk_wayland_wire_log
+ * only while _gdkw_wire_enabled is TRUE.  The log is a fixed array; entries
+ * past the end are counted, not stored.
+ * ------------------------------------------------------------------------ */
+
+gboolean _gdkw_wire_enabled = FALSE;
+gboolean _gdkw_damage_pre_v4 = FALSE;
+
+static GDKWTestWireEntry wire_log[GDKW_TEST_WIRE_MAX];
+static guint wire_n = 0;
+static guint wire_dropped = 0;
+
+void
+_gdk_wayland_wire_log (GDKWTestWireKind kind, gconstpointer surface,
+                       gint a, gint b, gint c, gint d)
+{
+  GDKWTestWireEntry *e;
+
+  if (wire_n >= GDKW_TEST_WIRE_MAX)
+    {
+      wire_dropped++;
+      return;
+    }
+  e = &wire_log[wire_n++];
+  e->kind = kind;
+  e->surface = surface;
+  e->a = a;
+  e->b = b;
+  e->c = c;
+  e->d = d;
+}
+
+gboolean
+_gdk_wayland_test_wire_enable (gboolean on)
+{
+  wire_n = 0;
+  wire_dropped = 0;
+  _gdkw_wire_enabled = on != FALSE;
+  return TRUE;
+}
+
+void
+_gdk_wayland_test_wire_clear (void)
+{
+  wire_n = 0;
+  wire_dropped = 0;
+}
+
+guint
+_gdk_wayland_test_wire_count (guint *dropped)
+{
+  if (dropped != NULL)
+    *dropped = wire_dropped;
+  return wire_n;
+}
+
+gboolean
+_gdk_wayland_test_wire_get (guint index, GDKWTestWireEntry *entry)
+{
+  if (entry == NULL || index >= wire_n)
+    return FALSE;
+  *entry = wire_log[index];
+  return TRUE;
+}
+
+gconstpointer
+_gdk_wayland_test_wire_surface (GdkWindow *window)
+{
+  GDKWWindowImplWayland *impl = impl_from_window (window);
+
+  return impl != NULL ? impl->wl_surface : NULL;
+}
+
+gboolean
+_gdk_wayland_test_damage_pre_v4_force (gboolean enable)
+{
+  _gdkw_damage_pre_v4 = enable != FALSE;
+  return TRUE;
+}

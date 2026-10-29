@@ -1281,6 +1281,59 @@ gboolean _gdk_wayland_test_fractional_force (GdkDisplay *display,
 gboolean _gdk_wayland_test_cursor_scale_info (GdkDisplay              *display,
                                               GDKWTestCursorScaleInfo *info);
 
+/* ---- wire log (audit gaps of M10): what was really requested ------------
+ *
+ * Every wl_surface request of the frame, scale and cursor pieces goes through
+ * a GDKW_WIRE_* wrapper (internal section).  The wrapper records the request
+ * and its arguments in a fixed log while the log is enabled and then makes
+ * the request.  Disabled, a wrapper costs one load of a global and a branch.
+ * Removing the request from a call site removes the log entry too, so the
+ * log shows what the compositor was sent, not what the bookkeeping says.
+ *
+ *   SET_BUFFER_SCALE  a = scale
+ *   DAMAGE            a, b, c, d = x, y, width, height (surface units)
+ *   DAMAGE_BUFFER     a, b, c, d = x, y, width, height (buffer units)
+ *   SET_DESTINATION   a, b = width, height (-1, -1 unsets), on the viewport
+ *                     of @surface
+ *   ATTACH            a = 1 with a buffer, 0 for attach NULL
+ *   FRAME, COMMIT     no arguments
+ */
+typedef enum
+{
+  GDKW_TEST_WIRE_SET_BUFFER_SCALE = 1,
+  GDKW_TEST_WIRE_DAMAGE,
+  GDKW_TEST_WIRE_DAMAGE_BUFFER,
+  GDKW_TEST_WIRE_SET_DESTINATION,
+  GDKW_TEST_WIRE_ATTACH,
+  GDKW_TEST_WIRE_FRAME,
+  GDKW_TEST_WIRE_COMMIT
+} GDKWTestWireKind;
+
+#define GDKW_TEST_WIRE_MAX 1024
+
+typedef struct
+{
+  GDKWTestWireKind kind;
+  gconstpointer    surface;       /* the wl_surface (identity only) */
+  gint             a, b, c, d;
+} GDKWTestWireEntry;
+
+/* Enables (and clears) or disables the log.  Process wide. */
+gboolean _gdk_wayland_test_wire_enable  (gboolean on);
+/* Empties the log; the log stays enabled. */
+void     _gdk_wayland_test_wire_clear   (void);
+/* Number of entries; @dropped (optional) counts entries lost to a full log. */
+guint    _gdk_wayland_test_wire_count   (guint *dropped);
+gboolean _gdk_wayland_test_wire_get     (guint index, GDKWTestWireEntry *entry);
+/* Identity of the wl_surface of @window / of the pointer cursor surface. */
+gconstpointer _gdk_wayland_test_wire_surface        (GdkWindow  *window);
+gconstpointer _gdk_wayland_test_wire_cursor_surface (GdkDisplay *display);
+
+/* TRUE: send_damage behaves as if the compositor bound wl_surface below
+ * version 4 (surface unit damage computed from the device rects).  FALSE:
+ * restore.  Process wide. */
+gboolean _gdk_wayland_test_damage_pre_v4_force (gboolean enable);
+
 G_END_DECLS
 
 /* =========================================================================
@@ -1310,6 +1363,54 @@ G_BEGIN_DECLS
 /* D2.  Device pixels of a logical length. */
 #define GDKW_SCALE_PX(logical, scale120) \
   ((gint) ((((guint64) (logical)) * (scale120) + 60) / GDKW_SCALE_DENOM))
+
+/* Wire log wrappers (see the public section).  The log and the pre-v4 switch
+ * are owned by gdkframe-wayland.c. */
+extern gboolean _gdkw_wire_enabled;
+extern gboolean _gdkw_damage_pre_v4;
+void _gdk_wayland_wire_log (GDKWTestWireKind kind, gconstpointer surface,
+                            gint a, gint b, gint c, gint d);
+
+#define GDKW_WIRE_LOG(kind, surf, a, b, c, d)                              \
+  G_STMT_START {                                                           \
+    if (G_UNLIKELY (_gdkw_wire_enabled))                                   \
+      _gdk_wayland_wire_log ((kind), (surf), (a), (b), (c), (d));          \
+  } G_STMT_END
+
+#define GDKW_WIRE_SET_BUFFER_SCALE(surf, scale)                            \
+  G_STMT_START {                                                           \
+    GDKW_WIRE_LOG (GDKW_TEST_WIRE_SET_BUFFER_SCALE, (surf), (scale), 0, 0, 0); \
+    wl_surface_set_buffer_scale ((surf), (scale));                         \
+  } G_STMT_END
+#define GDKW_WIRE_DAMAGE(surf, x, y, w, h)                                 \
+  G_STMT_START {                                                           \
+    GDKW_WIRE_LOG (GDKW_TEST_WIRE_DAMAGE, (surf), (x), (y), (w), (h));     \
+    wl_surface_damage ((surf), (x), (y), (w), (h));                        \
+  } G_STMT_END
+#define GDKW_WIRE_DAMAGE_BUFFER(surf, x, y, w, h)                          \
+  G_STMT_START {                                                           \
+    GDKW_WIRE_LOG (GDKW_TEST_WIRE_DAMAGE_BUFFER, (surf), (x), (y), (w), (h)); \
+    wl_surface_damage_buffer ((surf), (x), (y), (w), (h));                 \
+  } G_STMT_END
+#define GDKW_WIRE_SET_DESTINATION(surf, vp, w, h)                          \
+  G_STMT_START {                                                           \
+    GDKW_WIRE_LOG (GDKW_TEST_WIRE_SET_DESTINATION, (surf), (w), (h), 0, 0); \
+    wp_viewport_set_destination ((vp), (w), (h));                          \
+  } G_STMT_END
+#define GDKW_WIRE_ATTACH(surf, buf)                                        \
+  G_STMT_START {                                                           \
+    GDKW_WIRE_LOG (GDKW_TEST_WIRE_ATTACH, (surf), (buf) != NULL, 0, 0, 0); \
+    wl_surface_attach ((surf), (buf), 0, 0);                               \
+  } G_STMT_END
+#define GDKW_WIRE_COMMIT(surf)                                             \
+  G_STMT_START {                                                           \
+    GDKW_WIRE_LOG (GDKW_TEST_WIRE_COMMIT, (surf), 0, 0, 0, 0);             \
+    wl_surface_commit ((surf));                                            \
+  } G_STMT_END
+/* an expression: returns the wl_callback */
+#define GDKW_WIRE_FRAME(surf)                                              \
+  (_gdkw_wire_enabled ? _gdk_wayland_wire_log (GDKW_TEST_WIRE_FRAME, (surf), 0, 0, 0, 0) : (void) 0, \
+   wl_surface_frame ((surf)))
 
 /* Opaque types.  The definition and every field belong to the owner. */
 typedef struct _GDKWBuffers      GDKWBuffers;       /* "buffers" */

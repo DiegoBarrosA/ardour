@@ -11,11 +11,11 @@
  * m5_fill) and the public hooks of gdkm7, gdkm9 and gdkm10.
  *
  * Entry points
- *   m10_exercise ()       T1 to T22 and T24 on the default weston (scale 1);
+ *   m10_exercise ()       T1 to T22, T24 and T26 to T30 on the default weston (scale 1);
  *                         prints "ydk_demo: M10: PASS".  T25 is the rest of
  *                         the demo (M4 to M9) plus scripts/baseline-diff.sh.
- *   m10_real_exercise ()  T23 on a weston started with --scale=2, no hooks
- *                         for the scale itself; prints
+ *   m10_real_exercise ()  T23 and T31 (a popup) on a weston started with
+ *                         --scale=2, no hooks for the scale itself; prints
  *                         "ydk_demo: M10-REAL2: PASS".
  *
  * Rules that keep the assertions exact (section 5 of the contract header)
@@ -39,6 +39,14 @@
  * outside the commit (T12); do not scale the device offset (T14); do not
  * divide the cursor hotspot (T19); hide without attach NULL (T4); drop the
  * 0 x 0 configure guard (T9).
+ *
+ * Audit gap mutations (T26 to T31, all read the wire log, see the T26 banner):
+ * set_buffer_scale removed on the toplevel or the cursor path; set_destination
+ * removed; damage_buffer replaced by damage; the pre-v4 conversion without the
+ * scale, with floor for ceil, with MAX for MIN, or never taken; GDKW_SCALE_PX
+ * with +59, +0 or +119; destination from the buffer size; any edge of the
+ * logical to device rect floored, ceiled or rounded the wrong way; popup
+ * positioner size or anchor scaled; popup set_buffer_scale dropped.
  */
 
 /* ---- checks -------------------------------------------------------------- */
@@ -1683,6 +1691,636 @@ m10_t20 (void)
   m10_destroy (p);
 }
 
+/* ---- wire log tests (audit gaps of M10) ------------------------------------------------
+ *
+ * What the compositor was sent, read from the wire log of gdkm10-wayland.h
+ * (the GDKW_WIRE_* wrappers at the request sites), not from the counters.
+ *
+ *   T26  integer scale: set_buffer_scale before attach, damage_buffer in
+ *        buffer units, no destination, per commit group
+ *   T27  rounding of the buffer size and the destination, scales 150, 135 and
+ *        132 (1.25, 1.125, 1.1) with odd logical sizes below and above .5
+ *   T28  damage rectangles for six scales, on the wire as damage_buffer, and
+ *        as wl_surface.damage in surface units when the pre-v4 path is forced
+ *   T29  floor / ceil mapping of logical rects, bytes copied and the slot
+ *   T30  cursor surface requests (called from T19)
+ */
+
+#define M10_GROUP_MAX 12
+
+typedef struct
+{
+  guint n;                          /* entries of the group */
+  guint groups;                     /* commit groups seen for the surface */
+  GDKWTestWireEntry e[M10_GROUP_MAX];
+} M10Group;
+
+static void
+m10_wire_clear (void)
+{
+  _gdk_wayland_test_wire_clear ();
+}
+
+/* the entries of @surf from commit group @which (0 based; negative counts from
+ * the end: -1 is the last).  A group is the run of requests up to and
+ * including one COMMIT. */
+static M10Group
+m10_wire_group (gconstpointer surf, gint which)
+{
+  M10Group g;
+  guint total = _gdk_wayland_test_wire_count (NULL), i;
+  guint idx = 0, ngroups = 0;
+  gint want;
+
+  memset (&g, 0, sizeof g);
+  for (i = 0; i < total; i++)
+    {
+      GDKWTestWireEntry e;
+
+      if (_gdk_wayland_test_wire_get (i, &e) && e.surface == surf &&
+	  e.kind == GDKW_TEST_WIRE_COMMIT)
+	ngroups++;
+    }
+  g.groups = ngroups;
+  want = which >= 0 ? which : (gint) ngroups + which;
+  if (want < 0 || want >= (gint) ngroups)
+    return g;
+
+  for (i = 0; i < total; i++)
+    {
+      GDKWTestWireEntry e;
+
+      if (!_gdk_wayland_test_wire_get (i, &e) || e.surface != surf)
+	continue;
+      if ((gint) idx == want)
+	{
+	  if (g.n < M10_GROUP_MAX)
+	    g.e[g.n++] = e;
+	}
+      if (e.kind == GDKW_TEST_WIRE_COMMIT)
+	{
+	  idx++;
+	  if ((gint) idx > want)
+	    break;
+	}
+    }
+
+  return g;
+}
+
+static guint
+m10_g_count (const M10Group *g, GDKWTestWireKind k)
+{
+  guint i, n = 0;
+
+  for (i = 0; i < g->n; i++)
+    if (g->e[i].kind == k)
+      n++;
+
+  return n;
+}
+
+/* index of the first entry of kind @k, -1 if none */
+static gint
+m10_g_idx (const M10Group *g, GDKWTestWireKind k)
+{
+  guint i;
+
+  for (i = 0; i < g->n; i++)
+    if (g->e[i].kind == k)
+      return (gint) i;
+
+  return -1;
+}
+
+static void
+m10_g_dump (const M10Group *g, const char *tag)
+{
+  guint i;
+
+  g_printerr ("ydk_demo: M10 wire group %s (%u commits):", tag, g->groups);
+  for (i = 0; i < g->n; i++)
+    g_printerr (" [%d %d %d %d %d]", g->e[i].kind, g->e[i].a, g->e[i].b,
+		g->e[i].c, g->e[i].d);
+  g_printerr ("\n");
+}
+
+/* the shape of a commit: [SET_BUFFER_SCALE] [SET_DESTINATION] ATTACH damage...
+ * FRAME COMMIT, in this order and nothing else.  @sbs and @dest are the
+ * expected number of those two requests (0 or 1). */
+static gboolean
+m10_g_shape (const M10Group *g, guint sbs, guint dest, guint ndamage,
+	     GDKWTestWireKind damage_kind, const char *tag)
+{
+  guint want = sbs + dest + 1 + ndamage + 2, i = 0;
+  char msg[160];
+  gboolean ok = TRUE;
+
+  g_snprintf (msg, sizeof msg, "%s: group length %u", tag, want);
+  M10_EQ_INT (g->n, want, msg);
+  if (g->n != want)
+    {
+      m10_g_dump (g, tag);
+      return FALSE;
+    }
+  if (sbs)
+    ok &= g->e[i++].kind == GDKW_TEST_WIRE_SET_BUFFER_SCALE;
+  if (dest)
+    ok &= g->e[i++].kind == GDKW_TEST_WIRE_SET_DESTINATION;
+  ok &= g->e[i++].kind == GDKW_TEST_WIRE_ATTACH && g->e[i - 1].a == 1;
+  for (; ndamage > 0; ndamage--)
+    ok &= g->e[i++].kind == damage_kind;
+  ok &= g->e[i++].kind == GDKW_TEST_WIRE_FRAME;
+  ok &= g->e[i++].kind == GDKW_TEST_WIRE_COMMIT;
+  g_snprintf (msg, sizeof msg, "%s: request order", tag);
+  M10_CHECK (ok, msg);
+  if (!ok)
+    m10_g_dump (g, tag);
+
+  return ok;
+}
+
+static void
+m10_g_rect (const M10Group *g, GDKWTestWireKind k, gint nth,
+	    gint x, gint y, gint w, gint h, const char *tag)
+{
+  guint i;
+  gint seen = 0;
+  char msg[160];
+
+  for (i = 0; i < g->n; i++)
+    if (g->e[i].kind == k && seen++ == nth)
+      {
+	gboolean ok = g->e[i].a == x && g->e[i].b == y &&
+	  g->e[i].c == w && g->e[i].d == h;
+
+	g_snprintf (msg, sizeof msg, "%s: rect %d %d %d %d", tag, x, y, w, h);
+	M10_CHECK (ok, msg);
+	if (!ok)
+	  g_printerr ("ydk_demo: M10 wire rect got %d %d %d %d\n",
+		      g->e[i].a, g->e[i].b, g->e[i].c, g->e[i].d);
+	return;
+      }
+  g_snprintf (msg, sizeof msg, "%s: request %d of kind %d exists", tag, nth, k);
+  M10_CHECK (FALSE, msg);
+}
+
+/* waits for the window to be idle and clears the log and the counters */
+static void
+m10_wire_arm (GdkWindow *w)
+{
+  m10_quiet (w);
+  m10_reset (w);
+  m10_wire_clear ();
+}
+
+/* one redraw while IDLE: one commit, the callback done, and the log of it */
+static M10Group
+m10_wire_redraw (GdkWindow *w, gint x, gint y, gint rw, gint rh, gint rgb)
+{
+  gconstpointer surf = _gdk_wayland_test_wire_surface (w);
+
+  m10_wire_arm (w);
+  m10_redraw (w, x, y, rw, rh, rgb);
+  m10_wait_counter (w, M10_COMMITS, 1, "wire: the redraw commit");
+  m10_quiet (w);
+
+  return m10_wire_group (surf, -1);
+}
+
+/* a scale change: the first commit group after @action ran.  @action is the
+ * caller's hook call, already made; this waits and reads. */
+static M10Group
+m10_wire_settle (GdkWindow *w, gint which)
+{
+  gconstpointer surf = _gdk_wayland_test_wire_surface (w);
+
+  m10_run (30);
+  m10_wait_counter (w, M10_COMMITS, 1, "wire: a commit after the scale change");
+  m10_quiet (w);
+
+  return m10_wire_group (surf, which);
+}
+
+/* ---- T26 integer scale on the wire ------------------------------------------------- */
+
+static void
+m10_t26 (void)
+{
+  GdkWindow *w = m10_new (200, 120);
+  gconstpointer surf;
+  M10Group g;
+  guint dropped = 0;
+
+  if (w == NULL)
+    return;
+  surf = _gdk_wayland_test_wire_surface (w);
+  M10_CHECK (surf != NULL, "T26: the wl_surface identity");
+  M10_HOOK (_gdk_wayland_test_wire_enable (TRUE), "T26: wire on");
+
+  /* scale 1: no scale request, damage_buffer in buffer units == surface units */
+  g = m10_wire_redraw (w, 30, 20, 50, 40, 0x336699);
+  M10_EQ_INT (g.groups, 1, "T26: scale 1: one commit");
+  if (m10_g_shape (&g, 0, 0, 1, GDKW_TEST_WIRE_DAMAGE_BUFFER, "T26: scale 1"))
+    m10_g_rect (&g, GDKW_TEST_WIRE_DAMAGE_BUFFER, 0, 30, 20, 50, 40, "T26: scale 1");
+  M10_EQ_INT (m10_g_count (&g, GDKW_TEST_WIRE_DAMAGE), 0, "T26: scale 1: no surface unit damage");
+
+  /* scale 2: set_buffer_scale 2 goes out in the first commit, before the attach */
+  m10_wire_arm (w);
+  M10_HOOK (_gdk_wayland_test_preferred_buffer_scale (w, 2), "T26: preferred_buffer_scale 2");
+  g = m10_wire_settle (w, 0);
+  if (m10_g_shape (&g, 1, 0, 1, GDKW_TEST_WIRE_DAMAGE_BUFFER, "T26: scale change"))
+    {
+      M10_EQ_INT (g.e[0].a, 2, "T26: set_buffer_scale 2 on the wire");
+      m10_g_rect (&g, GDKW_TEST_WIRE_DAMAGE_BUFFER, 0, 0, 0, 400, 240, "T26: scale change is FULL");
+    }
+  {
+    guint i, sbs = 0, dst = 0, total = _gdk_wayland_test_wire_count (NULL);
+
+    for (i = 0; i < total; i++)
+      {
+	GDKWTestWireEntry e;
+
+	if (_gdk_wayland_test_wire_get (i, &e) && e.surface == surf)
+	  {
+	    sbs += e.kind == GDKW_TEST_WIRE_SET_BUFFER_SCALE;
+	    dst += e.kind == GDKW_TEST_WIRE_SET_DESTINATION;
+	  }
+      }
+    M10_EQ_INT (sbs, 1, "T26: exactly one set_buffer_scale for the change");
+    M10_EQ_INT (dst, 0, "T26: no viewport destination on the integer path");
+  }
+
+  /* unchanged scale: no repeat of the request, damage in buffer units */
+  g = m10_wire_redraw (w, 11, 7, 21, 13, 0x993366);
+  M10_EQ_INT (g.groups, 1, "T26: scale 2: one commit");
+  if (m10_g_shape (&g, 0, 0, 1, GDKW_TEST_WIRE_DAMAGE_BUFFER, "T26: scale 2"))
+    m10_g_rect (&g, GDKW_TEST_WIRE_DAMAGE_BUFFER, 0, 22, 14, 42, 26, "T26: scale 2");
+
+  /* back to scale 1: set_buffer_scale 1 is sent */
+  m10_wire_arm (w);
+  M10_HOOK (_gdk_wayland_test_preferred_buffer_scale (w, 1), "T26: preferred_buffer_scale 1");
+  g = m10_wire_settle (w, 0);
+  if (m10_g_shape (&g, 1, 0, 1, GDKW_TEST_WIRE_DAMAGE_BUFFER, "T26: back to scale 1"))
+    {
+      M10_EQ_INT (g.e[0].a, 1, "T26: set_buffer_scale 1 on the wire");
+      m10_g_rect (&g, GDKW_TEST_WIRE_DAMAGE_BUFFER, 0, 0, 0, 200, 120, "T26: back to scale 1 is FULL");
+    }
+
+  _gdk_wayland_test_wire_count (&dropped);
+  M10_EQ_INT (dropped, 0, "T26: the wire log did not overflow");
+  _gdk_wayland_test_wire_enable (FALSE);
+  m10_paint = -1;
+  m10_destroy (w);
+}
+
+/* ---- T27 rounding of buffer size and destination -------------------------------------- */
+
+typedef struct
+{
+  guint scale120;
+  gint lw, lh;                      /* logical */
+  gint pw, ph;                      /* buffer, round half up */
+} M10Round;
+
+/* 150 is 1.25, 135 is 1.125, 132 is 1.1 (a scale120 of 110 would be below 1.0
+ * and is clamped to 120).  The .5 ties are the ones that tell half up from
+ * half even: 98 * 1.25 = 122.5, 100 * 1.125 = 112.5, 115 * 1.1 = 126.5. */
+static const M10Round m10_round_cases[] = {
+  { 150, 101,  51, 126,  64 },   /* 126.25  63.75 */
+  { 150,  98,  50, 123,  63 },   /* 122.5   62.5  */
+  { 150, 103,  47, 129,  59 },   /* 128.75  58.75 */
+  { 135, 100, 100, 113, 113 },   /* 112.5   112.5 */
+  { 135, 101,  53, 114,  60 },   /* 113.625  59.625 */
+  { 135, 105,  41, 118,  46 },   /* 118.125  46.125 */
+  { 132, 115,  55, 127,  61 },   /* 126.5    60.5  */
+  { 132, 107,  43, 118,  47 },   /* 117.7    47.3  */
+  { 132, 101,  34, 111,  37 },   /* 111.1    37.4  */
+};
+
+static void
+m10_t27 (void)
+{
+  guint i;
+
+  M10_HOOK (_gdk_wayland_test_fractional_force (m10_d, TRUE), "T27: force on");
+  M10_HOOK (_gdk_wayland_test_wire_enable (TRUE), "T27: wire on");
+  for (i = 0; i < G_N_ELEMENTS (m10_round_cases); i++)
+    {
+      const M10Round *c = &m10_round_cases[i];
+      GdkWindow *w = m10_new (c->lw, c->lh);
+      GDKWTestBackingInfo bi;
+      GDKWTestFrameInfo fi;
+      M10Group g;
+      char tag[96];
+
+      if (w == NULL)
+	continue;
+      g_snprintf (tag, sizeof tag, "T27: %u %dx%d", c->scale120, c->lw, c->lh);
+      M10_EQ_INT (GDKW_TEST_SCALE_PX (c->lw, c->scale120), c->pw, tag);
+      M10_EQ_INT (GDKW_TEST_SCALE_PX (c->lh, c->scale120), c->ph, tag);
+
+      m10_wire_arm (w);
+      M10_HOOK (_gdk_wayland_test_preferred_fractional (w, c->scale120), tag);
+      g = m10_wire_settle (w, 0);
+      bi = m10_bi (w);
+      fi = m10_fi (w);
+      M10_EQ_INT (bi.px_width, c->pw, tag);
+      M10_EQ_INT (bi.px_height, c->ph, tag);
+      M10_EQ_INT (fi.last_attach_width, c->pw, tag);
+      M10_EQ_INT (fi.last_attach_height, c->ph, tag);
+      /* the fractional path: buffer scale 1 stays, destination = logical */
+      if (m10_g_shape (&g, 0, 1, 1, GDKW_TEST_WIRE_DAMAGE_BUFFER, tag))
+	{
+	  M10_EQ_INT (g.e[0].a, c->lw, tag);
+	  M10_EQ_INT (g.e[0].b, c->lh, tag);
+	  m10_g_rect (&g, GDKW_TEST_WIRE_DAMAGE_BUFFER, 0, 0, 0, c->pw, c->ph, tag);
+	}
+      M10_EQ_INT (m10_g_count (&g, GDKW_TEST_WIRE_SET_BUFFER_SCALE), 0, tag);
+      m10_paint = -1;
+      m10_destroy (w);
+    }
+  _gdk_wayland_test_wire_enable (FALSE);
+  M10_HOOK (_gdk_wayland_test_fractional_force (m10_d, FALSE), "T27: force off");
+}
+
+/* ---- T28 damage on the wire, v4 and pre-v4 ------------------------------------------------ */
+
+typedef struct
+{
+  guint scale120;
+  gint rx, ry, rw, rh;              /* logical rect redrawn */
+  gint dx, dy, dw, dh;              /* device rect: floor low, ceil high */
+  gint sx, sy, sw, sh;              /* pre-v4: surface units, bounding, outward */
+} M10Dmg;
+
+static const M10Dmg m10_dmg_cases[] = {
+  /* scale 1 */
+  { 120, 11,  7, 21, 13,  11,  7, 21, 13,  11,  7, 21, 13 },
+  /* scale 2 */
+  { 240, 11,  7, 21, 13,  22, 14, 42, 26,  11,  7, 21, 13 },
+  /* 1.5: low edges 16.5 and 10.5 */
+  { 180, 11,  7, 21, 13,  16, 10, 32, 20,  10,  6, 22, 14 },
+  /* 1.25: low edges 13.75 and 8.75 */
+  { 150, 11,  7, 21, 13,  13,  8, 27, 17,  10,  6, 22, 14 },
+  /* 1.1: low 9.9, high 31.9 and 23.1 */
+  { 132, 13,  9, 16, 12,  14,  9, 18, 15,  12,  8, 18, 14 },
+  /* 1.125: high 16.875 on both axes */
+  { 135,  7,  5,  8, 10,   7,  5, 10, 12,   6,  4, 10, 12 },
+};
+
+static void
+m10_t28_pass (gboolean pre_v4)
+{
+  GdkWindow *w = m10_new (200, 120);
+  gconstpointer surf;
+  guint i;
+
+  if (w == NULL)
+    return;
+  surf = _gdk_wayland_test_wire_surface (w);
+  M10_HOOK (_gdk_wayland_test_damage_pre_v4_force (pre_v4), "T28: pre-v4 switch");
+  M10_HOOK (_gdk_wayland_test_fractional_force (m10_d, TRUE), "T28: force on");
+
+  for (i = 0; i < G_N_ELEMENTS (m10_dmg_cases); i++)
+    {
+      const M10Dmg *c = &m10_dmg_cases[i];
+      GDKWTestFrameInfo fi;
+      GDKWTestWireKind kind = pre_v4 ? GDKW_TEST_WIRE_DAMAGE : GDKW_TEST_WIRE_DAMAGE_BUFFER;
+      gint pw = GDKW_TEST_SCALE_PX (200, c->scale120), ph = GDKW_TEST_SCALE_PX (120, c->scale120);
+      gboolean integer = c->scale120 % 120 == 0;
+      M10Group g;
+      char tag[96];
+
+      g_snprintf (tag, sizeof tag, "T28: %s scale %u", pre_v4 ? "pre-v4" : "v4", c->scale120);
+
+      /* the scale change is a FULL commit.  Requests are not repeated: the
+       * integer step 1 -> 2 sends set_buffer_scale 2, the step to 1.5 sends
+       * set_buffer_scale 1 and the destination, later fractional steps send
+       * neither (the same buffer scale, the same logical destination). */
+      if (i > 0)
+	{
+	  guint sbs = (i == 1 || i == 2) ? 1 : 0, dest = (i == 2) ? 1 : 0;
+
+	  m10_wire_arm (w);
+	  if (integer)
+	    M10_HOOK (_gdk_wayland_test_preferred_buffer_scale (w, c->scale120 / 120), tag);
+	  else
+	    M10_HOOK (_gdk_wayland_test_preferred_fractional (w, c->scale120), tag);
+	  g = m10_wire_settle (w, 0);
+	  if (m10_g_shape (&g, sbs, dest, 1, kind, tag))
+	    {
+	      if (sbs)
+		M10_EQ_INT (g.e[0].a, i == 1 ? 2 : 1, tag);
+	      if (dest)
+		{
+		  M10_EQ_INT (g.e[sbs].a, 200, tag);
+		  M10_EQ_INT (g.e[sbs].b, 120, tag);
+		}
+	      if (pre_v4)
+		m10_g_rect (&g, kind, 0, 0, 0, 200, 120, tag);
+	      else
+		m10_g_rect (&g, kind, 0, 0, 0, pw, ph, tag);
+	    }
+	  M10_EQ_INT (m10_g_count (&g, pre_v4 ? GDKW_TEST_WIRE_DAMAGE_BUFFER : GDKW_TEST_WIRE_DAMAGE),
+		      0, tag);
+	}
+      /* one rect */
+      g = m10_wire_redraw (w, c->rx, c->ry, c->rw, c->rh, 0x204060 + 0x101010 * (gint) i);
+      M10_EQ_INT (g.groups, 1, tag);
+      if (m10_g_shape (&g, 0, 0, 1, kind, tag))
+	{
+	  if (pre_v4)
+	    m10_g_rect (&g, kind, 0, c->sx, c->sy, c->sw, c->sh, tag);
+	  else
+	    m10_g_rect (&g, kind, 0, c->dx, c->dy, c->dw, c->dh, tag);
+	}
+      fi = m10_fi (w);
+      M10_EQ_INT (fi.last_damage[0].x, c->dx, tag);
+      M10_EQ_INT (fi.last_damage[0].y, c->dy, tag);
+      M10_EQ_INT (fi.last_damage[0].width, c->dw, tag);
+      M10_EQ_INT (fi.last_damage[0].height, c->dh, tag);
+    }
+
+  /* two disjoint rects in one commit, at 1.125 (the last scale above): v4
+   * sends both device rects, pre-v4 one bounding rect in surface units.
+   * a 4,4 10x10 -> device 4,4 12x12; b 100,60 21x19 -> device 112,67 25x22;
+   * bounding device 4,4 .. 137,89 -> surface 3,3 .. 122,80 (floor, ceil). */
+  {
+    GdkRectangle a = { 4, 4, 10, 10 }, b = { 100, 60, 21, 19 };
+    GDKWTestFrameInfo fi;
+    M10Group g;
+    char tag[96];
+
+    g_snprintf (tag, sizeof tag, "T28: %s two rects", pre_v4 ? "pre-v4" : "v4");
+    m10_wire_arm (w);
+    m10_set_fmode (GDKW_TEST_FRAME_MODE_HOLD);
+    m10_redraw (w, 0, 0, 2, 2, 0x111111);                   /* commits now, WAITING */
+    m10_wait_counter (w, M10_COMMITS, 1, tag);
+    m10_redraw (w, a.x, a.y, a.width, a.height, 0x222222);  /* coalesced */
+    m10_redraw (w, b.x, b.y, b.width, b.height, 0x333333);
+    m10_reset (w);
+    m10_wire_clear ();
+    m10_fire (w);
+    m10_wait_counter (w, M10_COMMITS, 1, tag);
+    g = m10_wire_group (surf, 0);
+    fi = m10_fi (w);
+    M10_EQ_INT (fi.last_damage_n, 2, tag);
+    if (pre_v4)
+      {
+	if (m10_g_shape (&g, 0, 0, 1, GDKW_TEST_WIRE_DAMAGE, tag))
+	  m10_g_rect (&g, GDKW_TEST_WIRE_DAMAGE, 0, 3, 3, 119, 77, tag);
+      }
+    else if (m10_g_shape (&g, 0, 0, 2, GDKW_TEST_WIRE_DAMAGE_BUFFER, tag))
+      {
+	m10_g_rect (&g, GDKW_TEST_WIRE_DAMAGE_BUFFER, 0, 4, 4, 12, 12, tag);
+	m10_g_rect (&g, GDKW_TEST_WIRE_DAMAGE_BUFFER, 1, 112, 67, 25, 22, tag);
+      }
+    m10_settle_hold (w);
+    m10_set_fmode (GDKW_TEST_FRAME_MODE_NORMAL);
+  }
+
+  M10_HOOK (_gdk_wayland_test_damage_pre_v4_force (FALSE), "T28: pre-v4 switch off");
+  M10_HOOK (_gdk_wayland_test_fractional_force (m10_d, FALSE), "T28: force off");
+  m10_paint = -1;
+  m10_destroy (w);
+}
+
+static void
+m10_t28 (void)
+{
+  M10_HOOK (_gdk_wayland_test_wire_enable (TRUE), "T28: wire on");
+  m10_t28_pass (FALSE);
+  m10_t28_pass (TRUE);
+  _gdk_wayland_test_wire_enable (FALSE);
+}
+
+/* ---- T29 logical to device rects, stale copy ------------------------------------------- */
+
+typedef struct
+{
+  gint rx, ry, rw, rh;              /* logical */
+  gint dx, dy, dw, dh;              /* device: floor on the low edge, ceil on the high edge */
+} M10Map;
+
+/* 1.25: 33 * 1.25 = 41.25, 47 * 1.25 = 58.75, 17 * 1.25 = 21.25, 26 * 1.25 = 32.5 */
+static const M10Map m10_map150[] = {
+  { 11,  7, 21, 13,  13,   8, 27, 17 },
+  { 33, 17, 14,  9,  41,  21, 18, 12 },
+  { 120, 80, 15, 25, 150, 100, 19, 32 },
+};
+
+/* 1.1: 13 * 1.1 = 14.3, 29 * 1.1 = 31.9, 9 * 1.1 = 9.9, 21 * 1.1 = 23.1 */
+static const M10Map m10_map132[] = {
+  { 13,  9, 16, 12,  14,  9, 18, 15 },
+  { 60, 31, 19,  7,  66, 34, 21,  8 },
+  { 150, 50, 17, 33, 165, 55, 19, 37 },
+};
+
+static void
+m10_t29_scale (guint scale120, const M10Map *map, guint n)
+{
+  GdkWindow *w;
+  GDKWTestFrameInfo fi;
+  gconstpointer surf;
+  gint prev = 0;
+  guint i, mism;
+  char tag[96];
+  gint warm_w = GDKW_TEST_SCALE_PX (10, scale120);
+
+  g_snprintf (tag, sizeof tag, "T29: scale %u", scale120);
+  w = m10_new (200, 120);
+  if (w == NULL)
+    return;
+  surf = _gdk_wayland_test_wire_surface (w);
+
+  /* the change of scale with the normal releases, then the two slot lag of T7 */
+  M10_HOOK (_gdk_wayland_test_preferred_fractional (w, scale120), tag);
+  m10_quiet (w);
+  m10_set_fmode (GDKW_TEST_FRAME_MODE_HOLD);
+  m10_set_bmode (GDKW_TEST_BUFFER_MODE_HOLD);
+  M10_HOOK (_gdk_wayland_test_buffer_limit (m10_d, 2), "T29: buffer_limit 2");
+  m10_settle_hold (w);
+  for (i = 0; i < 4; i++)
+    m10_t7_step (w, 0, 0, 10, 10, 0x336699);
+  prev = warm_w * warm_w;     /* the warm up rect is 10 x 10 logical, square at both axes */
+
+  for (i = 0; i < n; i++)
+    {
+      const M10Map *m = &map[i];
+      guint commits0 = m10_fi (w).commits;
+      M10Group g;
+      gint area = m->dw * m->dh;
+
+      mism = 99;
+      m10_wire_clear ();
+      m10_t7_step (w, m->rx, m->ry, m->rw, m->rh, 0x993366 + 0x010203 * (gint) i);
+      fi = m10_fi (w);
+      M10_EQ_INT (fi.commits, commits0 + 1, tag);
+      M10_EQ_INT (fi.last_damage_n, 1, tag);
+      M10_EQ_INT (fi.last_damage[0].x, m->dx, tag);
+      M10_EQ_INT (fi.last_damage[0].y, m->dy, tag);
+      M10_EQ_INT (fi.last_damage[0].width, m->dw, tag);
+      M10_EQ_INT (fi.last_damage[0].height, m->dh, tag);
+      M10_EQ_INT (fi.last_damage_area, area, tag);
+      /* the stale copy of the slot: its own previous damage and this one */
+      M10_EQ_INT (fi.last_bytes_copied, 4 * (prev + area), tag);
+      M10_HOOK (_gdk_wayland_test_buffer_vs_backing (w, fi.last_slot, &mism), tag);
+      M10_EQ_INT (mism, 0, tag);
+      /* and the wire: exactly the device rect */
+      g = m10_wire_group (surf, -1);
+      if (m10_g_shape (&g, 0, 0, 1, GDKW_TEST_WIRE_DAMAGE_BUFFER, tag))
+	m10_g_rect (&g, GDKW_TEST_WIRE_DAMAGE_BUFFER, 0, m->dx, m->dy, m->dw, m->dh, tag);
+      prev = area;
+    }
+
+  m10_paint = -1;
+  m10_set_fmode (GDKW_TEST_FRAME_MODE_NORMAL);
+  m10_set_bmode (GDKW_TEST_BUFFER_MODE_NORMAL);
+  M10_HOOK (_gdk_wayland_test_buffer_limit (m10_d, 0), "T29: restore limit");
+  m10_destroy (w);
+}
+
+static void
+m10_t29 (void)
+{
+  M10_HOOK (_gdk_wayland_test_fractional_force (m10_d, TRUE), "T29: force on");
+  M10_HOOK (_gdk_wayland_test_wire_enable (TRUE), "T29: wire on");
+  m10_t29_scale (150, m10_map150, G_N_ELEMENTS (m10_map150));
+  m10_t29_scale (132, m10_map132, G_N_ELEMENTS (m10_map132));
+  _gdk_wayland_test_wire_enable (FALSE);
+  M10_HOOK (_gdk_wayland_test_fractional_force (m10_d, FALSE), "T29: force off");
+}
+
+/* ---- T30 the cursor surface on the wire (T19 calls these) ------------------------------ */
+
+/* [set_buffer_scale] attach damage commit, no frame request: a cursor surface
+ * has no frame callback.  @bs is the buffer scale, @w x @h the buffer. */
+static void
+m10_t30_cursor (gint bs, gint bw, gint bh, const char *tag)
+{
+  gconstpointer surf = _gdk_wayland_test_wire_cursor_surface (m10_d);
+  M10Group g;
+
+  M10_CHECK (surf != NULL, "T30: the cursor surface exists");
+  if (surf == NULL)
+    return;
+  g = m10_wire_group (surf, -1);
+  M10_EQ_INT (g.n, 4, tag);
+  if (g.n != 4)
+    {
+      m10_g_dump (&g, tag);
+      return;
+    }
+  M10_EQ_INT (g.e[0].kind, GDKW_TEST_WIRE_SET_BUFFER_SCALE, tag);
+  M10_EQ_INT (g.e[0].a, bs, tag);
+  M10_EQ_INT (g.e[1].kind, GDKW_TEST_WIRE_ATTACH, tag);
+  M10_EQ_INT (g.e[1].a, 1, tag);
+  M10_EQ_INT (g.e[2].kind, GDKW_TEST_WIRE_DAMAGE, tag);
+  m10_g_rect (&g, GDKW_TEST_WIRE_DAMAGE, 0, 0, 0, bw / bs, bh / bs, tag);
+  M10_EQ_INT (g.e[3].kind, GDKW_TEST_WIRE_COMMIT, tag);
+}
+
 /* ---- T19 cursor scale ---------------------------------------------------------------- */
 
 /* an Xcursor file with a 24 and a 48 pixel image, hotspots (3, 5) and (7, 9) */
@@ -1770,11 +2408,14 @@ m10_t19 (void)
   file = g_build_filename (dir, "left_ptr", NULL);
   M10_CHECK (m10_write_xcursor2 (file), "T19: write left_ptr with 24 and 48 pixel images");
 
+  M10_HOOK (_gdk_wayland_test_wire_enable (TRUE), "T30: wire on");
   M10_HOOK (_gdk_wayland_test_cursor_reset (m10_d), "T19: cursor reset");
   M10_HOOK (_gdk_wayland_test_pointer_enter (m10_d, w, 10.0, 10.0), "T19: pointer enter");
   m6_drain ();
+  m10_wire_clear ();
   M10_HOOK (_gdk_wayland_test_cursor_theme_reload (m10_d, "ydktest2", 24, tmp), "T19: theme reload");
   m6_drain ();
+  m10_t30_cursor (2, 48, 48, "T30: theme cursor at scale 2");
   cs = m10_cs ();
   ci = m10_ci ();
   M10_EQ_INT (ci.kind, GDKW_TEST_CURSOR_THEME, "T19: a theme cursor is applied");
@@ -1795,8 +2436,10 @@ m10_t19 (void)
       M10_CHECK (cur != NULL, "T19: pixbuf cursor");
       if (cur != NULL)
 	{
+	  m10_wire_clear ();
 	  gdk_window_set_cursor (w, cur);
 	  m6_drain ();
+	  m10_t30_cursor (1, 16, 16, "T30: custom cursor at scale 1");
 	  cs = m10_cs ();
 	  ci = m10_ci ();
 	  M10_EQ_INT (ci.kind, GDKW_TEST_CURSOR_CUSTOM, "T19: a custom cursor is applied");
@@ -1816,8 +2459,10 @@ m10_t19 (void)
   /* W goes to scale 1: the cursor reloads and applies again */
   ci = m10_ci ();
   sets = ci.set_count;
+  m10_wire_clear ();
   m10_leave (w, m10_out2);
   m6_drain ();
+  m10_t30_cursor (1, 24, 24, "T30: theme cursor back at scale 1");
   cs = m10_cs ();
   ci = m10_ci ();
   M10_EQ_INT (cs.buffer_scale, 1, "T19: scale 1 after the window left the output");
@@ -1827,6 +2472,7 @@ m10_t19 (void)
   M10_EQ_INT (cs.hot_y_sent, 5, "T19: hotspot y at scale 1");
   M10_CHECK (ci.set_count > sets, "T19: the cursor was applied again");
 
+  _gdk_wayland_test_wire_enable (FALSE);
   _gdk_wayland_test_pointer_leave (m10_d, w);
   m6_drain ();
   M10_HOOK (_gdk_wayland_test_cursor_theme_reload (m10_d, "ydktest", 24, empty), "T19: back to the builtin theme");
@@ -2266,6 +2912,8 @@ m10_restore_modes (void)
   _gdk_wayland_test_buffer_limit (m10_d, 0);
   _gdk_wayland_test_frame_timeouts (m10_d, 0, 0);
   _gdk_wayland_test_fractional_force (m10_d, FALSE);
+  _gdk_wayland_test_damage_pre_v4_force (FALSE);
+  _gdk_wayland_test_wire_enable (FALSE);
   m10_paint = -1;
 }
 
@@ -2329,6 +2977,11 @@ m10_exercise (void)
   m10_restore_modes ();
   m10_scale_group ();
   m10_restore_modes ();
+  m10_t26 ();
+  m10_t27 ();
+  m10_t28 ();
+  m10_t29 ();
+  m10_restore_modes ();
   m10_t18 ();
   m10_t22 ();
   m10_restore_modes ();
@@ -2349,6 +3002,90 @@ m10_exercise (void)
 }
 
 /* ---- T23: weston --scale=2, no scale hooks except where stated -------------------------------------- */
+
+/* ---- T31 a popup on the real scale 2 output ------------------------------------------------ */
+
+/* An xdg_popup (a TEMP window under a toplevel) on weston --scale=2.  The
+ * positioner is in surface units, so its values are the logical ones (the
+ * same numbers as at scale 1, T20); the popup surface gets a scale 2 buffer
+ * and set_buffer_scale 2 on the wire. */
+static void
+m10_t31 (void)
+{
+  GdkWindow *top = m10_new (300, 200), *p;
+  GDKWTestPopupInfo pi;
+  GDKWTestScaleInfo s;
+  GDKWTestBackingInfo bi;
+  GDKWTestFrameInfo fi;
+  gconstpointer surf;
+  M10Group g;
+  guint dropped = 0;
+
+  if (top == NULL)
+    return;
+  M10_CHECK (m10_pump (m10_entered_any, top, 800), "T31: the toplevel entered the output");
+  M10_HOOK (_gdk_wayland_test_wire_enable (TRUE), "T31: wire on");
+  p = m10_popup (top, 50, 60, 80, 40);
+  if (p == NULL)
+    {
+      m10_destroy (top);
+      return;
+    }
+  gdk_window_show (p);
+  gdk_flush ();
+  m6_drain ();
+  surf = _gdk_wayland_test_wire_surface (p);
+  M10_CHECK (m10_pump (m10_popup_mapped, p, 800), "T31: the popup is MAPPED");
+
+  pi = m10_pi (p);
+  M10_EQ_INT (pi.anchor_x, 50, "T31: anchor x is logical");
+  M10_EQ_INT (pi.anchor_y, 60, "T31: anchor y is logical");
+  M10_EQ_INT (pi.anchor_w, 1, "T31: anchor width is 1");
+  M10_EQ_INT (pi.anchor_h, 1, "T31: anchor height is 1");
+  M10_EQ_INT (pi.offset_x, 0, "T31: offset x");
+  M10_EQ_INT (pi.offset_y, 0, "T31: offset y");
+  M10_EQ_INT (pi.root_x, 50, "T31: root x is logical");
+  M10_EQ_INT (pi.root_y, 60, "T31: root y is logical");
+  M10_EQ_INT (pi.conf_x, 50, "T31: configure x is logical");
+  M10_EQ_INT (pi.conf_y, 60, "T31: configure y is logical");
+  M10_EQ_INT (pi.pos_width, 80, "T31: positioner width is logical");
+  M10_EQ_INT (pi.pos_height, 40, "T31: positioner height is logical");
+  M10_EQ_INT (pi.conf_w, 80, "T31: configure width is logical");
+  M10_EQ_INT (pi.conf_h, 40, "T31: configure height is logical");
+
+  M10_CHECK (m10_pump (m10_entered_any, p, 800), "T31: the popup surface entered the output");
+  s = m10_si (p);
+  M10_EQ_INT (s.scale120, 240, "T31: the popup has scale 240");
+  bi = m10_bi (p);
+  M10_EQ_INT (bi.px_width, 160, "T31: popup store width 160");
+  M10_EQ_INT (bi.px_height, 80, "T31: popup store height 80");
+  M10_EQ_INT (bi.logical_width, 80, "T31: popup logical width 80");
+  M10_EQ_INT (bi.logical_height, 40, "T31: popup logical height 40");
+  M10_CHECK (bi.device_scale_x == 2.0 && bi.device_scale_y == 2.0, "T31: popup device scale 2");
+
+  m10_redraw (p, 0, 0, 80, 40, 0x884400);
+  m10_quiet (p);
+  fi = m10_fi (p);
+  M10_EQ_INT (fi.last_attach_width, 160, "T31: popup buffer width 160");
+  M10_EQ_INT (fi.last_attach_height, 80, "T31: popup buffer height 80");
+  g = m10_wire_group (surf, 0);
+  M10_CHECK (g.groups >= 1, "T31: the popup committed a buffer");
+  if (m10_g_shape (&g, 1, 0, 1, GDKW_TEST_WIRE_DAMAGE_BUFFER, "T31: popup first commit"))
+    {
+      M10_EQ_INT (g.e[0].a, 2, "T31: set_buffer_scale 2 on the popup surface");
+      m10_g_rect (&g, GDKW_TEST_WIRE_DAMAGE_BUFFER, 0, 0, 0, 160, 80, "T31: popup first commit");
+    }
+  g = m10_wire_redraw (p, 10, 5, 31, 17, 0x448800);
+  if (m10_g_shape (&g, 0, 0, 1, GDKW_TEST_WIRE_DAMAGE_BUFFER, "T31: popup redraw"))
+    m10_g_rect (&g, GDKW_TEST_WIRE_DAMAGE_BUFFER, 0, 20, 10, 62, 34, "T31: popup redraw");
+  _gdk_wayland_test_wire_count (&dropped);
+  M10_EQ_INT (dropped, 0, "T31: the wire log did not overflow");
+  _gdk_wayland_test_wire_enable (FALSE);
+
+  m10_paint = -1;
+  m10_destroy (p);
+  m10_destroy (top);
+}
 
 static void
 m10_real_exercise_body (void)
@@ -2449,6 +3186,8 @@ m10_real_exercise_body (void)
 
   m10_paint = -1;
   m10_destroy (w);
+
+  m10_t31 ();
 }
 
 static int

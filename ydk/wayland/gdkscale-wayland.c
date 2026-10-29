@@ -576,14 +576,14 @@ _gdk_wayland_scale_send_state (GDKWWindowImplWayland *impl,
 
   if (bs != ss->buffer_scale_sent)
     {
-      wl_surface_set_buffer_scale (ss->surface, bs);
+      GDKW_WIRE_SET_BUFFER_SCALE (ss->surface, bs);
       ss->buffer_scale_sent = bs;
       ss->buffer_scale_requests++;
     }
 
   if (ss->viewport != NULL && (dw != ss->dest_w || dh != ss->dest_h))
     {
-      wp_viewport_set_destination (ss->viewport, dw, dh);
+      GDKW_WIRE_SET_DESTINATION (ss->surface, ss->viewport, dw, dh);
       ss->dest_w = dw;
       ss->dest_h = dh;
       ss->viewport_requests++;

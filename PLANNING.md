@@ -843,8 +843,8 @@ the `process_updates` hook happens before `gdk_window_end_implicit_paint`. The
 Wayland impl is a `GdkPaintable`, so `gdk_window_begin_implicit_paint` returns
 FALSE and no implicit paint exists.
 
-Verification: `m10_exercise` (751 checks, `ydk_demo: M10: PASS`) and
-`m10_real_exercise` (67 checks against `weston --scale=2 --renderer=pixman`,
+Verification: `m10_exercise` (1319 checks, `ydk_demo: M10: PASS`) and
+`m10_real_exercise` (111 checks against `weston --scale=2 --renderer=pixman`,
 `ydk_demo: M10-REAL2: PASS`, smoke test Phase 3). T1 to T22 and T24 of the
 header: five redraws under a pending callback give one commit and four
 coalesced, frame HOLD and DROP, timeout backoff, hide while WAITING, buffer
@@ -869,6 +869,40 @@ demo): write to a non FREE slot (T6), skip the stale copy (T6, T7), ignore
 undivided cursor hotspot (T19). Hide without `attach NULL` (T4) makes weston
 close the connection on the next show (`xdg_surface must not have a buffer at
 creation`). Dropping the `0 x 0` guard fails M6 before M10 runs.
+
+The M10 audit test gaps are closed with a wire log (mutation checked, see the
+list below). Every `wl_surface` request of the frame, scale and cursor pieces
+(`set_buffer_scale`, `damage`, `damage_buffer`, `attach`, `frame`, `commit`
+and the viewport `set_destination`) goes through a `GDKW_WIRE_*` wrapper
+declared in `gdkm10-wayland.h`. While the log is off, a wrapper costs one load
+and one branch. While it is on, the wrapper stores the request and its
+arguments (1024 entries, overflow counted) and then makes the request, so
+deleting a request from a call site deletes its log entry too. The log is
+process wide and owned by `gdkframe-wayland.c`; the hooks are
+`_gdk_wayland_test_wire_enable / clear / count / get / surface /
+cursor_surface`. A second hook, `_gdk_wayland_test_damage_pre_v4_force`, makes
+`send_damage` take the pre-v4 branch (weston binds `wl_surface` v4 or newer).
+New tests in `m10_exercise`: T26 (integer scale: request order, one
+`set_buffer_scale` per change, `damage_buffer` in buffer units, none of
+`damage`), T27 (nine odd sizes at 1.25, 1.125 and 1.1, including the .5 ties
+98 x 1.25, 100 x 1.125 and 115 x 1.1: buffer is round half up, destination is
+the logical size), T28 (six scales, the damage rect on the wire for v4 and for
+the forced pre-v4 path, which sends one outward rounded bounding `damage` rect
+in surface units, and two rects in one commit), T29 (floor on the low edge,
+ceil on the high edge at 1.25 and 1.1: the device rect on the wire, in
+`last_damage`, the bytes copied for the slot and the slot against the store),
+T30 (the cursor surface requests in T19, scale 2, custom scale 1, back to
+scale 1). `m10_real_exercise` adds T31: a popup under a toplevel on
+`weston --scale=2`, with logical positioner, anchor, root and configure values,
+a 160 x 80 buffer and `set_buffer_scale 2` plus exact `damage_buffer` on the
+wire. A `scale120` of 110 is below 1.0 and is clamped to 120, so the 1.1 case
+uses 132. Mutations killed: `set_buffer_scale` removed on the toplevel and on
+the cursor path, `set_destination` removed, `damage_buffer` replaced by
+`damage` (rect loop and full), pre-v4 conversion without the scale, with floor
+instead of ceil, with min instead of max, pre-v4 branch never taken, buffer
+rounding with +59, +0 and +119, destination from the buffer size, floor and
+ceil swapped or rounded on each edge of the device rect, positioner size and
+anchor scaled by 2, popup `set_buffer_scale` dropped.
 
 The M9 audit test gaps are closed in `m9_audit` (mutation checked): (a) the
 grab serial with a button held is `seat->button_serial`, not the key or last
