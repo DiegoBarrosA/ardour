@@ -679,6 +679,7 @@ GdkRegion *_gdk_window_calculate_full_clip_region    (GdkWindow     *window,
                                                       gint          *base_x_offset,
                                                       gint          *base_y_offset);
 gboolean    _gdk_window_has_impl (GdkWindow *window);
+void        _gdk_window_detach_cairo_surfaces (GdkWindow *window);
 GdkWindow * _gdk_window_get_impl_window (GdkWindow *window);
 GdkWindow *_gdk_window_get_input_window_for_event (GdkWindow *native_window,
 						   GdkEventType event_type,
@@ -711,6 +712,12 @@ void _gdk_image_exit  (void);
 void _gdk_windowing_exit (void);
 
 extern void (*_gdk_modal_notify)(GdkWindow*, gboolean);
+
+/* ydk-wayland: TRUE when the process runs on the Wayland backend (decided
+ * once from GDK_BACKEND and WAYLAND_DISPLAY).  Defined in gdkbackend.c.  The
+ * X11 objects use it where they must tell who made a buffer and have no
+ * display to ask. */
+gboolean _gdk_backend_is_wayland (void);
 
 G_END_DECLS
 

@@ -1497,4 +1497,6 @@ gdk_pango_context_get_for_screen (GdkScreen *screen)
 }
 
 #define __GDK_PANGO_C__
+#ifndef YDK_PER_SOURCE_ALIASES
 #include "gdkaliasdef.c"
+#endif

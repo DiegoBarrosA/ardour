@@ -56,6 +56,11 @@
 typedef struct _GdkKeymapX11   GdkKeymapX11;
 typedef struct _GdkKeymapClass GdkKeymapX11Class;
 
+static gboolean gdkw_keymap_x11_translate_keyboard_state
+  (GdkKeymap *keymap, guint hardware_keycode, GdkModifierType state,
+   gint group, guint *keyval, gint *effective_group, gint *level,
+   GdkModifierType *consumed_modifiers);
+
 #define GDK_TYPE_KEYMAP_X11          (gdk_keymap_x11_get_type ())
 #define GDK_KEYMAP_X11(object)       (G_TYPE_CHECK_INSTANCE_CAST ((object), GDK_TYPE_KEYMAP_X11, GdkKeymapX11))
 #define GDK_IS_KEYMAP_X11(object)    (G_TYPE_CHECK_INSTANCE_TYPE ((object), GDK_TYPE_KEYMAP_X11))
@@ -148,6 +153,11 @@ gdk_keymap_x11_class_init (GdkKeymapX11Class *klass)
   parent_class = g_type_class_peek_parent (klass);
 
   object_class->finalize = gdk_keymap_x11_finalize;
+
+  /* ydk-wayland: translate_keyboard_state is dispatched through the
+   * GdkKeymapClass (see ydk/gdkkeys.c). */
+  GDK_KEYMAP_CLASS (klass)->translate_keyboard_state =
+    gdkw_keymap_x11_translate_keyboard_state;
 }
 
 static void
@@ -294,8 +304,11 @@ get_xkb (GdkKeymapX11 *keymap_x11)
  *
  * Since: 2.2
  **/
+/* ydk-wayland: GTK2 exported gdk_keymap_get_for_display() per-backend.
+ * The single-symbol version now lives in ydk/gdkkeys.c and dispatches
+ * through GdkDisplayClass::keymap, so this is the X11 class vfunc. */
 GdkKeymap*
-gdk_keymap_get_for_display (GdkDisplay *display)
+gdkw_display_x11_get_keymap (GdkDisplay *display)
 {
   GdkDisplayX11 *display_x11;
   g_return_val_if_fail (GDK_IS_DISPLAY (display), NULL);
@@ -1501,15 +1514,19 @@ translate_keysym (GdkKeymapX11   *keymap_x11,
  *
  * Return value: %TRUE if there was a keyval bound to the keycode/state/group
  **/
+/* ydk-wayland: GTK2 exported gdk_keymap_translate_keyboard_state()
+ * per-backend.  The single-symbol version now lives in ydk/gdkkeys.c and
+ * dispatches through GdkKeymapClass::translate_keyboard_state, so this is
+ * the X11 class vfunc. */
 gboolean
-gdk_keymap_translate_keyboard_state (GdkKeymap       *keymap,
-                                     guint            hardware_keycode,
-                                     GdkModifierType  state,
-                                     gint             group,
-                                     guint           *keyval,
-                                     gint            *effective_group,
-                                     gint            *level,
-                                     GdkModifierType *consumed_modifiers)
+gdkw_keymap_x11_translate_keyboard_state (GdkKeymap       *keymap,
+                                          guint            hardware_keycode,
+                                          GdkModifierType  state,
+                                          gint             group,
+                                          guint           *keyval,
+                                          gint            *effective_group,
+                                          gint            *level,
+                                          GdkModifierType *consumed_modifiers)
 {
   GdkKeymapX11 *keymap_x11;
   KeySym tmp_keyval = NoSymbol;
@@ -1854,4 +1871,6 @@ gdk_keymap_map_virtual_modifiers (GdkKeymap       *keymap,
 
 
 #define __GDK_KEYS_X11_C__
+#ifndef YDK_PER_SOURCE_ALIASES
 #include "gdkaliasdef.c"
+#endif

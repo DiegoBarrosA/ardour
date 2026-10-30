@@ -676,4 +676,6 @@ gdk_device_get_axis (GdkDevice  *device,
 }
 
 #define __GDK_INPUT_C__
+#ifndef YDK_PER_SOURCE_ALIASES
 #include "gdkaliasdef.c"
+#endif

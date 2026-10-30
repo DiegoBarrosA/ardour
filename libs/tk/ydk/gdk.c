@@ -836,4 +836,6 @@ gdk_set_program_class (const char *program_class)
 }
 
 #define __GDK_C__
+#ifndef YDK_PER_SOURCE_ALIASES
 #include "gdkaliasdef.c"
+#endif

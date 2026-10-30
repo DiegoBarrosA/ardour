@@ -2697,36 +2697,6 @@ gdk_screen_broadcast_client_message (GdkScreen *screen,
 						0);
 }
 
-/*
- *--------------------------------------------------------------
- * gdk_flush
- *
- *   Flushes the Xlib output buffer and then waits
- *   until all requests have been received and processed
- *   by the X server. The only real use for this function
- *   is in dealing with XShm.
- *
- * Arguments:
- *
- * Results:
- *
- * Side effects:
- *
- *--------------------------------------------------------------
- */
-
-void
-gdk_flush (void)
-{
-  GSList *tmp_list = _gdk_displays;
-  
-  while (tmp_list)
-    {
-      XSync (GDK_DISPLAY_XDISPLAY (tmp_list->data), False);
-      tmp_list = tmp_list->next;
-    }
-}
-
 static Bool
 timestamp_predicate (Display *display,
 		     XEvent  *xevent,
@@ -3053,7 +3023,13 @@ gdk_x11_screen_supports_net_wm_hint (GdkScreen *screen,
 gboolean
 gdk_net_wm_supports (GdkAtom property)
 {
-  return gdk_x11_screen_supports_net_wm_hint (gdk_screen_get_default (), property);
+  GdkScreen *screen = gdk_screen_get_default ();
+
+  /* ydk-wayland: exported from libydk, so it may run on a Wayland screen */
+  if (screen == NULL || !GDK_IS_SCREEN_X11 (screen))
+    return FALSE;
+
+  return gdk_x11_screen_supports_net_wm_hint (screen, property);
 }
 
 
@@ -3300,4 +3276,6 @@ _gdk_windowing_event_data_free (GdkEvent *event)
 }
 
 #define __GDK_EVENTS_X11_C__
+#ifndef YDK_PER_SOURCE_ALIASES
 #include "gdkaliasdef.c"
+#endif

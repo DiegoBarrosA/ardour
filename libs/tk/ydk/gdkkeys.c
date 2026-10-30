@@ -300,7 +300,82 @@ gdk_keyval_is_lower (guint keyval)
   return FALSE;
 }
 
-/** 
+#ifdef GDK_WINDOWING_WAYLAND
+/* ydk-wayland: on Linux every backend dispatches these through the display,
+ * screen and keymap classes, so the single definitions live here.  The
+ * quartz and win32 backends still define their own copies and never define
+ * GDK_WINDOWING_WAYLAND. */
+/**
+ * gdk_keymap_get_for_display:
+ * @display: the #GdkDisplay.
+ * @returns: the #GdkKeymap attached to @display.
+ *
+ * Returns the #GdkKeymap attached to @display.
+ *
+ * Since: 2.2
+ **/
+GdkKeymap *
+gdk_keymap_get_for_display (GdkDisplay *display)
+{
+  GdkKeymap *keymap;
+
+  g_return_val_if_fail (GDK_IS_DISPLAY (display), NULL);
+
+  /* ydk-wayland: per-backend in GTK2; dispatched via GdkDisplayClass so
+   * X11 and Wayland can both provide one. */
+  keymap = GDK_DISPLAY_GET_CLASS (display)->keymap (display);
+
+  return keymap;
+}
+
+/**
+ * gdk_keymap_translate_keyboard_state:
+ * @keymap: a #GdkKeymap
+ * @hardware_keycode: a keycode
+ * @state: a modifier state
+ * @group: active keyboard group
+ * @keyval: (out): return location for the keyval, or %NULL
+ * @effective_group: (out): return location for the active group, or %NULL
+ * @level: (out): return location for the active level, or %NULL
+ * @consumed_modifiers: (out): return location for modifiers that the
+ *     hardware keyboard state was stored in, or %NULL
+ *
+ * Translates the contents of a #GdkEventKey into a keyval, effective
+ * group, and level. Modifiers that affected the translation and are thus
+ * unavailable for application use are returned in @consumed_modifiers.
+ * See also: gdk_keyval_up(), gdk_keyval_down() and
+ * gdk_keyval_to_unicode().
+ *
+ * Returns: %TRUE if there was a keyval bound to the keycode/state/group.
+ *
+ * Since: 2.0
+ **/
+gboolean
+gdk_keymap_translate_keyboard_state (GdkKeymap       *keymap,
+                                     guint            hardware_keycode,
+                                     GdkModifierType  state,
+                                     gint             group,
+                                     guint           *keyval,
+                                     gint            *effective_group,
+                                     gint            *level,
+                                     GdkModifierType *consumed_modifiers)
+{
+  g_return_val_if_fail (GDK_IS_KEYMAP (keymap), FALSE);
+
+  /* ydk-wayland: per-backend in GTK2; dispatched via GdkKeymapClass so
+   * X11 and Wayland can both provide one. */
+  return GDK_KEYMAP_GET_CLASS (keymap)->translate_keyboard_state (keymap,
+							      hardware_keycode,
+							      state,
+							      group,
+							      keyval,
+							      effective_group,
+							      level,
+							      consumed_modifiers);
+}
+#endif /* GDK_WINDOWING_WAYLAND */
+
+/**
  * gdk_keymap_get_default:
  * @returns: the #GdkKeymap attached to the default display.
  *
@@ -313,4 +388,6 @@ gdk_keymap_get_default (void)
 }
 
 #define __GDK_KEYS_C__
+#ifndef YDK_PER_SOURCE_ALIASES
 #include "gdkaliasdef.c"
+#endif

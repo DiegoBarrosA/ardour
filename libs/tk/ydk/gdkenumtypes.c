@@ -959,7 +959,9 @@ gdk_window_edge_get_type (void)
     return etype;
 }
 #define __GDK_ENUM_TYPES_C__
+#ifndef YDK_PER_SOURCE_ALIASES
 #include "gdkaliasdef.c"
+#endif
 
 /* Generated data ends here */
 

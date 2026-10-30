@@ -202,6 +202,126 @@ _gdk_screen_close (GdkScreen *screen)
     }
 }
 
+#ifdef GDK_WINDOWING_WAYLAND
+/* ydk-wayland: on Linux every backend dispatches these through the display,
+ * screen and keymap classes, so the single definitions live here.  The
+ * quartz and win32 backends still define their own copies and never define
+ * GDK_WINDOWING_WAYLAND. */
+/**
+ * gdk_screen_get_display:
+ * @screen: a #GdkScreen
+ *
+ * Gets the display to which the @screen belongs.
+ * 
+ * Returns: the display to which @screen belongs
+ *
+ * Since: 2.2
+ **/
+GdkDisplay *
+gdk_screen_get_display (GdkScreen *screen)
+{
+  g_return_val_if_fail (GDK_IS_SCREEN (screen), NULL);
+
+  return GDK_SCREEN_GET_CLASS (screen)->get_display (screen);
+}
+
+/**
+ * gdk_screen_get_width:
+ * @screen: a #GdkScreen
+ *
+ * Gets the width of @screen in pixels
+ * 
+ * Returns: the width of @screen in pixels.
+ *
+ * Since: 2.2
+ **/
+gint
+gdk_screen_get_width (GdkScreen *screen)
+{
+  g_return_val_if_fail (GDK_IS_SCREEN (screen), 0);
+
+  return GDK_SCREEN_GET_CLASS (screen)->get_width (screen);
+}
+
+/**
+ * gdk_screen_get_height:
+ * @screen: a #GdkScreen
+ *
+ * Gets the height of @screen in pixels
+ * 
+ * Returns: the height of @screen in pixels.
+ *
+ * Since: 2.2
+ **/
+gint
+gdk_screen_get_height (GdkScreen *screen)
+{
+  g_return_val_if_fail (GDK_IS_SCREEN (screen), 0);
+
+  return GDK_SCREEN_GET_CLASS (screen)->get_height (screen);
+}
+
+/**
+ * gdk_screen_get_root_window:
+ * @screen: a #GdkScreen
+ *
+ * Gets the root window of @screen.
+ *
+ * Returns: (transfer none): the root window
+ *
+ * Since: 2.2
+ **/
+GdkWindow *
+gdk_screen_get_root_window (GdkScreen *screen)
+{
+  g_return_val_if_fail (GDK_IS_SCREEN (screen), NULL);
+
+  return GDK_SCREEN_GET_CLASS (screen)->get_root_window (screen);
+}
+
+/**
+ * gdk_screen_get_system_visual:
+ * @screen: a #GdkScreen.
+ *
+ * Get the system's default visual for @screen.
+ * This is the visual for the root window of the display.
+ * The return value should not be freed.
+ *
+ * Returns: (transfer none): the system visual
+ *
+ * Since: 2.2
+ *
+ * ydk-wayland: backend-neutral; dispatched to the screen class.
+ **/
+GdkVisual *
+gdk_screen_get_system_visual (GdkScreen *screen)
+{
+  g_return_val_if_fail (GDK_IS_SCREEN (screen), NULL);
+
+  return GDK_SCREEN_GET_CLASS (screen)->get_system_visual (screen);
+}
+
+/**
+ * gdk_screen_get_system_colormap:
+ * @screen: a #GdkScreen
+ *
+ * Gets the system's default colormap for @screen
+ *
+ * Returns: (transfer none): the default colormap for @screen.
+ *
+ * Since: 2.2
+ *
+ * ydk-wayland: backend-neutral; dispatched to the screen class.
+ */
+GdkColormap *
+gdk_screen_get_system_colormap (GdkScreen *screen)
+{
+  g_return_val_if_fail (GDK_IS_SCREEN (screen), NULL);
+
+  return GDK_SCREEN_GET_CLASS (screen)->get_system_colormap (screen);
+}
+#endif /* GDK_WINDOWING_WAYLAND */
+
 /* Fallback used when the monitor "at" a point or window
  * doesn't exist.
  */
@@ -542,4 +662,6 @@ gdk_screen_set_property (GObject      *object,
 }
 
 #define __GDK_SCREEN_C__
+#ifndef YDK_PER_SOURCE_ALIASES
 #include "gdkaliasdef.c"
+#endif

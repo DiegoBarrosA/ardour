@@ -123,4 +123,6 @@ gdk_device_set_mode (GdkDevice   *device,
 }
 
 #define __GDK_INPUT_NONE_C__
+#ifndef YDK_PER_SOURCE_ALIASES
 #include "gdkaliasdef.c"
+#endif
