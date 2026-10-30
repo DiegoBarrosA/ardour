@@ -1294,6 +1294,8 @@ commit_one (PopupDisplay *pd, GDKWPopup *p)
       p->grab_wanted = TRUE;
       p->grab_serial = serial;
       p->grab_sent = TRUE;
+      GDKW_WIRE_LOG (GDKW_TEST_WIRE_POPUP_GRAB, p->xdg_popup, serial,
+                     pd->virtual_seat != FALSE, 0, 0);
       if (pd->virtual_seat)
         p->grab_virtual = TRUE;
       else

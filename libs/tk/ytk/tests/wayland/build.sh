@@ -40,7 +40,7 @@ fi
 
 PKGS="glib-2.0 gobject-2.0 gio-2.0 pango pangocairo cairo gdk-pixbuf-2.0"
 CFLAGS="-g -O0 -Wall -Wextra -Wno-unused-parameter -Wno-deprecated-declarations -Wno-cpp"
-INC="-I$TK/ytk -I$TK/ydk -I$TK/ydk-pixbuf -I$TK/ztk -I$TK/ydk/x11"
+INC="-I$TK/ytk -I$TK/ydk -I$TK/ydk-pixbuf -I$TK/ztk -I$TK/ydk/x11 -I$TK/ydk/wayland"
 
 RC=0
 for src in "${SRCS[@]}"; do

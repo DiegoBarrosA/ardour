@@ -259,7 +259,9 @@
  *       - a serial exists.  Serial rule: if a button is held
  *         (seat->buttons_down != 0) use seat->button_serial; else the newer
  *         (wraparound compare) of seat->key_serial and seat->button_serial.
- *         Zero means none.
+ *         Both are PRESS serials: the protocol wants the serial of a button
+ *         press, key press or touch down, and the release of a key may be
+ *         read before the deferred commit (M11 finding 1).  Zero means none.
  *     The decision, the serial and whether the request was real or virtual are
  *     recorded for the hooks.  If the compositor dismisses a grabbing popup
  *     BEFORE its first configure (it refused the serial, typical for a menu
@@ -898,7 +900,8 @@ gboolean _gdk_wayland_test_popup_virtual_seat (GdkDisplay *display,
 gboolean _gdk_wayland_test_popup_force_version (GdkDisplay *display,
                                                 guint       version);
 
-/* The serials the grab policy reads from the seat. */
+/* The serials the grab policy reads from the seat: the press serials of the
+ * button and of the key, and the newest serial of any input event. */
 gboolean _gdk_wayland_test_seat_serials     (GdkDisplay *display,
                                              guint32    *button_serial,
                                              guint32    *key_serial,

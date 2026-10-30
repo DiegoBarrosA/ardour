@@ -337,9 +337,9 @@ struct _GDKWSeat
   /* ---- serials and time ---------------------------------------------- */
   guint32  last_serial;           /* newest protocol serial seen on any input event */
   guint32  pointer_enter_serial;  /* wl_pointer.enter, needed by set_cursor (M7) */
-  guint32  button_serial;         /* last wl_pointer.button, needed by popups (M9) / DnD (M8) */
+  guint32  button_serial;         /* last wl_pointer.button PRESS, needed by popups (M9) / DnD (M8) */
   guint32  keyboard_enter_serial;
-  guint32  key_serial;
+  guint32  key_serial;            /* last wl_keyboard.key PRESS (a release serial is no valid grab serial) */
   guint32  last_time;             /* newest ms timestamp from any seat event */
 
   /* ---- core pointer device (GdkEvent.device) --------------------------

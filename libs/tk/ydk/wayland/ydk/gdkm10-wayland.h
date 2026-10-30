@@ -1297,6 +1297,14 @@ gboolean _gdk_wayland_test_cursor_scale_info (GdkDisplay              *display,
  *                     of @surface
  *   ATTACH            a = 1 with a buffer, 0 for attach NULL
  *   FRAME, COMMIT     no arguments
+ *   POPUP_GRAB        a = serial sent with xdg_popup.grab, b = 1 when the
+ *                     seat is virtual and the request was recorded only;
+ *                     @surface is the xdg_popup
+ *   IN_KEY, IN_BUTTON the serial of a wl_keyboard.key or wl_pointer.button
+ *                     event as it reached the listener (not a request): a =
+ *                     serial, b = 1 for a press, 0 for a release.  A test can
+ *                     compare the serial of a grab with the events that the
+ *                     compositor really sent.
  */
 typedef enum
 {
@@ -1306,7 +1314,10 @@ typedef enum
   GDKW_TEST_WIRE_SET_DESTINATION,
   GDKW_TEST_WIRE_ATTACH,
   GDKW_TEST_WIRE_FRAME,
-  GDKW_TEST_WIRE_COMMIT
+  GDKW_TEST_WIRE_COMMIT,
+  GDKW_TEST_WIRE_POPUP_GRAB,
+  GDKW_TEST_WIRE_IN_KEY,
+  GDKW_TEST_WIRE_IN_BUTTON
 } GDKWTestWireKind;
 
 #define GDKW_TEST_WIRE_MAX 1024

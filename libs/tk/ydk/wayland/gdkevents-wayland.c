@@ -46,6 +46,7 @@
 #include "gdkm7-wayland.h"
 #include "gdkm8-wayland.h"
 #include "gdkm9-wayland.h"
+#include "gdkm10-wayland.h"
 
 #ifdef GDK_COMPILATION
 #include "gdkalias.h"
@@ -898,7 +899,13 @@ wl_keyboard_key (void *data,
   if (!seat->keyboard_focus || !keymap_ready (wd))
     return;
 
-  seat->key_serial = serial;
+  GDKW_WIRE_LOG (GDKW_TEST_WIRE_IN_KEY, NULL, serial, pressed, 0, 0);
+  /* xdg_popup.grab wants the serial of a key press.  A release serial is
+   * not valid, and a virtual keyboard or a fast key delivers the release
+   * in the same batch as the press, before the deferred popup commit
+   * reads this serial. */
+  if (pressed)
+    seat->key_serial = serial;
   seat->last_serial = serial;
   seat->last_time = time;
 
@@ -1241,6 +1248,8 @@ wl_pointer_button (void *data,
   gboolean held;
   GdkEvent *event;
   gdouble x, y;
+
+  GDKW_WIRE_LOG (GDKW_TEST_WIRE_IN_BUTTON, NULL, serial, pressed, 0, 0);
 
   if (!seat->pointer_focus)
     return;

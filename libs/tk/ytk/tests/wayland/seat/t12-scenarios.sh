@@ -582,3 +582,67 @@ s24_monitor_size() {
 }
 
 T12_ALL_SCENARIOS="$T12_ALL_SCENARIOS s24_monitor_size"
+
+# xdg_popup.grab takes the serial of a user event: a button press or a key press.  The serial of
+# a release is not valid, and a virtual keyboard (and a quick tap) delivers the release in the same
+# batch as the press, before the backend commits the popup.  The test program logs the serial of
+# every grab and of every key and button event that reached the backend (the wire log hooks, see
+# "wire" in t0_12_menus_seat.c).  The serial of a grab has to be the serial of the latest press
+# that came before it, and the popup info hook has to say the same.
+wire_read() { # sets W to the WIRE and POPUP lines of the program
+  local m="w$RANDOM$RANDOM" start; start=$(( $(lines) + 1 ))
+  app_send wire; app_send popups; app_send "mark $m"
+  for _ in $(seq 1 60); do grep -q "MARK .*$m" "$APP_LOG" && break; sleep 0.05; done
+  W=$(tail -n +"$start" "$APP_LOG" | payload | grep -E '^(WIRE|POPUP) ')
+}
+grab_serial_check() { # desc: every grab in W carries the serial of the press before it
+  local r
+  wire_read
+  r=$(awk '
+    /^WIRE dropped=/ { split($2, a, "="); dropped = a[2] }
+    /^WIRE (key|button) serial=/ { split($3, s, "="); split($4, p, "="); if (p[2] == 1) last = s[2]; else rel[s[2]] = 1 }
+    /^WIRE grab serial=/ { split($3, s, "="); n++; if (s[2] == last) good++; else bad = bad " " s[2] "(press " last ")"; if (s[2] in rel) bad = bad " " s[2] "(is a release)" }
+    END { printf "%d %d %s|%s", n, good, dropped, bad }' <<<"$W")
+  local n good rest bad
+  read -r n good rest <<<"${r%%|*}"; bad=${r#*|}
+  if [ "${n:-0}" -ge 1 ] && [ "$good" = "$n" ] && [ -z "$bad" ]; then ok "$1 ($n grabs, all with a press serial)"
+  else fail "$1 (grabs: $n, with the right serial: ${good:-0}; wrong:$bad)"; fi
+  # the popup info hook shows the serial that was sent
+  local gs ps
+  gs=$(grep -E '^WIRE grab' <<<"$W" | tail -n 1 | sed -E 's/.*serial=([0-9]+).*/\1/')
+  ps=$(grep -E '^POPUP .*grab_sent=1' <<<"$W" | sed -E 's/.*grab_serial=([0-9]+).*/\1/' | sort -u | tr '\n' ' ')
+  if [ -n "$gs" ] && [ "$ps" = "$gs " ]; then ok "the popup info hook shows the serial that was sent ($gs)"
+  else fail "the popup info hook shows '$ps', the wire has $gs"; fi
+}
+
+s25_grab_serial() {
+  t12_reset; step s25-grab-click
+  app_send wire-on
+  lclick $(center bar:File); expect "File menu shows" 'SIG show menu\[File\]'; pause 400
+  grab_serial_check "a menu opened by a click"
+  keys Escape; pause 300; all_closed "closed after Escape"
+
+  t12_reset quiet; step s25-grab-tap
+  app_send wire-on
+  ltap $(center bar:File); expect "File menu shows after a tap" 'SIG show menu\[File\]'; pause 400
+  grab_serial_check "a menu opened by a tap (press and release in one batch)"
+  keys Escape; pause 300; all_closed "closed after Escape"
+
+  t12_reset quiet; step s25-grab-dropdown
+  app_send wire-on
+  lclick $(center dd-press); expect "dropdown shows" 'SIG show menu\[DropPress\]'; pause 400
+  grab_serial_check "a dropdown opened on the press"
+  keys Escape; pause 300; all_closed "closed after Escape"
+
+  # F10 opens the first menu of the menu bar.  The virtual keyboard sends the release of F10 right
+  # after the press, so the release has arrived when the popup is committed.
+  t12_reset quiet; step s25-grab-key
+  app_send wire-on
+  keys F10; expect "File menu shows when opened by F10" 'SIG show menu\[File\]' 2000; pause 400
+  grab_serial_check "a menu opened by the keyboard (F10)"
+  keys Escape; pause 300
+  app_send wire-off
+  all_closed "closed after Escape"
+}
+
+T12_ALL_SCENARIOS="$T12_ALL_SCENARIOS s25_grab_serial"

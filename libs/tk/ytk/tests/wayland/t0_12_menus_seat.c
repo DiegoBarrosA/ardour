@@ -26,6 +26,9 @@
  *   mark TEXT  log a MARK line (the driver uses it to cut the log into steps)
  *   win2, win2-hide   show or hide the second toplevel
  *   title TEXT        set the title of the main window
+ *   wire-on, wire-off, wire   record, stop and print the serials of xdg_popup.grab and of the
+ *                     key and button events (WIRE lines); popups prints the grab record of
+ *                     every mapped popup (POPUP lines)
  *   quit       destroy the window and print the verdict
  * End of file on stdin is the same as quit.
  *
@@ -37,6 +40,8 @@
 #include "common.h"
 #include <stdarg.h>
 #include <time.h>
+#include <ydk/gdkm9-wayland.h>
+#include <ydk/gdkm10-wayland.h>
 
 static gint64 t_start;
 static GtkWidget *main_win, *win2;
@@ -641,6 +646,52 @@ dump_geometry (void)
   g_list_free (tl);
 }
 
+/* ---- wire log: serials of the grab and of the events ------------------------ */
+
+/* "wire" prints what the compositor really got: the serial of every xdg_popup.grab and the
+ * serial of every key and button event that reached the backend since "wire-on".  "popups"
+ * prints the grab record of every mapped popup (the popup info hook). */
+static void
+dump_wire (void)
+{
+  guint dropped = 0, n = _gdk_wayland_test_wire_count (&dropped), i;
+  GDKWTestWireEntry e;
+
+  lg ("WIRE", "dropped=%u", dropped);
+  for (i = 0; i < n; i++)
+    {
+      if (!_gdk_wayland_test_wire_get (i, &e))
+        break;
+      if (e.kind == GDKW_TEST_WIRE_POPUP_GRAB)
+        lg ("WIRE", "grab serial=%u virtual=%d", (guint) e.a, e.b);
+      else if (e.kind == GDKW_TEST_WIRE_IN_KEY)
+        lg ("WIRE", "key serial=%u press=%d", (guint) e.a, e.b);
+      else if (e.kind == GDKW_TEST_WIRE_IN_BUTTON)
+        lg ("WIRE", "button serial=%u press=%d", (guint) e.a, e.b);
+    }
+}
+
+static void
+dump_popups (void)
+{
+  GList *tl = gtk_window_list_toplevels (), *i;
+
+  for (i = tl; i; i = i->next)
+    {
+      GtkWidget *w = i->data, *m;
+      GDKWTestPopupInfo pi;
+
+      if (!gtk_widget_get_mapped (w) || !w->window || w == main_win || w == win2)
+        continue;
+      m = find_menu_in (w);
+      if (!_gdk_wayland_test_popup_info (w->window, &pi))
+        continue;
+      lg ("POPUP", "%s state=%d grab_sent=%d grab_serial=%u", m ? widget_label (m) : G_OBJECT_TYPE_NAME (w), (int) pi.state,
+          pi.grab_sent, (guint) pi.grab_serial);
+    }
+  g_list_free (tl);
+}
+
 /* ---- stdin commands ----------------------------------------------------- */
 
 static void finish (void);
@@ -701,6 +752,14 @@ stdin_cb (GIOChannel *ch, GIOCondition cond, gpointer d)
         lg ("MARK", "%s", line + 5);
       else if (!strcmp (line, "win2"))
         show_win2 ();
+      else if (!strcmp (line, "wire-on"))
+        _gdk_wayland_test_wire_enable (TRUE);
+      else if (!strcmp (line, "wire-off"))
+        _gdk_wayland_test_wire_enable (FALSE);
+      else if (!strcmp (line, "wire"))
+        dump_wire ();
+      else if (!strcmp (line, "popups"))
+        dump_popups ();
       else if (g_str_has_prefix (line, "title "))
         gtk_window_set_title (GTK_WINDOW (main_win), line + 6);
       else if (!strcmp (line, "win2-hide"))
