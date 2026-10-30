@@ -300,6 +300,13 @@ PluginUIWindow::create_lxvst_editor (std::shared_ptr<PlugInsertBase>)
 	return false;
 #else
 
+	if (!ARDOUR_UI_UTILS::display_is_x11 ()) {
+		/* The editor of a Linux VST plugin is an X11 window. A Wayland
+		 * display cannot embed it. The caller uses the generic UI.
+		 */
+		return false;
+	}
+
 	std::shared_ptr<LXVSTPlugin> lxvp;
 
 	if ((lxvp = std::dynamic_pointer_cast<LXVSTPlugin> (pib->plugin ())) == 0) {
@@ -371,6 +378,13 @@ PluginUIWindow::create_vst3_editor (std::shared_ptr<PlugInsertBase>)
 		add (*box);
 		Application::instance ()->ActivationChanged.connect (mem_fun (*this, &PluginUIWindow::app_activated));
 #else
+		if (!ARDOUR_UI_UTILS::display_is_x11 ()) {
+			/* The editor of a VST3 plugin on Linux is an X11 window.
+			 * A Wayland display cannot embed it. The caller uses the
+			 * generic UI.
+			 */
+			return false;
+		}
 		VST3X11PluginUI* pui = new VST3X11PluginUI (pib, vst3);
 		add (*pui);
 #endif

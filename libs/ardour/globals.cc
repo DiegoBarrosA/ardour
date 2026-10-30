@@ -712,7 +712,11 @@ ARDOUR::init (bool try_optimization, const char* localedir, bool with_gui)
 
 #ifdef LXVST_SUPPORT
 	if (Config->get_use_lxvst () && vstfx_init (0)) {
-		return false;
+		/* No X11 connection (for example on a Wayland-only session).
+		 * Linux VST plugin GUIs are not available. Everything else
+		 * still works, so do not stop the startup.
+		 */
+		warning << _("Cannot start the Linux VST GUI engine. Linux VST plugins have no GUI.") << endmsg;
 	}
 #endif
 

@@ -23,6 +23,7 @@
 #include "ardour/lxvst_plugin.h"
 #include "ardour/linux_vst_support.h"
 #include "lxvst_plugin_ui.h"
+#include "utils.h"
 
 #include <ydk/gdkx.h> /* must come later than glibmm/object.h */
 
@@ -99,6 +100,13 @@ LXVSTPluginUI::package (Gtk::Window& win)
 void
 LXVSTPluginUI::forward_key_event (GdkEventKey* gdk_key)
 {
+	if (!ARDOUR_UI_UTILS::display_is_x11 ()) {
+		/* This function builds an XEvent from the GDK event and sends it
+		 * with Xlib. That needs an X11 display and an X11 window.
+		 */
+		return;
+	}
+
 	if (!_vst->state()->gtk_window_parent) {
 		return;
 	}

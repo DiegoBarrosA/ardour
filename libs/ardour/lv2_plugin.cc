@@ -161,6 +161,7 @@ uint32_t      LV2Plugin::_ui_foreground_color  = 0xffffffff; // RGBA
 uint32_t      LV2Plugin::_ui_contrasting_color = 0x33ff33ff; // RGBA
 unsigned long LV2Plugin::_ui_transient_win_id  = 0;
 float         LV2Plugin::_ui_update_hz         = 25;
+bool          LV2Plugin::_x11_ui_supported     = true;
 
 
 class LV2World {
@@ -968,10 +969,11 @@ LV2Plugin::init(const void* c_plugin, samplecnt_t rate)
 		const LilvUI*   this_ui      = NULL;
 		const LilvNode* this_ui_type = NULL;
 #if ! (defined(__APPLE__) || defined(PLATFORM_WINDOWS))
-		// Always prefer X11 UIs...
+		// Always prefer X11 UIs, unless the display cannot embed them...
 		LILV_FOREACH(uis, i, uis) {
 			const LilvUI* ui = lilv_uis_get(uis, i);
-			if (lilv_ui_is_a(ui, _world.ui_X11UI) &&
+			if (_x11_ui_supported &&
+			    lilv_ui_is_a(ui, _world.ui_X11UI) &&
 			    lilv_ui_is_supported (ui,
 			                          suil_ui_supported,
 			                          _world.ui_GtkUI,
@@ -985,6 +987,10 @@ LV2Plugin::init(const void* c_plugin, samplecnt_t rate)
 		if (this_ui == NULL) {
 			LILV_FOREACH(uis, i, uis) {
 				const LilvUI* ui = lilv_uis_get(uis, i);
+				if (!_x11_ui_supported && lilv_ui_is_a(ui, _world.ui_X11UI)) {
+					/* suil can wrap an X11UI in a GtkUI, but that needs an X11 display */
+					continue;
+				}
 				if (lilv_ui_is_supported (ui,
 				                         suil_ui_supported,
 				                         _world.ui_GtkUI,
