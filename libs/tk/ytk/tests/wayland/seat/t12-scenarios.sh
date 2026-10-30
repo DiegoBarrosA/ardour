@@ -30,6 +30,17 @@ ltap()   { hover "$1" "$2"; "$CLICK" tap "$1" "$2"; }   # press and release at o
 vtap()   { hovv "$1" "$2"; "$CLICK" tap "$1" "$2"; }     # same, entering a menu from the item above it
 vclick() { hovv "$1" "$2"; "$CLICK" click "$1" "$2"; }
 keys()   { arm; "$CLICK" key "$@"; }
+
+# GTK ignores a button release less than 500 ms after the press that opened a menu (MENU_SHELL_TIMEOUT
+# in gtkmenushell.c: the event times must differ by more than 500).  A drag scenario has to hold the
+# button for longer, or it passes and fails with the speed of the run.  press_hold presses and
+# remembers when, release_held waits until T12_HOLD_MS (default 650) ms have passed and then releases.
+press_hold()   { "$CLICK" press "$@"; PRESS_NS=$(date +%s%N); }
+release_held() {
+  local left=$(( ${T12_HOLD_MS:-650} - ($(date +%s%N) - ${PRESS_NS:-0}) / 1000000 ))
+  [ "$left" -gt 0 ] && pause "$left"
+  "$CLICK" release
+}
 pause()  { sleep "$(awk "BEGIN{print $1/1000}")"; }
 
 # Closes whatever is open and parks the pointer on the grey area.  A menu that stays open
@@ -231,10 +242,10 @@ s12_dropdowns() {
   all_closed "closed after the click"
   t12_reset quiet; step s12-dropdown-drag
   hover $(center dd-press)
-  "$CLICK" press $(center dd-press); expect "press shows the menu" 'SIG show menu\[DropPress\]'; refresh_geom
+  press_hold $(center dd-press); expect "press shows the menu" 'SIG show menu\[DropPress\]'; refresh_geom
   hover $(item_center DropPress "DropPress 3")
   expect "the item under the pointer is selected during the drag" 'SIG select item\[DropPress 3\]'
-  "$CLICK" release
+  release_held
   expect "release over an item activates it" 'SIG activate item\[DropPress 3\]'
   all_closed "closed after the release"
   t12_reset quiet; step s12-dropdown-clicked
@@ -361,16 +372,16 @@ s18_keyboard_focus_back() {
 s19_press_drag_release() {
   t12_reset; step s19-bar-drag-item
   hover $(center bar:File)
-  "$CLICK" press $(center bar:File); expect "press on File shows the menu" 'SIG show menu\[File\]'; refresh_geom
+  press_hold $(center bar:File); expect "press on File shows the menu" 'SIG show menu\[File\]'; refresh_geom
   hovv $(item_center File "New")
   expect "New is selected during the drag" 'SIG select item\[New\]'
-  "$CLICK" release
+  release_held
   expect "release over New activates it" 'SIG activate item\[New\]'
   all_closed "closed after the release"
 
   t12_reset quiet; step s19-bar-drag-cascade
   hover $(center bar:File)
-  "$CLICK" press $(center bar:File); expect "press on File shows the menu" 'SIG show menu\[File\]'; refresh_geom
+  press_hold $(center bar:File); expect "press on File shows the menu" 'SIG show menu\[File\]'; refresh_geom
   hovv $(item_center File "Open Recent")
   expect "Recent shows during the drag" 'SIG show menu\[Recent\]' 2000
   refresh_geom
@@ -382,17 +393,17 @@ s19_press_drag_release() {
   refresh_geom
   hover $(item_center Deeper "Deepest 2")
   expect "Deepest 2 is selected during the drag" 'SIG select item\[Deepest 2\]'
-  "$CLICK" release
+  release_held
   expect "release over Deepest 2 activates it" 'SIG activate item\[Deepest 2\]'
   all_closed "everything is closed after the release"
 
   t12_reset quiet; step s19-release-outside
   hover $(center bar:File)
-  "$CLICK" press $(center bar:File); expect "press on File shows the menu" 'SIG show menu\[File\]'; refresh_geom
+  press_hold $(center bar:File); expect "press on File shows the menu" 'SIG show menu\[File\]'; refresh_geom
   hovv $(item_center File "New")
   expect "New is selected during the drag" 'SIG select item\[New\]'
   hover 330 $(( OY + 100 ))
-  "$CLICK" release
+  release_held
   expect "release outside the menu hides it" 'SIG hide menu\[File\]'
   expect_not "no leaf item activates on a release outside" 'SIG activate item\[(New|Close|Project|Deepest)' 200
   all_closed "everything is closed after the release"
