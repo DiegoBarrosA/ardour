@@ -7,8 +7,14 @@
  * does the same things with a real seat on sway; this test makes the cases deterministic
  * that a compositor delivers only by luck of timing.
  *
- *   A  grab serial     xdg_popup.grab takes the serial of a key or button PRESS.  The
- *                      release of the key may arrive before the deferred popup commit.
+ * A  grab serial     xdg_popup.grab takes the serial of a key or button PRESS.  The release of
+ *                    the key may be read before the deferred popup commit.
+ * B  held button     a held button survives a focus change inside the client; a release
+ *                    always reaches the menu that waits for it.
+ * C  popup target    the pointer target leaves a popup that is hidden or ended under a held
+ *                    button.
+ * D  popup_done      before the first configure: a refused grab is retried once without a grab,
+ *                    but not when the parent lost the keyboard focus.
  *
  * The program SKIPs on X11.
  *
@@ -41,7 +47,7 @@ tick_long (void)
 /* what the GDK event queue delivered */
 static struct
 {
-  int press, release, motion, activate;
+  int press, release, motion, activate, grab_broken;
   GdkWindow *last_release_window;
 } ev;
 
@@ -56,6 +62,7 @@ on_event (GdkEvent *e, gpointer data)
       ev.last_release_window = e->any.window;
       break;
     case GDK_MOTION_NOTIFY: ev.motion++; break;
+    case GDK_GRAB_BROKEN: ev.grab_broken++; break;
     default: break;
     }
   gtk_main_do_event (e);
@@ -481,6 +488,58 @@ test_dismiss_under_held_button (gboolean compositor)
   reset_after_case ();
 }
 
+/* ---- D: popup_done before the first configure ------------------------------- */
+
+/* The compositor ends a popup that asked for a grab before it configured it.  If the serial was
+ * refused, the popup is created again once without a grab and stays on the screen.  If the
+ * parent lost the keyboard focus after the commit, the compositor closes the popup (sway does
+ * that for every popup of a toplevel that loses the focus).  Then nothing is created again, the
+ * GDK grabs end and GTK hides its menu. */
+static void
+test_popup_done_before_configure (gboolean focus_lost)
+{
+  GtkWidget *menu = make_menu ();
+  GDKWTestPopupInfo pi;
+  GDKWTestObjectCounts oc;
+  GdkWindow *pw;
+  int gb0 = ev.grab_broken;
+  const char *what = focus_lost ? "focus lost" : "refused";
+
+  HOOK (_gdk_wayland_test_keyboard_key (disp, tick (), GDKW_TEST_KEY_A, TRUE), "key down");
+  HOOK (_gdk_wayland_test_keyboard_key (disp, tick (), GDKW_TEST_KEY_A, FALSE), "key up");
+  gtk_menu_popup (GTK_MENU (menu), NULL, NULL, pos_func, NULL, 0, gtk_get_current_event_time ());
+  HOOK (_gdk_wayland_test_popup_commit (disp), "commit now");
+  pi = popup_info (menu);
+  T_CHECK (pi.state == GDKW_TEST_POPUP_COMMITTED, "D %s: the popup is committed and not configured (state %d)", what,
+           (int) pi.state);
+  T_CHECK (pi.grab_sent, "D %s: the commit carried a grab", what);
+  pw = GTK_WIDGET (GTK_MENU (menu)->toplevel)->window;
+
+  if (focus_lost)
+    HOOK (_gdk_wayland_test_keyboard_leave (disp, main_win->window), "keyboard leave");
+  HOOK (_gdk_wayland_test_popup_done (pw), "popup_done");
+  t_settle (300);
+
+  if (focus_lost)
+    {
+      T_CHECK (!gtk_widget_get_mapped (menu), "D %s: the menu is hidden", what);
+      T_CHECK (ev.grab_broken > gb0, "D %s: GTK saw GRAB_BROKEN (%d, before %d)", what, ev.grab_broken, gb0);
+      HOOK (_gdk_wayland_test_object_counts (disp, &oc), "object counts");
+      T_CHECK (oc.xdg_popups == 0 && oc.popups_pending == 0, "D %s: no popup was created again (%u xdg_popups, %u pending)",
+               what, oc.xdg_popups, oc.popups_pending);
+      HOOK (_gdk_wayland_test_keyboard_enter (disp, main_win->window), "keyboard enter again");
+    }
+  else
+    {
+      pi = popup_info (menu);
+      T_CHECK (gtk_widget_get_mapped (menu), "D %s: the menu stays", what);
+      T_CHECK (pi.retried_without_grab, "D %s: the popup was created again once", what);
+      T_CHECK (!pi.grab_sent, "D %s: and without a grab", what);
+      close_menu (menu);
+    }
+  t_settle (100);
+}
+
 /* ---- main -------------------------------------------------------------- */
 
 int
@@ -529,6 +588,8 @@ main (int argc, char **argv)
   test_stray_release ();
   test_dismiss_under_held_button (FALSE);
   test_dismiss_under_held_button (TRUE);
+  test_popup_done_before_configure (FALSE);
+  test_popup_done_before_configure (TRUE);
 
   HOOK (_gdk_wayland_test_pointer_leave (disp, main_win->window), "pointer leave");
   HOOK (_gdk_wayland_test_keyboard_leave (disp, main_win->window), "keyboard leave");

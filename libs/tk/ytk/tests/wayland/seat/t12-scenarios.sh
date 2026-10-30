@@ -727,3 +727,44 @@ s26_dismiss_mid_drag() {
 }
 
 T12_ALL_SCENARIOS="$T12_ALL_SCENARIOS s26_dismiss_mid_drag"
+
+# The parent toplevel loses the keyboard focus right after a menu opened.  Sway then ends the popups
+# of that toplevel (view_close_popups).  If that popup_done comes before the first configure, the
+# backend must not take it for a refused grab and create the popup again without a grab: that
+# leaves a menu on the screen that GTK believes it grabs.  The menu has to close, and the window has
+# to work afterwards.  Whether popup_done arrives before the configure depends on timing, so the
+# deterministic check of that path is in T0.13 (section D).  Run with the ffm config
+# (run-seat-tests.sh --ffm), where the pointer alone moves the focus.
+steal_focus() { # focus the second window through the compositor, at once
+  local id
+  id=$(swaymsg -s "$HARNESS_SWAYSOCK" -t get_tree -r | jq -r '.. | objects | select((.app_id? // "") | test("^[Tt]0_12")) | select(.window_rect.width == 260) | .id' | head -n 1)
+  swaymsg -s "$HARNESS_SWAYSOCK" -q "[con_id=$id] focus"
+}
+s27_focus_change_after_open() {
+  t12_reset; step s27-focus-change-after-open
+  app_send win2; pause 900; place_win2; refresh_geom
+  local i
+  for i in 1 2 3; do
+    hover $(center bar:File)
+    "$CLICK" click $(center bar:File) & local cp=$!
+    steal_focus
+    wait $cp
+    pause 700
+    refresh_geom
+    if [ ${#MENUWIN[@]} -eq 0 ] && [ "$(popup_toplevels)" = 0 ]; then ok "round $i: no menu is left on the screen"
+    else
+      # a menu that is open must still be under a working grab: Escape closes it
+      keys Escape; pause 400; refresh_geom
+      if [ ${#MENUWIN[@]} -eq 0 ] && [ "$(popup_toplevels)" = 0 ]; then ok "round $i: the menu that stayed closes on Escape"
+      else fail "round $i: a menu is left on the screen and Escape does not close it (${!MENUWIN[*]})"; lclick 1700 900; pause 400; fi
+    fi
+    lclick $(center ctxarea); pause 300
+  done
+  # the toplevels work after the focus changes
+  open_file
+  expect_not "File stays open on a fresh click" 'SIG hide menu\[File\]' 500
+  keys Escape; pause 300; all_closed "closed after Escape"
+  app_send win2-hide; pause 600
+}
+
+T12_ALL_SCENARIOS="$T12_ALL_SCENARIOS s27_focus_change_after_open"

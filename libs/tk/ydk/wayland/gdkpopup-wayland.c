@@ -69,6 +69,7 @@ struct _GDKWPopup
   gboolean               in_pending;
   gboolean               releasing;  /* dismissal in progress */
   gboolean               no_grab;    /* retry mode: never grab */
+  gboolean               kbd_focus_at_commit; /* the family had the keyboard focus when the popup was committed */
 
   /* position relative to the parent geometry, last known */
   gint                   rel_x, rel_y;
@@ -1037,6 +1038,21 @@ xdg_popup_handle_configure (void *data, struct xdg_popup *xdg_popup,
   p->configure_events++;
 }
 
+/* The family had the keyboard focus when the popup was committed and has not
+ * now.  A compositor ends the popups of a toplevel that loses the keyboard
+ * focus (sway: view_close_popups).  That popup_done is no refusal of the grab,
+ * and a popup created again without a grab would stay on the screen with no
+ * grab while GTK still thinks it holds one. */
+static gboolean
+kbd_focus_lost_since_commit (GDKWPopup *p)
+{
+  GDKWSeat *seat = _gdk_wayland_display_get_seat (GDK_DISPLAY_OBJECT (p->display));
+
+  return p->kbd_focus_at_commit &&
+    (seat->keyboard_focus == NULL ||
+     _gdk_wayland_popup_family_root (seat->keyboard_focus) != p->root);
+}
+
 static void
 xdg_popup_handle_popup_done (void *data, struct xdg_popup *xdg_popup)
 {
@@ -1059,8 +1075,12 @@ xdg_popup_handle_popup_done (void *data, struct xdg_popup *xdg_popup)
 
   p->popup_done_events++;
 
-  /* D8.1: refused before the first configure, grab was part of the request */
-  if (p->state == GDKW_POPUP_COMMITTED && p->grab_sent && !p->retried)
+  /* D8.1: refused before the first configure, grab was part of the request.
+   * Not when the parent lost the keyboard focus since the commit: then the
+   * compositor closes the popup, and the chain below hides it and breaks the
+   * GDK grabs, so that GTK closes its menu. */
+  if (p->state == GDKW_POPUP_COMMITTED && p->grab_sent && !p->retried &&
+      !kbd_focus_lost_since_commit (p))
     {
       p->retried = TRUE;
       p->no_grab = TRUE;
@@ -1265,6 +1285,13 @@ commit_one (PopupDisplay *pd, GDKWPopup *p)
   p->parent = parent;
   p->root = parent->popup != NULL ? parent->popup->root : parent;
   p->depth = parent->popup != NULL ? parent->popup->depth + 1 : 0;
+
+  {
+    GDKWSeat *seat = _gdk_wayland_display_get_seat (GDK_DISPLAY_OBJECT (display));
+
+    p->kbd_focus_at_commit = seat->keyboard_focus != NULL &&
+      _gdk_wayland_popup_family_root (seat->keyboard_focus) == p->root;
+  }
 
   impl_origin (parent, &ox, &oy);
   p->rel_x = impl->x - ox;
@@ -1721,6 +1748,17 @@ _gdk_wayland_popup_family_active (GDKWWindowImplWayland *impl)
 /* =========================================================================
  * Test hooks
  * ========================================================================= */
+
+gboolean
+_gdk_wayland_test_popup_commit (GdkDisplay *display)
+{
+  if (display == NULL || !GDKW_IS_DISPLAY_WAYLAND (display))
+    return FALSE;
+
+  _gdk_wayland_popup_commit_pending (GDKW_DISPLAY_WAYLAND (display));
+
+  return TRUE;
+}
 
 gboolean
 _gdk_wayland_test_role_info (GdkWindow *window, GDKWTestRoleInfo *info)

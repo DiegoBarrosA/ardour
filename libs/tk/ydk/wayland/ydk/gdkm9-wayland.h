@@ -885,6 +885,11 @@ gboolean _gdk_wayland_test_popup_configure  (GdkWindow *window,
 /* Calls the REAL xdg_popup popup_done listener. */
 gboolean _gdk_wayland_test_popup_done       (GdkWindow *window);
 
+/* Runs the deferred first commit of every pending popup now, instead of in the
+ * idle.  A popup that was pending is COMMITTED afterwards, until the
+ * compositor configures it. */
+gboolean _gdk_wayland_test_popup_commit     (GdkDisplay *display);
+
 /* Calls the REAL xdg_popup repositioned listener. */
 gboolean _gdk_wayland_test_popup_repositioned (GdkWindow *window,
                                                guint32    token);
