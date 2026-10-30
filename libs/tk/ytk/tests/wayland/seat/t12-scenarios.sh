@@ -768,3 +768,32 @@ s27_focus_change_after_open() {
 }
 
 T12_ALL_SCENARIOS="$T12_ALL_SCENARIOS s27_focus_change_after_open"
+
+# A gesture that is faster than the popup: press, drag and release reach the backend before the popup
+# the press opened has its first configure.  The popup is only COMMITTED then, and the backend has to
+# aim the events at it already (the compositor keeps the focus on the surface of the press, so the
+# events come with main surface coordinates).  A busy main loop makes this certain: the program
+# blocks for 1200 ms while the menu is shown, the driver moves onto an item and releases 800 ms after
+# the press, so the release is well past GTK's 500 ms rule, and the program reads all of it at once.
+s28_fast_gesture() {
+  t12_reset; step s28-fast-gesture-geometry
+  # learn where DropPress 3 will be
+  lclick $(center dd-press); expect "dropdown shows" 'SIG show menu\[DropPress\]'; refresh_geom
+  local ix iy bx by
+  read -r ix iy <<<"$(item_center DropPress "DropPress 3")"
+  read -r bx by <<<"$(center dd-press)"
+  keys Escape; pause 400; all_closed "closed after Escape"
+  hover $bx $by
+
+  step s28-fast-gesture
+  app_send "stall-next-show 1200"
+  "$CLICK" press $bx $by
+  "$CLICK" raw "move $(( (bx + ix) / 2 )) $(( (by + iy) / 2 ))" "sleep 20" "move $ix $iy" "sleep 700" "up 1" "sync $ST/s28.$$" >/dev/null
+  expect "DropPress 3 activates when the gesture is read after the popup is committed" 'SIG activate item\[DropPress 3\]' 3000
+  expect_not "the release did not go to a main window widget" 'BUTTON_RELEASE [^ ]+ (dd-click|combo|optmenu|tipbtn|ctxarea|main)' 200
+  pause 300
+  all_closed "closed after the gesture"
+  t12_reset quiet
+}
+
+T12_ALL_SCENARIOS="$T12_ALL_SCENARIOS s28_fast_gesture"

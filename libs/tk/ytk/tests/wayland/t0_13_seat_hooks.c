@@ -15,6 +15,7 @@
  *                    button.
  * D  popup_done      before the first configure: a refused grab is retried once without a grab,
  *                    but not when the parent lost the keyboard focus.
+ * E  committed popup events that come before the first configure of the popup go to the popup.
  *
  * The program SKIPs on X11.
  *
@@ -540,6 +541,52 @@ test_popup_done_before_configure (gboolean focus_lost)
   t_settle (100);
 }
 
+/* ---- E: events before the first configure ---------------------------------- */
+
+/* The user presses, drags and releases faster than the compositor configures the popup that the
+ * press opened.  The popup is COMMITTED then.  The compositor keeps the focus on the surface of
+ * the press, so the backend has to aim the events at the popup itself. */
+static void
+test_drag_onto_committed_popup (void)
+{
+  gdouble x, y;
+  GDKWTestSeatInfo si;
+  GDKWTestPopupInfo pi;
+  GdkWindow *pw;
+  int act0 = ev.activate, rel0 = ev.release, i;
+
+  centre_of (bar_file, &x, &y);
+  HOOK (_gdk_wayland_test_pointer_enter (disp, main_win->window, x, y), "enter on File");
+  HOOK (_gdk_wayland_test_pointer_motion (disp, tick (), x + 1, y), "motion on File");
+  t_pump_ms (50);
+  HOOK (_gdk_wayland_test_pointer_button (disp, tick (), GDKW_TEST_BTN_LEFT, TRUE), "press on File");
+  /* one dispatch at a time: stop when GTK has shown the menu and before the idle commit ran */
+  for (i = 0; i < 50 && !gtk_widget_get_mapped (bar_menu); i++)
+    g_main_context_iteration (NULL, FALSE);
+  T_CHECK (gtk_widget_get_mapped (bar_menu), "E: the press opened the menu");
+  HOOK (_gdk_wayland_test_popup_commit (disp), "commit now");
+  pi = popup_info (bar_menu);
+  T_CHECK (pi.state == GDKW_TEST_POPUP_COMMITTED, "E: the popup is committed and not configured (state %d)", (int) pi.state);
+  pw = GTK_WIDGET (GTK_MENU (bar_menu)->toplevel)->window;
+
+  /* the pointer moves over item 1 of the popup, in main surface coordinates */
+  {
+    gint ox = 0, oy = 0;
+    gdouble ix, iy;
+
+    gdk_window_get_origin (pw, &ox, &oy);
+    menu_item_centre (1, &ix, &iy);
+    HOOK (_gdk_wayland_test_pointer_motion (disp, tick (), ox + ix, oy + iy), "motion over the committed popup");
+    si = seat_info ();
+    T_CHECK (si.pointer_target == pw, "E: the target is the committed popup");
+    HOOK (_gdk_wayland_test_pointer_button (disp, tick_long (), GDKW_TEST_BTN_LEFT, FALSE), "release over the item");
+    t_pump_ms (100);
+  }
+  T_CHECK (ev.release == rel0 + 1, "E: the release reached GTK");
+  T_CHECK (ev.activate == act0 + 1, "E: the item under the pointer activated (%d, before %d)", ev.activate, act0);
+  reset_after_case ();
+}
+
 /* ---- main -------------------------------------------------------------- */
 
 int
@@ -590,6 +637,7 @@ main (int argc, char **argv)
   test_dismiss_under_held_button (TRUE);
   test_popup_done_before_configure (FALSE);
   test_popup_done_before_configure (TRUE);
+  test_drag_onto_committed_popup ();
 
   HOOK (_gdk_wayland_test_pointer_leave (disp, main_win->window), "pointer leave");
   HOOK (_gdk_wayland_test_keyboard_leave (disp, main_win->window), "keyboard leave");

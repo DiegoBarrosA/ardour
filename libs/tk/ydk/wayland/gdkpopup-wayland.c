@@ -1703,7 +1703,13 @@ _gdk_wayland_popup_family_hit (GDKWWindowImplWayland *focus,
         GDKWPopup *p = l->data;
         GdkWindowObject *w;
 
-        if (p->root != root || p->state != GDKW_POPUP_MAPPED ||
+        /* A COMMITTED popup counts: the compositor has not configured it
+         * yet, but the user already sees it and may press, drag and release
+         * before the first configure arrives (a busy client reads all of it
+         * at once).  Its place is the one the positioner asked for. */
+        if (p->root != root ||
+            (p->state != GDKW_POPUP_MAPPED &&
+             p->state != GDKW_POPUP_COMMITTED) ||
             p->input_region_empty || !window_mapped (p->impl->wrapper))
           continue;
 

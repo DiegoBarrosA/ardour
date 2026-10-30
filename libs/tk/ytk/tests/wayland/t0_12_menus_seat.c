@@ -26,6 +26,7 @@
  *   mark TEXT  log a MARK line (the driver uses it to cut the log into steps)
  *   win2, win2-hide   show or hide the second toplevel
  *   title TEXT        set the title of the main window
+ *   stall-next-show MS  block the main loop for MS the next time a menu is shown
  *   wire-on, wire-off, wire   record, stop and print the serials of xdg_popup.grab and of the
  *                     key and button events (WIRE lines); popups prints the grab record of
  *                     every mapped popup (POPUP lines)
@@ -234,12 +235,23 @@ ev_handler (GdkEvent *e, gpointer data)
 
 /* ---- signals ------------------------------------------------------------ */
 
+static int stall_next_show_ms;
+
 static void
 on_menu_show (GtkWidget *m, gpointer d)
 {
   int n = GPOINTER_TO_INT (g_hash_table_lookup (shown, m)) + 1;
   g_hash_table_insert (shown, m, GINT_TO_POINTER (n));
   lg ("SIG", "show menu[%s]", widget_label (m));
+  if (stall_next_show_ms > 0)
+    {
+      /* s28: the main loop is busy while the popup is not committed yet; the driver sends the
+       * rest of the gesture meanwhile */
+      int ms = stall_next_show_ms;
+
+      stall_next_show_ms = 0;
+      g_usleep ((gulong) ms * 1000);
+    }
 }
 
 static void
@@ -752,6 +764,8 @@ stdin_cb (GIOChannel *ch, GIOCondition cond, gpointer d)
         lg ("MARK", "%s", line + 5);
       else if (!strcmp (line, "win2"))
         show_win2 ();
+      else if (g_str_has_prefix (line, "stall-next-show "))
+        stall_next_show_ms = atoi (line + 16);
       else if (!strcmp (line, "wire-on"))
         _gdk_wayland_test_wire_enable (TRUE);
       else if (!strcmp (line, "wire-off"))
