@@ -189,6 +189,10 @@ gdk_x11_atom_to_xatom_for_display (GdkDisplay *display,
 {
   Atom xatom = None;
 
+  /* Wayland has no X atoms. */
+  if (display != NULL && GDK_IS_DISPLAY (display) && !GDK_IS_DISPLAY_X11 (display))
+    return None;
+
   g_return_val_if_fail (GDK_IS_DISPLAY (display), None);
 
   if (atom == GDK_NONE)
@@ -273,7 +277,13 @@ _gdk_x11_precache_atoms (GdkDisplay          *display,
 Atom
 gdk_x11_atom_to_xatom (GdkAtom atom)
 {
-  return gdk_x11_atom_to_xatom_for_display (gdk_display_get_default (), atom);
+  GdkDisplay *display = gdk_display_get_default ();
+
+  /* No default display, or a non-X11 one (Wayland): no X atoms. */
+  if (display == NULL || !GDK_IS_DISPLAY_X11 (display))
+    return None;
+
+  return gdk_x11_atom_to_xatom_for_display (display, atom);
 }
 
 /**
@@ -294,7 +304,11 @@ gdk_x11_xatom_to_atom_for_display (GdkDisplay *display,
 {
   GdkDisplayX11 *display_x11;
   GdkAtom virtual_atom = GDK_NONE;
-  
+
+  /* Wayland has no X atoms: nothing to translate. */
+  if (display != NULL && GDK_IS_DISPLAY (display) && !GDK_IS_DISPLAY_X11 (display))
+    return GDK_NONE;
+
   g_return_val_if_fail (GDK_IS_DISPLAY (display), GDK_NONE);
 
   if (xatom == None)
@@ -348,7 +362,13 @@ gdk_x11_xatom_to_atom_for_display (GdkDisplay *display,
 GdkAtom
 gdk_x11_xatom_to_atom (Atom xatom)
 {
-  return gdk_x11_xatom_to_atom_for_display (gdk_display_get_default (), xatom);
+  GdkDisplay *display = gdk_display_get_default ();
+
+  /* No default display, or a non-X11 one (Wayland): no X atoms. */
+  if (display == NULL || !GDK_IS_DISPLAY_X11 (display))
+    return GDK_NONE;
+
+  return gdk_x11_xatom_to_atom_for_display (display, xatom);
 }
 
 static void
@@ -459,7 +479,12 @@ Atom
 gdk_x11_get_xatom_by_name_for_display (GdkDisplay  *display,
 				       const gchar *atom_name)
 {
+  /* Wayland has no X atoms. */
+  if (display != NULL && GDK_IS_DISPLAY (display) && !GDK_IS_DISPLAY_X11 (display))
+    return None;
+
   g_return_val_if_fail (GDK_IS_DISPLAY (display), None);
+
   return gdk_x11_atom_to_xatom_for_display (display,
 					    gdk_atom_intern (atom_name, FALSE));
 }
@@ -477,8 +502,13 @@ gdk_x11_get_xatom_by_name_for_display (GdkDisplay  *display,
 Atom
 gdk_x11_get_xatom_by_name (const gchar *atom_name)
 {
-  return gdk_x11_get_xatom_by_name_for_display (gdk_display_get_default (),
-						atom_name);
+  GdkDisplay *display = gdk_display_get_default ();
+
+  /* No default display, or a non-X11 one (Wayland): no X atoms. */
+  if (display == NULL || !GDK_IS_DISPLAY_X11 (display))
+    return None;
+
+  return gdk_x11_get_xatom_by_name_for_display (display, atom_name);
 }
 
 /**
@@ -500,6 +530,11 @@ const gchar *
 gdk_x11_get_xatom_name_for_display (GdkDisplay *display,
 				    Atom        xatom)
 {
+  /* Wayland has no X atoms.  The result is never NULL, as for
+   * gdk_x11_get_xatom_name (): callers print or compare it unchecked. */
+  if (display != NULL && GDK_IS_DISPLAY (display) && !GDK_IS_DISPLAY_X11 (display))
+    return "";
+
   g_return_val_if_fail (GDK_IS_DISPLAY (display), NULL);
 
   return get_atom_name (gdk_x11_xatom_to_atom_for_display (display, xatom));
@@ -521,6 +556,13 @@ gdk_x11_get_xatom_name_for_display (GdkDisplay *display,
 const gchar *
 gdk_x11_get_xatom_name (Atom xatom)
 {
+  GdkDisplay *display = gdk_display_get_default ();
+
+  /* No default display, or a non-X11 one (Wayland): no X atoms.  Keep the
+   * "never NULL" contract with an empty name. */
+  if (display == NULL || !GDK_IS_DISPLAY_X11 (display))
+    return "";
+
   return get_atom_name (gdk_x11_xatom_to_atom (xatom));
 }
 

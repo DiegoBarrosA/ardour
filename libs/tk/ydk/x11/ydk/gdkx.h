@@ -49,6 +49,10 @@ Colormap gdk_x11_colormap_get_xcolormap   (GdkColormap *colormap);
 Display *gdk_x11_cursor_get_xdisplay      (GdkCursor   *cursor);
 Cursor   gdk_x11_cursor_get_xcursor       (GdkCursor   *cursor);
 Display *gdk_x11_display_get_xdisplay     (GdkDisplay  *display);
+/* ydk-wayland: TRUE for a live X11 display, FALSE for NULL and for a Wayland
+ * display.  Test it before using GDK_DISPLAY_XDISPLAY, GDK_WINDOW_XID and the
+ * other X11 handle macros: on a Wayland display they give NULL and 0. */
+gboolean gdk_x11_display_is_x11           (GdkDisplay  *display);
 Visual * gdk_x11_visual_get_xvisual       (GdkVisual   *visual);
 #if !defined(GDK_DISABLE_DEPRECATED) || defined(GDK_COMPILATION)
 Display *gdk_x11_gc_get_xdisplay          (GdkGC       *gc);

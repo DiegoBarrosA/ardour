@@ -76,6 +76,23 @@ struct _GdkKeymapClass
   void (*direction_changed) (GdkKeymap *keymap);
   void (*keys_changed)      (GdkKeymap *keymap);
   void (*state_changed)     (GdkKeymap *keymap);
+
+  /* ydk-wayland: GTK2 had gdk_keymap_translate_keyboard_state() and
+   * gdk_keymap_lookup_key() implemented per-backend, which cannot work
+   * with two backends in one library.  They are dispatched here, exactly
+   * as GTK+ 3 does. */
+  gboolean  (*translate_keyboard_state) (GdkKeymap      *keymap,
+					 guint           hardware_keycode,
+					 GdkModifierType state,
+					 gint            group,
+					 guint          *keyval,
+					 gint           *effective_group,
+					 gint           *level,
+					 GdkModifierType *consumed_modifiers);
+  guint     (*lookup_key)               (GdkKeymap       *keymap,
+					 const GdkKeymapKey *key);
+  gboolean  (*key_is_modifier)          (GdkKeymap *keymap,
+					 guint      hardware_keycode);
 };
 
 GType gdk_keymap_get_type (void) G_GNUC_CONST;
