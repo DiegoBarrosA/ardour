@@ -1663,6 +1663,16 @@ _gdk_wayland_seat_surface_gone (GDKWDisplayWayland *wd,
 
   if (seat->pointer_focus == impl)
     pointer_focus_lost (wd, FALSE);
+  else if (seat->pointer_target == impl)
+    {
+      /* A button is down, so the compositor kept the focus on the surface of
+       * the press, and the popup under the pointer goes away (Escape,
+       * popup_done, hide).  The pointer is now over what is below it.  Without
+       * this the next scroll goes to the dead popup and a leave is queued for
+       * it instead of for the window that GDK has the pointer in. */
+      seat->pointer_target = seat->pointer_focus;
+      update_pointer_target (wd, seat->buttons_down != 0);
+    }
 
   if (seat->keyboard_focus == impl)
     {
@@ -2191,6 +2201,7 @@ _gdk_wayland_test_seat_info (GdkDisplay *display, GDKWTestSeatInfo *info)
   info->repeat_count = seat->repeat.count;
   info->seat_version = seat->seat_version;
   info->explicit_grab_active = seat->grab.active;
+  info->pointer_target = seat->pointer_target ? seat->pointer_target->wrapper : NULL;
 
   return TRUE;
 }

@@ -815,6 +815,7 @@ main (int argc, char **argv)
   main_win = gtk_window_new (GTK_WINDOW_TOPLEVEL);
   gtk_window_set_title (GTK_WINDOW (main_win), "T0.12 menus");
   gtk_window_set_default_size (GTK_WINDOW (main_win), 520, 330);
+  gtk_widget_add_events (main_win, GDK_SCROLL_MASK); /* s26 checks where a scroll goes */
   gtk_window_set_resizable (GTK_WINDOW (main_win), FALSE);
   box = gtk_vbox_new (FALSE, 6);
   bar = build_menubar ();

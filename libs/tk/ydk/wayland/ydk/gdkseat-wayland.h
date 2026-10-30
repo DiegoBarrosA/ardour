@@ -140,6 +140,7 @@ typedef struct
   guint      repeat_count;      /* repeats synthesised since the last press */
   guint      seat_version;      /* wl_seat version the pointer code assumes */
   gboolean   explicit_grab_active; /* backend record of a gdk_pointer_grab () */
+  GdkWindow *pointer_target;    /* window GDK sees the pointer in (differs from pointer_focus under a held button) */
 } GDKWTestSeatInfo;
 
 /* keyboard ---------------------------------------------------------------*/

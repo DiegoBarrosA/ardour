@@ -402,6 +402,85 @@ test_stray_release (void)
   reset_after_case ();
 }
 
+/* ---- C: the popup under a held button goes away ------------------------------ */
+
+/* With a button down the compositor keeps the focus on the surface of the press, and the
+ * backend aims the events at the popup under the pointer.  When that popup is hidden (Escape)
+ * or ended by the compositor (popup_done), the pointer is over the main window again.  The
+ * target has to move at once: the next scroll and the leave of the pointer belong to the main
+ * window, not to a window that is gone. */
+
+static int scroll_main, scroll_other, leave_main, leave_other;
+
+static void
+on_event_c (GdkEvent *e, gpointer data)
+{
+  if (e->type == GDK_SCROLL)
+    {
+      if (e->any.window == main_win->window || gdk_window_get_toplevel (e->any.window) == main_win->window)
+        scroll_main++;
+      else
+        scroll_other++;
+    }
+  else if (e->type == GDK_LEAVE_NOTIFY)
+    {
+      if (e->any.window == main_win->window)
+        leave_main++;
+      else if (gdk_window_get_toplevel (e->any.window) != main_win->window)
+        leave_other++;
+    }
+  on_event (e, data);
+}
+
+static void
+test_dismiss_under_held_button (gboolean compositor)
+{
+  gdouble x, y;
+  GDKWTestSeatInfo si;
+  const char *what = compositor ? "popup_done" : "hide";
+
+  gdk_event_handler_set (on_event_c, NULL, NULL);
+  if (!open_bar_menu_held ())
+    return;
+  menu_item_centre (1, &x, &y);
+  /* the pointer moves over the popup: the target is the popup */
+  HOOK (_gdk_wayland_test_pointer_motion (disp, tick (), 40, 40), "motion over the popup");
+  t_pump_ms (50);
+  si = seat_info ();
+  T_CHECK (si.pointer_focus == main_win->window, "C %s: the focus stays on the main window", what);
+  T_CHECK (si.pointer_target == GTK_WIDGET (GTK_MENU (bar_menu)->toplevel)->window,
+           "C %s: the target is the popup while the pointer is over it", what);
+
+  if (compositor)
+    HOOK (_gdk_wayland_test_popup_done (GTK_WIDGET (GTK_MENU (bar_menu)->toplevel)->window), "popup_done");
+  else
+    {
+      gtk_menu_shell_deactivate (GTK_MENU_SHELL (GTK_WIDGET (bar_file)->parent));
+      gtk_menu_popdown (GTK_MENU (bar_menu));
+    }
+  t_pump_ms (100);
+  si = seat_info ();
+  T_CHECK (si.pointer_focus == main_win->window, "C %s: the focus is still the main window", what);
+  T_CHECK (si.pointer_target == main_win->window,
+           "C %s: the target is back on the main window as soon as the popup is gone", what);
+
+  /* the first event after the dismissal: a scroll and then the leave */
+  scroll_main = scroll_other = leave_main = leave_other = 0;
+  HOOK (_gdk_wayland_test_pointer_axis_source (disp, GDKW_TEST_AXIS_SOURCE_WHEEL), "axis source");
+  HOOK (_gdk_wayland_test_pointer_axis_discrete (disp, GDKW_TEST_AXIS_VERTICAL, 1), "axis discrete");
+  HOOK (_gdk_wayland_test_pointer_axis (disp, tick (), GDKW_TEST_AXIS_VERTICAL, 10.0), "axis");
+  HOOK (_gdk_wayland_test_pointer_frame (disp), "frame");
+  t_pump_ms (50);
+  T_CHECK (scroll_main >= 1 && scroll_other == 0, "C %s: the scroll reaches the main window (%d, other %d)", what,
+           scroll_main, scroll_other);
+  HOOK (_gdk_wayland_test_pointer_button (disp, tick_long (), GDKW_TEST_BTN_LEFT, FALSE), "release");
+  HOOK (_gdk_wayland_test_pointer_leave (disp, main_win->window), "leave");
+  t_pump_ms (50);
+  T_CHECK (leave_other == 0, "C %s: no leave goes to a window of the dismissed menu (%d)", what, leave_other);
+  gdk_event_handler_set (on_event, NULL, NULL);
+  reset_after_case ();
+}
+
 /* ---- main -------------------------------------------------------------- */
 
 int
@@ -448,6 +527,8 @@ main (int argc, char **argv)
   test_leave_enter_popup_while_held ();
   test_leave_without_enter ();
   test_stray_release ();
+  test_dismiss_under_held_button (FALSE);
+  test_dismiss_under_held_button (TRUE);
 
   HOOK (_gdk_wayland_test_pointer_leave (disp, main_win->window), "pointer leave");
   HOOK (_gdk_wayland_test_keyboard_leave (disp, main_win->window), "keyboard leave");

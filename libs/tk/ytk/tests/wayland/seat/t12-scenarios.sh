@@ -657,3 +657,73 @@ s25_grab_serial() {
 }
 
 T12_ALL_SCENARIOS="$T12_ALL_SCENARIOS s25_grab_serial"
+
+# A menu goes away while the button that opened it is still down.  The compositor keeps the pointer
+# focus on the surface of the press, and the backend aims the events at the popup under the pointer
+# (pointer_target).  When that popup is hidden, the target has to move back at once.  Otherwise the
+# next events go to a window that is gone and the LEAVE of the crossing goes to it as well.
+# Events for a window of the dismissed menu after its UNMAP are stale.
+stale_menu_events() { # menu-label: EV lines for windows of that menu after its UNMAP in this step
+  since | awk -v m="$1" '
+    $0 ~ "^EV +UNMAP .*popup\\[" m "\\]" { f = 1; next }
+    f && /^EV +/ && $0 !~ /^EV +(UNMAP|MAP|CONFIGURE|VISIBILITY|WINDOW_STATE)/ && ($0 ~ "popup\\[" m "\\]" || $0 ~ "child:[0-9a-fx]+ " m " " || $0 ~ "item\\[(New|Open Recent|Close|GtkSeparatorMenuItem)\\]") { print }'
+}
+check_no_stale_events() { # desc menu-label
+  local s; s=$(stale_menu_events "$2")
+  if [ -z "$s" ]; then ok "$1"; else fail "$1 (stale: $(printf '%s' "$s" | head -n 3 | cut -c1-110 | tr '\n' ';'))"; fi
+}
+
+drag_to_new_held() { # opens File by a held press and drags onto New
+  hover $(center bar:File)
+  press_hold $(center bar:File); expect "press on File shows the menu" 'SIG show menu\[File\]'; refresh_geom
+  hovv $(item_center File "New")
+  expect "New is selected during the drag" 'SIG select item\[New\]'
+}
+
+s26_dismiss_mid_drag() {
+  t12_reset; step s26-escape-mid-drag
+  drag_to_new_held
+  keys Escape
+  expect "File hides on Escape with the button down" 'SIG hide menu\[File\]'
+  # the first event after the dismissal is a scroll: nothing has moved the target yet
+  pause 100; arm_step; "$CLICK" wheel down 1
+  expect "a scroll right after Escape reaches the main window" 'EV SCROLL [^ ]+ (main|ctxarea|menubar) '
+  arm_step
+  hover 330 $(( OY + 100 )) 6
+  hover 360 $(( OY + 110 )) 4
+  release_held
+  pause 300
+  check_no_stale_events "no event reaches the hidden menu after Escape, the motion and the release" File
+  all_closed "closed after Escape"
+  open_file
+  hovv $(item_center File "New")
+  expect "the menu works again afterwards" 'SIG select item\[New\]'
+  keys Escape; pause 300; all_closed "closed again"
+
+  # the compositor ends the popup (popup_done): sway closes the popups of a toplevel that loses the
+  # keyboard focus
+  t12_reset quiet; step s26-popup-done-mid-drag
+  app_send win2; pause 900; place_win2; refresh_geom
+  hover $(center ctxarea)
+  drag_to_new_held
+  local id
+  id=$(swaymsg -s "$HARNESS_SWAYSOCK" -t get_tree -r | jq -r '.. | objects | select((.app_id? // "") | test("^[Tt]0_12")) | select(.window_rect.width == 260) | .id' | head -n 1)
+  swaymsg -s "$HARNESS_SWAYSOCK" -q "[con_id=$id] focus"
+  expect "File hides when the compositor ends the popup" 'SIG hide menu\[File\]' 2000
+  pause 100; arm_step; "$CLICK" wheel down 1
+  expect "a scroll right after popup_done reaches the main window" 'EV SCROLL [^ ]+ (main|ctxarea|menubar) '
+  arm_step
+  hover 330 $(( OY + 100 )) 6
+  hover 360 $(( OY + 110 )) 4
+  release_held
+  pause 300
+  check_no_stale_events "no event reaches the hidden menu after popup_done, the motion and the release" File
+  all_closed "closed after popup_done"
+  app_send win2-hide; pause 600
+  lclick $(center ctxarea); pause 300
+  open_file
+  expect_not "the menu stays open after the focus came back" 'SIG hide menu\[File\]' 400
+  keys Escape; pause 300; all_closed "closed again"
+}
+
+T12_ALL_SCENARIOS="$T12_ALL_SCENARIOS s26_dismiss_mid_drag"
