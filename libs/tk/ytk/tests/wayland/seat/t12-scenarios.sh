@@ -392,3 +392,24 @@ t12_run() { # [only list: s01 s02 ...]
   done
   t12_reset
 }
+
+# The title of a toplevel reaches the compositor: the one given at creation (GTK passes it as
+# GDK_WA_TITLE and does not call gdk_window_set_title at realize) and one set later.
+sway_names() { # "main NAME" and "win2 NAME" of the T0.12 windows, from the compositor
+  swaymsg -s "$HARNESS_SWAYSOCK" -t get_tree -r 2>/dev/null |
+    jq -r '.. | objects | select((.app_id? // "") | test("^[Tt]0_12")) | "\(if .window_rect.width == 260 then "win2" else "main" end) \(.name // "null")"'
+}
+title_is() { # which expected
+  if sway_names | grep -qxF "$1 $2"; then ok "$1 window title is \"$2\""; else fail "$1 window title is not \"$2\" (compositor has: $(sway_names | tr '\n' ';'))"; fi
+}
+s20_titles() {
+  t12_reset; step s20-titles
+  title_is main "T0.12 menus"
+  app_send win2; pause 900
+  title_is win2 "T0.12 second"
+  app_send "title Renamed main"; pause 400
+  title_is main "Renamed main"
+  app_send "title T0.12 menus"; app_send win2-hide; pause 400
+}
+
+T12_ALL_SCENARIOS="$T12_ALL_SCENARIOS s20_titles"

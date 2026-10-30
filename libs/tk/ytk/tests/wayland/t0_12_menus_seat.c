@@ -24,6 +24,8 @@
  *   geom       dump the geometry of the widgets, the mapped toplevels, and the
  *              items of every mapped menu, relative to the main window
  *   mark TEXT  log a MARK line (the driver uses it to cut the log into steps)
+ *   win2, win2-hide   show or hide the second toplevel
+ *   title TEXT        set the title of the main window
  *   quit       destroy the window and print the verdict
  * End of file on stdin is the same as quit.
  *
@@ -687,6 +689,8 @@ stdin_cb (GIOChannel *ch, GIOCondition cond, gpointer d)
         lg ("MARK", "%s", line + 5);
       else if (!strcmp (line, "win2"))
         show_win2 ();
+      else if (g_str_has_prefix (line, "title "))
+        gtk_window_set_title (GTK_WINDOW (main_win), line + 6);
       else if (!strcmp (line, "win2-hide"))
         {
           if (win2)

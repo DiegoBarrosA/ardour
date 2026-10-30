@@ -45,6 +45,8 @@ void _gdk_wayland_window_hints_configure (GDKWWindowImplWayland *impl,
                                           gsize n_states);
 void _gdk_wayland_window_hints_free (GDKWWindowImplWayland *impl);
 void _gdk_wayland_window_hints_mapped (GDKWWindowImplWayland *impl);
+void _gdk_wayland_window_hints_set_initial_title (GDKWWindowImplWayland *impl,
+                                                 const gchar *title);
 
 void _gdk_wayland_window_set_title (GdkWindow *window, const gchar *title);
 void _gdk_wayland_window_set_role (GdkWindow *window, const gchar *role);
@@ -557,6 +559,24 @@ _gdk_wayland_window_hints_free (GDKWWindowImplWayland *impl)
 }
 
 /*************** strings and flags ***************/
+
+/* The title a window is created with (GDK_WA_TITLE, or the default one),
+ * kept until the xdg_toplevel exists.  gdk_window_new () has no impl to
+ * resolve yet, so this takes the impl.  gdk_window_set_title () changes it
+ * later. */
+void
+_gdk_wayland_window_hints_set_initial_title (GDKWWindowImplWayland *impl,
+                                             const gchar *title)
+{
+  GDKWHints *h;
+
+  if (impl == NULL)
+    return;
+
+  h = hints_get (impl);
+  g_free (h->title);
+  h->title = valid_copy (title);
+}
 
 void
 _gdk_wayland_window_set_title (GdkWindow *window, const gchar *title)

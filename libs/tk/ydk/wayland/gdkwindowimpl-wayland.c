@@ -57,6 +57,8 @@ void _gdk_wayland_window_hints_configure (GDKWWindowImplWayland *impl,
 					  gsize n_states);
 void _gdk_wayland_window_hints_free (GDKWWindowImplWayland *impl);
 void _gdk_wayland_window_hints_mapped (GDKWWindowImplWayland *impl);
+void _gdk_wayland_window_hints_set_initial_title (GDKWWindowImplWayland *impl,
+						 const gchar *title);
 
 static void gdk_window_impl_iface_init (GdkWindowImplIface *iface);
 static void gdk_paintable_iface_init (GdkPaintableIface *iface);
@@ -1078,6 +1080,30 @@ _gdk_wayland_window_impl_new (GdkWindow     *window,
    * matches the desktop entry name on most compositors. */
   if ((attributes_mask & GDK_WA_WMCLASS) && attributes->wmclass_class)
     impl->wmclass = g_strdup (attributes->wmclass_class);
+
+  /* Window title, as gdk_window_new () does on X11: GTK passes it as
+   * GDK_WA_TITLE and does not call gdk_window_set_title () at realize. */
+  switch (private->window_type)
+    {
+    case GDK_WINDOW_TOPLEVEL:
+    case GDK_WINDOW_DIALOG:
+    case GDK_WINDOW_TEMP:
+      {
+        const gchar *title = NULL;
+
+        if (attributes_mask & GDK_WA_TITLE)
+          title = attributes->title;
+        if (title == NULL)
+          title = g_get_application_name ();
+        if (title == NULL)
+          title = g_get_prgname ();
+
+        _gdk_wayland_window_hints_set_initial_title (impl, title);
+      }
+      break;
+    default:
+      break;
+    }
 
   /* M9: override redirect decides the popup role (D1 rule 4) */
   if ((attributes_mask & GDK_WA_NOREDIR) && attributes->override_redirect)
