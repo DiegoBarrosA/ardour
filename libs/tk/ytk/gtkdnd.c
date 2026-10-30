@@ -46,6 +46,7 @@
 #include "gtkinvisible.h"
 #include "gtkmain.h"
 #include "gtkplug.h"
+#include "gtkprivate.h"
 #include "gtkstock.h"
 #include "gtktooltip.h"
 #include "gtkwindow.h"
@@ -462,6 +463,17 @@ grab_dnd_keys (GtkWidget *widget,
   GdkWindow *window, *root;
   gint keycode;
 
+  /* gdkconfig.h can define GDK_WINDOWING_X11 together with
+   * GDK_WINDOWING_WAYLAND. On a display that is not X11, there is no
+   * Display and no root window to grab on. Use the portable keyboard
+   * grab, like the non-X11 build below.
+   */
+  if (!GTK_DISPLAY_IS_X11 (gtk_widget_get_display (widget)))
+    {
+      gdk_keyboard_grab (widget->window, FALSE, time);
+      return;
+    }
+
   window = widget->window;
   root = gdk_screen_get_root_window (gtk_widget_get_screen (widget));
 
@@ -493,6 +505,13 @@ ungrab_dnd_keys (GtkWidget *widget,
   guint i;
   GdkWindow *window, *root;
   gint keycode;
+
+  /* See grab_dnd_keys. Release the portable grab on a non-X11 display. */
+  if (!GTK_DISPLAY_IS_X11 (gtk_widget_get_display (widget)))
+    {
+      gdk_display_keyboard_ungrab (gtk_widget_get_display (widget), time);
+      return;
+    }
 
   window = widget->window;
   root = gdk_screen_get_root_window (gtk_widget_get_screen (widget));
