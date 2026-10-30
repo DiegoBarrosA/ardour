@@ -17,6 +17,7 @@
  *                    but not when the parent lost the keyboard focus.
  * E  committed popup events that come before the first configure of the popup go to the popup.
  * F  monitor view    the monitor list is relative to the output of the window in use.
+ * G  screen signals  size-changed and monitors-changed fire once per output update.
  *
  * The program SKIPs on X11.
  *
@@ -656,6 +657,71 @@ test_monitor_view (void)
   T_CHECK (rect_is (&g, real.x, real.y, real.width, real.height), "F: one monitor: the rectangle is the compositor's");
 }
 
+/* ---- G: the screen signals fire once per output update ------------------------ */
+
+/* An atomic update of an output ends with wl_output.done.  With xdg_output below version 3 the
+ * compositor sends xdg_output.done too.  GTK re-lays out its windows on "size-changed" and
+ * "monitors-changed", so the pair must fire once per update that changes something. */
+static int sig_size, sig_mon;
+
+static void
+on_size_changed (GdkScreen *s, gpointer d)
+{
+  sig_size++;
+}
+
+static void
+on_monitors_changed (GdkScreen *s, gpointer d)
+{
+  sig_mon++;
+}
+
+#define SIGS(want, what) \
+  T_CHECK (sig_size == (want) && sig_mon == (want), "G: %s: size-changed %d, monitors-changed %d, want %d", (what), sig_size, sig_mon, (want))
+
+static void
+test_screen_signals (void)
+{
+  GdkScreen *scr = gdk_display_get_default_screen (disp);
+  GdkRectangle real;
+  guint id = 0;
+
+  gdk_screen_get_monitor_geometry (scr, 0, &real);
+  g_signal_connect (scr, "size-changed", G_CALLBACK (on_size_changed), NULL);
+  g_signal_connect (scr, "monitors-changed", G_CALLBACK (on_monitors_changed), NULL);
+
+  sig_size = sig_mon = 0;
+  HOOK (_gdk_wayland_test_output_add (disp, real.width + 10, 0, 800, 600, 1, 0, &id), "add an output");
+  SIGS (1, "a new output");
+
+  sig_size = sig_mon = 0;
+  HOOK (_gdk_wayland_test_output_xdg (disp, id, 3, real.width + 10, 0, 1000, 500, FALSE), "xdg v3 size");
+  SIGS (0, "xdg_output v3: nothing happens before wl_output.done");
+  HOOK (_gdk_wayland_test_output_done (disp, id), "wl_output.done");
+  SIGS (1, "xdg_output v3, wl_output.done ends the update");
+
+  sig_size = sig_mon = 0;
+  HOOK (_gdk_wayland_test_output_xdg (disp, id, 2, real.width + 10, 0, 1100, 600, TRUE), "xdg v2 size and done");
+  HOOK (_gdk_wayland_test_output_done (disp, id), "wl_output.done");
+  SIGS (1, "xdg_output v2: xdg_output.done and wl_output.done make one update");
+
+  sig_size = sig_mon = 0;
+  HOOK (_gdk_wayland_test_output_done (disp, id), "wl_output.done first");
+  HOOK (_gdk_wayland_test_output_xdg (disp, id, 2, real.width + 10, 0, 1200, 700, TRUE), "xdg v2 size and done after");
+  SIGS (1, "xdg_output v2, wl_output.done before xdg_output.done");
+
+  sig_size = sig_mon = 0;
+  HOOK (_gdk_wayland_test_output_xdg (disp, id, 2, real.width + 10, 0, 1200, 700, TRUE), "the same again");
+  HOOK (_gdk_wayland_test_output_done (disp, id), "wl_output.done again");
+  SIGS (0, "an update that changes nothing");
+
+  sig_size = sig_mon = 0;
+  HOOK (_gdk_wayland_test_output_remove (disp, id), "remove the output");
+  SIGS (1, "a removed output");
+  g_signal_handlers_disconnect_by_func (scr, G_CALLBACK (on_size_changed), NULL);
+  g_signal_handlers_disconnect_by_func (scr, G_CALLBACK (on_monitors_changed), NULL);
+}
+
 /* ---- main -------------------------------------------------------------- */
 
 int
@@ -708,6 +774,7 @@ main (int argc, char **argv)
   test_popup_done_before_configure (TRUE);
   test_drag_onto_committed_popup ();
   test_monitor_view ();
+  test_screen_signals ();
 
   HOOK (_gdk_wayland_test_pointer_leave (disp, main_win->window), "pointer leave");
   HOOK (_gdk_wayland_test_keyboard_leave (disp, main_win->window), "keyboard leave");

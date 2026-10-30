@@ -4,22 +4,25 @@
 #
 # Pointer helpers keep the pointer position in PX PY, so "hover" moves in small steps like a
 # mouse does and the compositor sends motion, enter and leave events on the way.
-#
-# Results on wayland/m11 at 2e81c8dc10 (headless sway 1.12, ffm = focus_follows_mouse):
-#   s12-dropdown-drag   FAILED: press on a dropdown button, drag onto an item, release: the item was
-#                       not activated and the menu stayed open (Ardour: it closed without activating).
-#                       Events during the drag went to the main surface and were not mapped to the popup.
-#   s17-second-window   FAILED, but the cause is the compositor, not the backend.  Sway closes the
-#                       popups of a toplevel when that toplevel loses keyboard focus (send_unfocus in
-#                       sway/input/seat.c calls view_close_popups, which destroys every xdg_popup of
-#                       the view, with or without xdg_popup.grab).  So a menu closes when focus moves
-#                       to another toplevel of the same client: on a click there (the click is then
-#                       delivered, X11 would swallow it) and with focus_follows_mouse when the pointer
-#                       enters it.  The scenario now checks that the menu closes cleanly and that both
-#                       windows work afterwards.
-# Every other scenario passes with and without ffm, at scale 2 and at scale 1.25.
+# Two scenarios failed at 2e81c8dc10 (headless sway 1.12, ffm = focus_follows_mouse).  Both pass now:
+#   s12-dropdown-drag   Press on a dropdown button, drag onto an item, release: the item was not
+#                       activated and the menu stayed open (Ardour: it closed without activating).
+#                       Events during the drag went to the main surface and were not mapped to the
+#                       popup.  Fixed by cec88459e5.
+#   s17-second-window   Not a backend bug.  Sway closes the popups of a toplevel when that toplevel
+#                       loses keyboard focus (send_unfocus in sway/input/seat.c calls
+#                       view_close_popups, which destroys every xdg_popup of the view, with or
+#                       without xdg_popup.grab).  So a menu closes when focus moves to another
+#                       toplevel of the same client: on a click there (the click is then delivered,
+#                       X11 would swallow it) and with focus_follows_mouse when the pointer enters
+#                       it.  The scenario checks that the menu closes cleanly and that both windows
+#                       work afterwards.
+# Scenarios s25 to s29 were added for the review findings of d247c1af1a..a9414374a9: grab serials
+# (s25), a gesture faster than the popup (s28), a menu dismissed under a held button (s26), a focus
+# change right after a menu opened (s27) and two outputs (s29, needs seat/sway-2out.conf).  The
+# deterministic checks of the same code paths are in T0.13.
+# Every scenario passes with and without ffm, at scale 2, at scale 1.25 and on two outputs.
 # T12_FFM is 1 when the sway of the run has focus_follows_mouse yes (run-seat-tests.sh sets it).
-
 PX=0; PY=0
 hover()  { arm; "$CLICK" path "$PX" "$PY" "$1" "$2" "${3:-8}"; PX=$1; PY=$2; }
 # into a menu from the item above it: straight down first, so the path does not cross the next menu bar item

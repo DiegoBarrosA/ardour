@@ -472,10 +472,21 @@
  *     first bound output stays display->wl_output and is mirrored into the
  *     legacy GDKWOutputInfo (scale, mode, mm, make, model) for old readers.
  *     Logical size of an output = mode / scale, width and height swapped for
- *     the odd wl_output transforms (90, 270, flipped 90, flipped 270).  The
- *     position is wl_output.geometry x, y.  xdg-output is NOT used: on a
- *     fractionally scaled output the compositor reports the rounded up
- *     integer scale and the monitor looks smaller than it is (known gap).
+ *     the odd wl_output transforms (90, 270, flipped 90, flipped 270).
+ *     M11 CHANGE: xdg-output IS used (zxdg_output_manager_v1, bound at
+ *     MIN (advertised, 3)).  On a fractionally scaled output the compositor
+ *     reports the rounded up integer scale in wl_output, so mode / scale made
+ *     the monitor look smaller than it is; the logical size of xdg_output
+ *     replaces it (mode / scale stays for a compositor without xdg-output and
+ *     for the fake outputs).  The position is xdg_output.logical_position when
+ *     it is there, else wl_output.geometry x, y: wlroots sends 0,0 in
+ *     wl_output.geometry.  The pending xdg_output state is applied by the
+ *     done that ends the update: wl_output.done, and also xdg_output.done
+ *     below version 3.  The two screen signals fire once per change of the
+ *     visible state (monitor rectangles, scales, screen size), so an update
+ *     that ends with two dones, or with one that changes nothing, signals
+ *     once.  The monitor list is reported relative to the output of the
+ *     window in use, see D2 in gdkm9-wayland.h (M11).
  *     Screen width and height = max (x + w), max (y + h) over the outputs
  *     (1024 x 768 when there is none).  The scale piece updates the
  *     GDKWScreenWayland size, the root window's width and height
@@ -519,7 +530,9 @@
  *     Nothing a hook does may run in a production path.
  *
  * D17 KNOWN GAPS (deliberate, go into PLANNING.md).
- *       - xdg-output is not used (D12).  Fractional outputs report ceil.
+ *       - (M11: closed) xdg-output is used since M11, see D12.  A compositor
+ *         without xdg-output still gets mode / scale, and a fractional output
+ *         reports ceil there.
  *       - Fractional scale without wp_viewporter degrades to the integer
  *         path (blur).  Not seen on any real compositor of note.
  *       - Direct cairo drawing on the core's cached surface outside an expose
@@ -1260,6 +1273,18 @@ gboolean _gdk_wayland_test_output_mode      (GdkDisplay *display, guint id,
 
 /* The real global_remove path for the output (fake or real). */
 gboolean _gdk_wayland_test_output_remove    (GdkDisplay *display, guint id);
+
+/* Pushes the xdg_output events of an output through the real listeners: the
+ * logical position and size and, with , xdg_output.done.  
+ * is the version of the xdg_output object that the output pretends to have
+ * (3 and up: no xdg_output.done is acted on, wl_output.done ends the update).
+ * wl_output.done alone is _gdk_wayland_test_output_done. */
+gboolean _gdk_wayland_test_output_xdg     (GdkDisplay *display, guint id,
+                                           guint version,
+                                           gint x, gint y,
+                                           gint width, gint height,
+                                           gboolean send_done);
+gboolean _gdk_wayland_test_output_done    (GdkDisplay *display, guint id);
 
 /* Real wl_surface enter / leave listeners with the output of @id. */
 gboolean _gdk_wayland_test_surface_enter    (GdkWindow *window, guint id);

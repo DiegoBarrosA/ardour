@@ -78,6 +78,7 @@ typedef struct
    * mode / scale is wrong for a scale like 1.25.  The size already has the
    * transform applied. */
   struct zxdg_output_v1 *xdg;
+  guint    xdg_version;               /* version of the xdg_output object, 3 and up have no done */
   gint     pending_xdg_w, pending_xdg_h;
   gint     xdg_w, xdg_h;              /* 0 until the first xdg_output.done */
 
@@ -127,6 +128,7 @@ struct _GDKWScaleDisplay
   struct zxdg_output_manager_v1 *xdg_manager;
   guint32               xdg_manager_name;
   gboolean              force_fractional;
+  gchar                *emitted_sig;     /* what the screen signals last reported */
   gboolean              finalized;
 
   gboolean                cursor_seen;
@@ -169,6 +171,7 @@ scale_state_free (gpointer data)
       g_free (out);
     }
   g_list_free (st->outputs);
+  g_free (st->emitted_sig);
 
   for (l = st->surfaces; l; l = l->next)
     {
@@ -882,16 +885,48 @@ mirror_first (GDKWScaleDisplay *st)
   info->model = g_strdup (head->model);
 }
 
+/* What the two screen signals report: the monitors of the layout and the
+ * screen size.  An update that does not change it emits nothing. */
+static gchar *
+screen_signature (GDKWScaleDisplay *st)
+{
+  GString *s = g_string_new (NULL);
+  GDKWOutput *out;
+  gint i, w, h;
+
+  for (i = 0; (out = monitor_nth (st, i)) != NULL; i++)
+    g_string_append_printf (s, "%d,%d,%d,%d,%d;", out->x, out->y,
+                            out->logical_w, out->logical_h,
+                            output_scale_of (out));
+  bounding_box (st, &w, &h);
+  g_string_append_printf (s, "%dx%d", w, h);
+  return g_string_free (s, FALSE);
+}
+
+/* An atomic output update ends with wl_output.done.  A compositor that binds
+ * xdg_output below version 3 sends xdg_output.done as well, and both end up
+ * here.  The signals fire once per change of the visible state, so the
+ * second done of one update reports nothing. */
 static void
 emit_screen_signals (GDKWScaleDisplay *st)
 {
   GdkScreen *screen;
+  gchar *sig;
 
   if (st->finalized || st->display == NULL)
     return;
   screen = st->display->default_screen;
   if (screen == NULL || !GDKW_IS_SCREEN_WAYLAND (screen))
     return;
+
+  sig = screen_signature (st);
+  if (st->emitted_sig != NULL && strcmp (st->emitted_sig, sig) == 0)
+    {
+      g_free (sig);
+      return;
+    }
+  g_free (st->emitted_sig);
+  st->emitted_sig = sig;
 
   g_object_ref (screen);
   g_signal_emit_by_name (screen, "size-changed");
@@ -1100,6 +1135,9 @@ xdg_output_done (void *data, struct zxdg_output_v1 *xdg)
 {
   GDKWOutput *out = data;
 
+  /* Deprecated from version 3: wl_output.done ends the update. */
+  if (out->xdg_version >= 3)
+    return;
   output_apply (out);
 }
 
@@ -1133,7 +1171,10 @@ output_make_xdg (GDKWScaleDisplay *st, GDKWOutput *out)
   out->xdg = zxdg_output_manager_v1_get_xdg_output (st->xdg_manager,
                                                    out->proxy);
   if (out->xdg != NULL)
-    zxdg_output_v1_add_listener (out->xdg, &xdg_output_listener, out);
+    {
+      out->xdg_version = zxdg_output_v1_get_version (out->xdg);
+      zxdg_output_v1_add_listener (out->xdg, &xdg_output_listener, out);
+    }
 }
 
 static void
@@ -1256,12 +1297,14 @@ _gdk_wayland_scale_bind_global (GDKWDisplayWayland *display,
       st = scale_state_get (display, TRUE);
       if (st->xdg_manager == NULL && !st->finalized)
         {
-          /* version 2 adds name and description, version 3 deprecates done:
-           * wl_output.done then ends an update.  Version 2 is enough. */
+          /* Version 2 adds name and description.  Version 3 deprecates done:
+           * the compositor then sends no xdg_output.done and wl_output.done
+           * ends the update, so one update is one done.  Pending xdg_output
+           * state is applied by output_apply for both. */
           st->xdg_manager =
             wl_registry_bind (registry, name,
                               &zxdg_output_manager_v1_interface,
-                              MIN (version, 2));
+                              MIN (version, 3));
           st->xdg_manager_name = name;
           for (l = st->outputs; l; l = l->next)
             output_make_xdg (st, l->data);
@@ -1733,6 +1776,36 @@ _gdk_wayland_test_output_mode (GdkDisplay *display, guint id,
     return FALSE;
   output_mode (out, output_key (out), WL_OUTPUT_MODE_CURRENT, mode_width,
                mode_height, out->refresh);
+  output_done (out, output_key (out));
+  return TRUE;
+}
+
+gboolean
+_gdk_wayland_test_output_xdg (GdkDisplay *display, guint id, guint version,
+                              gint x, gint y, gint width, gint height,
+                              gboolean send_done)
+{
+  GDKWScaleDisplay *st = scale_state_get (display_checked (display), FALSE);
+  GDKWOutput *out = st != NULL ? output_by_id (st, id) : NULL;
+
+  if (out == NULL)
+    return FALSE;
+  out->xdg_version = version;
+  xdg_output_logical_position (out, NULL, x, y);
+  xdg_output_logical_size (out, NULL, width, height);
+  if (send_done)
+    xdg_output_done (out, NULL);
+  return TRUE;
+}
+
+gboolean
+_gdk_wayland_test_output_done (GdkDisplay *display, guint id)
+{
+  GDKWScaleDisplay *st = scale_state_get (display_checked (display), FALSE);
+  GDKWOutput *out = st != NULL ? output_by_id (st, id) : NULL;
+
+  if (out == NULL)
+    return FALSE;
   output_done (out, output_key (out));
   return TRUE;
 }
