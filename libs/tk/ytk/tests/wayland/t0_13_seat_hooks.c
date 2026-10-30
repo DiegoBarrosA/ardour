@@ -619,7 +619,7 @@ test_monitor_view (void)
   GDKWTestScaleInfo sc;
   GdkRectangle real, g, g1;
   guint rid, fid = 0;
-  gint sw, sh;
+  gint sw, sh, mm_w0, mm_h0;
 
   gdk_screen_get_monitor_geometry (scr, 0, &real);
   T_CHECK (gdk_screen_get_n_monitors (scr) == 1, "F: one monitor to start with");
@@ -642,6 +642,16 @@ test_monitor_view (void)
   T_CHECK (rect_is (&g1, real.width + 40, 60, 2560, 1440), "F: monitor 1 is the second output at its offset (%d %d %d %d)", g1.x, g1.y,
            g1.width, g1.height);
 
+  /* the size of the screen in mm has the density of the output that the user works in, like monitor 0 */
+  mm_w0 = gdk_screen_get_monitor_width_mm (scr, 0);
+  mm_h0 = gdk_screen_get_monitor_height_mm (scr, 0);
+  HOOK (_gdk_wayland_test_output_mm (disp, rid, 300, 170), "first output 300x170 mm");
+  HOOK (_gdk_wayland_test_output_mm (disp, fid, 600, 340), "second output 600x340 mm");
+  sw = gdk_screen_get_width (scr);
+  T_CHECK (abs (gdk_screen_get_width_mm (scr) - (gint) (sw * 300.0 / real.width + 0.5)) <= 1,
+           "F: a window on the first output: the screen is %d mm wide at the density of the first output (%d mm)", (int) (sw * 300.0 / real.width + 0.5),
+           gdk_screen_get_width_mm (scr));
+
   /* the window moves to the second output */
   HOOK (_gdk_wayland_test_surface_enter (main_win->window, fid), "enter second output");
   HOOK (_gdk_wayland_test_surface_leave (main_win->window, rid), "leave first output");
@@ -656,6 +666,9 @@ test_monitor_view (void)
            "F: a point right of the first output's width but inside the window is on monitor 0");
   T_CHECK (gdk_screen_get_monitor_at_window (scr, main_win->window) == 0, "F: the window is on monitor 0");
   T_CHECK (gdk_screen_get_width (scr) == sw && gdk_screen_get_height (scr) == sh, "F: the screen size does not change with the window");
+  T_CHECK (abs (gdk_screen_get_width_mm (scr) - (gint) (sw * 600.0 / 2560 + 0.5)) <= 1,
+           "F: a window on the second output: the screen is %d mm wide at the density of the second output (%d mm)",
+           (int) (sw * 600.0 / 2560 + 0.5), gdk_screen_get_width_mm (scr));
 
   /* and back */
   HOOK (_gdk_wayland_test_surface_enter (main_win->window, rid), "enter first output");
@@ -664,6 +677,7 @@ test_monitor_view (void)
   T_CHECK (rect_is (&g, real.x, real.y, real.width, real.height), "F: back on the first output: monitor 0 is the first output");
 
   HOOK (_gdk_wayland_test_output_remove (disp, fid), "remove the second output");
+  HOOK (_gdk_wayland_test_output_mm (disp, rid, mm_w0, mm_h0), "first output, its own size in mm");
   T_CHECK (gdk_screen_get_n_monitors (scr) == 1, "F: one monitor at the end");
   gdk_screen_get_monitor_geometry (scr, 0, &g);
   T_CHECK (rect_is (&g, real.x, real.y, real.width, real.height), "F: one monitor: the rectangle is the compositor's");

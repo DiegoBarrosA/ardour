@@ -1286,6 +1286,11 @@ gboolean _gdk_wayland_test_output_xdg     (GdkDisplay *display, guint id,
                                            gboolean send_done);
 gboolean _gdk_wayland_test_output_done    (GdkDisplay *display, guint id);
 
+/* Real geometry + done listeners with a new physical size in mm; the
+ * position, make, model and transform stay. */
+gboolean _gdk_wayland_test_output_mm      (GdkDisplay *display, guint id,
+                                           gint mm_width, gint mm_height);
+
 /* Real wl_surface enter / leave listeners with the output of @id. */
 gboolean _gdk_wayland_test_surface_enter    (GdkWindow *window, guint id);
 gboolean _gdk_wayland_test_surface_leave    (GdkWindow *window, guint id);

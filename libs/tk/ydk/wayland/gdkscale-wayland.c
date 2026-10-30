@@ -1573,7 +1573,7 @@ gint
 _gdk_wayland_scale_screen_width_mm (GdkDisplay *display)
 {
   GDKWScaleDisplay *st = scale_state_get (display_checked (display), FALSE);
-  GDKWOutput *first = monitor_nth (st, 0);
+  GDKWOutput *first = view_nth (st, 0);   /* the reference output, like monitor 0 */
   gint w, h;
 
   if (st == NULL)
@@ -1589,7 +1589,7 @@ gint
 _gdk_wayland_scale_screen_height_mm (GdkDisplay *display)
 {
   GDKWScaleDisplay *st = scale_state_get (display_checked (display), FALSE);
-  GDKWOutput *first = monitor_nth (st, 0);
+  GDKWOutput *first = view_nth (st, 0);   /* the reference output, like monitor 0 */
   gint w, h;
 
   if (st == NULL)
@@ -1817,6 +1817,26 @@ _gdk_wayland_test_output_done (GdkDisplay *display, guint id)
 
   if (out == NULL)
     return FALSE;
+  output_done (out, output_key (out));
+  return TRUE;
+}
+
+gboolean
+_gdk_wayland_test_output_mm (GdkDisplay *display, guint id,
+                             gint mm_width, gint mm_height)
+{
+  GDKWScaleDisplay *st = scale_state_get (display_checked (display), FALSE);
+  GDKWOutput *out = st != NULL ? output_by_id (st, id) : NULL;
+  gchar *make, *model;
+
+  if (out == NULL)
+    return FALSE;
+  make = g_strdup (out->make);
+  model = g_strdup (out->model);
+  output_geometry (out, output_key (out), out->x, out->y, mm_width, mm_height,
+                   out->subpixel, make, model, out->transform);
+  g_free (make);
+  g_free (model);
   output_done (out, output_key (out));
   return TRUE;
 }
