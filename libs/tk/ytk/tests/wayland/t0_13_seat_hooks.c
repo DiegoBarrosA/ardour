@@ -20,7 +20,7 @@
 #include <ydk/gdkm10-wayland.h>
 
 static GdkDisplay *disp;
-static GtkWidget *main_win;
+static GtkWidget *main_win, *bar_file, *bar_menu;
 static guint32 clock_ms = 100000;
 
 static guint32
@@ -28,6 +28,43 @@ tick (void)
 {
   clock_ms += 40;
   return clock_ms;
+}
+
+/* GTK ignores a release less than 500 ms after the press that opened a menu */
+static guint32
+tick_long (void)
+{
+  clock_ms += 700;
+  return clock_ms;
+}
+
+/* what the GDK event queue delivered */
+static struct
+{
+  int press, release, motion, activate;
+  GdkWindow *last_release_window;
+} ev;
+
+static void
+on_event (GdkEvent *e, gpointer data)
+{
+  switch (e->type)
+    {
+    case GDK_BUTTON_PRESS: ev.press++; break;
+    case GDK_BUTTON_RELEASE:
+      ev.release++;
+      ev.last_release_window = e->any.window;
+      break;
+    case GDK_MOTION_NOTIFY: ev.motion++; break;
+    default: break;
+    }
+  gtk_main_do_event (e);
+}
+
+static void
+on_item_activate (GtkMenuItem *i, gpointer data)
+{
+  ev.activate++;
 }
 
 #define HOOK(call, what) T_CHECK ((call), "hook failed: %s", what)
@@ -150,6 +187,7 @@ test_grab_serial_newest_press (void)
   kpress = last_key_serial ();
   HOOK (_gdk_wayland_test_keyboard_key (disp, tick (), GDKW_TEST_KEY_A, FALSE), "key up");
   T_CHECK ((gint32) (kpress - bpress) > 0, "the key press is newer than the button press");
+  t_pump_ms (30); /* GTK reads the four events before the menu opens, as it does with a real seat */
   gtk_menu_popup (GTK_MENU (menu), NULL, NULL, pos_func, NULL, 0, gtk_get_current_event_time ());
   T_CHECK (t_wait_until (menu_committed, menu, 2000), "A newest: committed after button, then key");
   pi = popup_info (menu);
@@ -164,6 +202,7 @@ test_grab_serial_newest_press (void)
   HOOK (_gdk_wayland_test_pointer_button (disp, tick (), GDKW_TEST_BTN_LEFT, TRUE), "button down 2");
   bpress = last_button_serial ();
   HOOK (_gdk_wayland_test_pointer_button (disp, tick (), GDKW_TEST_BTN_LEFT, FALSE), "button up 2");
+  t_pump_ms (30);
   menu = make_menu ();
   gtk_menu_popup (GTK_MENU (menu), NULL, NULL, pos_func, NULL, 0, gtk_get_current_event_time ());
   T_CHECK (t_wait_until (menu_committed, menu, 2000), "A newest: committed after key, then button");
@@ -173,7 +212,197 @@ test_grab_serial_newest_press (void)
   close_menu (menu);
 }
 
-/* ---- main --------------------------------------------------------------- */
+/* ---- B: a held button survives a focus change inside the client ---------------- */
+
+/* The compositor owns the button state.  A press that reached this client is still down until
+ * the release arrives, also when the compositor moves the pointer focus to another surface of
+ * the client in between (an xdg_popup grab does that on some compositors) and also when it sends
+ * an enter for the surface that already has the focus.  The release has to reach GTK, or the
+ * menu stays open and the item under the pointer is never activated. */
+
+static GDKWTestSeatInfo
+seat_info (void)
+{
+  GDKWTestSeatInfo si;
+
+  memset (&si, 0, sizeof si);
+  HOOK (_gdk_wayland_test_seat_info (disp, &si), "seat info");
+  return si;
+}
+
+static gboolean
+bar_menu_mapped (gpointer p)
+{
+  GDKWTestPopupInfo pi = popup_info (bar_menu);
+
+  return pi.state == GDKW_TEST_POPUP_MAPPED;
+}
+
+static gboolean
+bar_menu_gone (gpointer p)
+{
+  return !gtk_widget_get_mapped (bar_menu);
+}
+
+/* centre of a widget in the surface coordinates of the main window */
+static void
+centre_of (GtkWidget *w, gdouble *x, gdouble *y)
+{
+  TRect r = t_widget_rect (w, main_win);
+
+  *x = r.x + r.w / 2.0;
+  *y = r.y + r.h / 2.0;
+}
+
+/* centre of item  of the bar menu in the surface coordinates of its popup window */
+static void
+menu_item_centre (int n, gdouble *x, gdouble *y)
+{
+  GList *c = gtk_container_get_children (GTK_CONTAINER (bar_menu));
+  GtkWidget *it = g_list_nth_data (c, n), *top = GTK_WIDGET (GTK_MENU (bar_menu)->toplevel);
+  TRect r = t_widget_rect (it, top);
+
+  g_list_free (c);
+  *x = r.x + r.w / 2.0;
+  *y = r.y + r.h / 2.0;
+}
+
+/* Presses on "File" and waits for the menu.  Leaves the pointer focus on the main window and the
+ * button down. */
+static gboolean
+open_bar_menu_held (void)
+{
+  gdouble x, y;
+
+  centre_of (bar_file, &x, &y);
+  HOOK (_gdk_wayland_test_pointer_enter (disp, main_win->window, x, y), "enter on File");
+  HOOK (_gdk_wayland_test_pointer_motion (disp, tick (), x + 1, y), "motion on File");
+  t_pump_ms (50);
+  HOOK (_gdk_wayland_test_pointer_button (disp, tick (), GDKW_TEST_BTN_LEFT, TRUE), "press on File");
+  if (!t_wait_until (bar_menu_mapped, NULL, 3000))
+    {
+      T_CHECK (FALSE, "B: the File menu did not map after the press");
+      return FALSE;
+    }
+  T_CHECK (seat_info ().button_mask & GDK_BUTTON1_MASK, "B: the press is recorded");
+  return TRUE;
+}
+
+/* leaves everything closed and the seat idle for the next case */
+static void
+reset_after_case (void)
+{
+  GDKWTestSeatInfo si = seat_info ();
+
+  if (si.button_mask & GDK_BUTTON1_MASK)
+    HOOK (_gdk_wayland_test_pointer_button (disp, tick_long (), GDKW_TEST_BTN_LEFT, FALSE), "cleanup release");
+  if (gtk_widget_get_mapped (bar_menu))
+    {
+      gtk_menu_shell_deactivate (GTK_MENU_SHELL (GTK_WIDGET (bar_file)->parent));
+      gtk_menu_popdown (GTK_MENU (bar_menu));
+    }
+  t_settle (150);
+  HOOK (_gdk_wayland_test_pointer_leave (disp, main_win->window), "cleanup leave");
+  t_pump_ms (50);
+}
+
+/* An enter for the surface that has the focus, with the button down. */
+static void
+test_enter_while_held (void)
+{
+  gdouble x, y;
+  int rel0;
+
+  if (!open_bar_menu_held ())
+    return;
+  rel0 = ev.release;
+  centre_of (bar_file, &x, &y);
+  HOOK (_gdk_wayland_test_pointer_enter (disp, main_win->window, x + 2, y + 2), "enter while held");
+  T_CHECK (seat_info ().button_mask & GDK_BUTTON1_MASK, "B enter: the press is still recorded after the enter");
+  HOOK (_gdk_wayland_test_pointer_motion (disp, tick (), 300, 250), "motion outside the menu");
+  t_pump_ms (50);
+  HOOK (_gdk_wayland_test_pointer_button (disp, tick_long (), GDKW_TEST_BTN_LEFT, FALSE), "release outside");
+  T_CHECK (t_wait_until (bar_menu_gone, NULL, 2000), "B enter: the release outside hides the menu");
+  T_CHECK (ev.release == rel0 + 1, "B enter: the release reached GTK (%d, before %d)", ev.release, rel0);
+  T_CHECK (!(seat_info ().button_mask & GDK_BUTTON1_MASK), "B enter: no button is held at the end");
+  reset_after_case ();
+}
+
+/* leave for the main window, enter for the popup, with the button down: the focus moves to
+ * another surface of the client.  The release over an item has to activate it. */
+static void
+test_leave_enter_popup_while_held (void)
+{
+  gdouble x, y;
+  int rel0, act0;
+
+  if (!open_bar_menu_held ())
+    return;
+  rel0 = ev.release;
+  act0 = ev.activate;
+  menu_item_centre (1, &x, &y);
+  HOOK (_gdk_wayland_test_pointer_leave (disp, main_win->window), "leave main while held");
+  HOOK (_gdk_wayland_test_pointer_enter (disp, GTK_WIDGET (GTK_MENU (bar_menu)->toplevel)->window, x, y),
+        "enter popup while held");
+  T_CHECK (seat_info ().button_mask & GDK_BUTTON1_MASK, "B pair: the press is still recorded after leave and enter");
+  HOOK (_gdk_wayland_test_pointer_motion (disp, tick (), x + 1, y), "motion on the item");
+  t_pump_ms (50);
+  HOOK (_gdk_wayland_test_pointer_button (disp, tick_long (), GDKW_TEST_BTN_LEFT, FALSE), "release on the item");
+  T_CHECK (t_wait_until (bar_menu_gone, NULL, 2000), "B pair: the release over an item closes the menu");
+  T_CHECK (ev.release == rel0 + 1, "B pair: the release reached GTK (%d, before %d)", ev.release, rel0);
+  T_CHECK (ev.activate == act0 + 1, "B pair: the item activated (%d, before %d)", ev.activate, act0);
+  T_CHECK (!(seat_info ().button_mask & GDK_BUTTON1_MASK), "B pair: no button is held at the end");
+  reset_after_case ();
+}
+
+/* The focus leaves and no surface of the client gets it back: no release will come.  The seat
+ * must not keep the button down for ever. */
+static void
+test_leave_without_enter (void)
+{
+  int press0;
+
+  if (!open_bar_menu_held ())
+    return;
+  HOOK (_gdk_wayland_test_pointer_leave (disp, main_win->window), "leave main, nobody gets the focus");
+  t_pump_ms (100);
+  T_CHECK (!(seat_info ().button_mask & GDK_BUTTON1_MASK), "B leave: the held button is forgotten when no surface gets the focus");
+  T_CHECK (seat_info ().pointer_focus == NULL, "B leave: no pointer focus");
+  /* the user still holds the button, the focus comes back and the release arrives: the menu waits
+   * for it, so it must be delivered */
+  {
+    int rel0 = ev.release;
+
+    HOOK (_gdk_wayland_test_pointer_enter (disp, main_win->window, 300, 250), "enter again");
+    HOOK (_gdk_wayland_test_pointer_button (disp, tick_long (), GDKW_TEST_BTN_LEFT, FALSE), "late release");
+    T_CHECK (t_wait_until (bar_menu_gone, NULL, 2000), "B leave: a late release closes the menu that holds the grab");
+    T_CHECK (ev.release == rel0 + 1, "B leave: the late release reached GTK (%d, before %d)", ev.release, rel0);
+  }
+  reset_after_case ();
+
+  /* the seat works again: a new press is delivered */
+  press0 = ev.press;
+  if (!open_bar_menu_held ())
+    return;
+  T_CHECK (ev.press == press0 + 1, "B leave: a new press is delivered afterwards");
+  reset_after_case ();
+}
+
+/* A release that belongs to no press this client saw, and no grab is waiting for it. */
+static void
+test_stray_release (void)
+{
+  int rel0 = ev.release;
+
+  HOOK (_gdk_wayland_test_pointer_enter (disp, main_win->window, 300, 250), "enter for the stray release");
+  t_pump_ms (50);
+  HOOK (_gdk_wayland_test_pointer_button (disp, tick_long (), GDKW_TEST_BTN_LEFT, FALSE), "stray release");
+  t_pump_ms (100);
+  T_CHECK (ev.release == rel0, "B stray: a release without a press and without a grab is dropped (%d, before %d)", ev.release, rel0);
+  reset_after_case ();
+}
+
+/* ---- main -------------------------------------------------------------- */
 
 int
 main (int argc, char **argv)
@@ -183,9 +412,27 @@ main (int argc, char **argv)
     return t_skip ("the test hooks exist in the Wayland backend only");
   disp = gdk_display_get_default ();
 
+  gdk_event_handler_set (on_event, NULL, NULL);
   main_win = gtk_window_new (GTK_WINDOW_TOPLEVEL);
   gtk_window_set_title (GTK_WINDOW (main_win), "T0.13 seat hooks");
   gtk_window_set_default_size (GTK_WINDOW (main_win), 400, 300);
+  {
+    GtkWidget *box = gtk_vbox_new (FALSE, 0), *bar = gtk_menu_bar_new (), *area = gtk_event_box_new ();
+    GList *c, *i;
+
+    bar_file = gtk_menu_item_new_with_label ("File");
+    bar_menu = make_menu ();
+    c = gtk_container_get_children (GTK_CONTAINER (bar_menu));
+    for (i = c; i; i = i->next)
+      g_signal_connect (i->data, "activate", G_CALLBACK (on_item_activate), NULL);
+    g_list_free (c);
+    gtk_menu_item_set_submenu (GTK_MENU_ITEM (bar_file), bar_menu);
+    gtk_menu_shell_append (GTK_MENU_SHELL (bar), bar_file);
+    gtk_widget_set_size_request (area, 400, 260);
+    gtk_box_pack_start (GTK_BOX (box), bar, FALSE, FALSE, 0);
+    gtk_box_pack_start (GTK_BOX (box), area, TRUE, TRUE, 0);
+    gtk_container_add (GTK_CONTAINER (main_win), box);
+  }
   gtk_widget_show_all (main_win);
   t_settle (600);
 
@@ -197,6 +444,10 @@ main (int argc, char **argv)
 
   test_grab_serial_key ();
   test_grab_serial_newest_press ();
+  test_enter_while_held ();
+  test_leave_enter_popup_while_held ();
+  test_leave_without_enter ();
+  test_stray_release ();
 
   HOOK (_gdk_wayland_test_pointer_leave (disp, main_win->window), "pointer leave");
   HOOK (_gdk_wayland_test_keyboard_leave (disp, main_win->window), "keyboard leave");

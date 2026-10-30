@@ -360,6 +360,7 @@ struct _GDKWSeat
   gdouble  px, py;
   guint    button_mask;           /* GDK_BUTTONn_MASK bits, n = 1..5 */
   guint32  buttons_down;          /* bit (n - 1) set while GDK button n is down, n = 1..32 */
+  guint    held_settle_source;    /* idle that forgets the held buttons when no surface got the focus back, 0 none */
   GDKWAxisFrame axis_frame;       /* pending v5 frame, cleared by wl_pointer.frame */
   gdouble  scroll_accum[2];       /* continuous-source remainder in steps, per axis */
 

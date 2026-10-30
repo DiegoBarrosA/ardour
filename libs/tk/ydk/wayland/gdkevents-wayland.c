@@ -1069,11 +1069,55 @@ end_implicit_grabs (GdkDisplay *display)
     _gdk_display_pointer_grab_update (display, serial);
 }
 
+/* The compositor owns the button state.  A button that was pressed on a
+ * surface of this client stays down until its release arrives.  The release
+ * can come after the pointer focus moved to another surface of the client:
+ * leave and enter in a row, as a compositor does under an xdg_popup grab, or
+ * an enter that follows a missing leave.  So a focus change keeps the held
+ * buttons and the implicit grabs.  If no surface gets the focus back before
+ * the main loop is idle, the release will not come to this client, and the
+ * buttons are forgotten then. */
+static void
+forget_held_buttons (GDKWDisplayWayland *wd)
+{
+  GdkDisplay *display = GDK_DISPLAY_OBJECT (wd);
+  GDKWSeat *seat = _gdk_wayland_display_get_seat (display);
+
+  seat->button_mask = 0;
+  seat->buttons_down = 0;
+  end_implicit_grabs (display);
+}
+
+static void
+held_settle_cancel (GDKWSeat *seat)
+{
+  if (seat->held_settle_source != 0)
+    {
+      g_source_remove (seat->held_settle_source);
+      seat->held_settle_source = 0;
+    }
+}
+
+static gboolean
+held_settle_cb (gpointer data)
+{
+  GDKWDisplayWayland *wd = data;
+  GDKWSeat *seat = _gdk_wayland_display_get_seat (GDK_DISPLAY_OBJECT (wd));
+
+  seat->held_settle_source = 0;
+  if (seat->pointer_focus == NULL && seat->buttons_down != 0)
+    forget_held_buttons (wd);
+
+  return G_SOURCE_REMOVE;
+}
+
 /* The pointer left (or is being forced out of) the focused surface: tell the
  * core, then drop the per-focus state.  last_pointer_impl, px and py stay so
- * get_pointer () can still answer. */
+ * get_pointer () can still answer.  @keep_held: a button that is down stays
+ * down for now (see forget_held_buttons); FALSE when the surface is gone or
+ * the pointer capability is, and no release can follow. */
 static void
-pointer_focus_lost (GDKWDisplayWayland *wd)
+pointer_focus_lost (GDKWDisplayWayland *wd, gboolean keep_held)
 {
   GdkDisplay *display = GDK_DISPLAY_OBJECT (wd);
   GDKWSeat *seat = _gdk_wayland_display_get_seat (display);
@@ -1088,12 +1132,19 @@ pointer_focus_lost (GDKWDisplayWayland *wd)
   if (impl != NULL)
     queue_crossing (wd, GDK_LEAVE_NOTIFY, impl);
 
-  seat->button_mask = 0;
-  seat->buttons_down = 0;
   memset (&seat->axis_frame, 0, sizeof seat->axis_frame);
   seat->scroll_accum[0] = seat->scroll_accum[1] = 0.0;
 
-  end_implicit_grabs (display);
+  if (keep_held && seat->buttons_down != 0)
+    {
+      if (seat->held_settle_source == 0)
+	seat->held_settle_source =
+	  g_idle_add_full (G_PRIORITY_HIGH, held_settle_cb, wd, NULL);
+      return;
+    }
+
+  held_settle_cancel (seat);
+  forget_held_buttons (wd);
 }
 
 static void
@@ -1110,12 +1161,14 @@ wl_pointer_enter (void *data,
 
   /* a compositor that omitted the leave for the previous surface */
   if (seat->pointer_focus != NULL)
-    pointer_focus_lost (wd);
+    pointer_focus_lost (wd, TRUE);
+
+  /* A button that is held stays held (see forget_held_buttons).  Nothing in
+   * this event says that it was released. */
+  held_settle_cancel (seat);
 
   seat->pointer_enter_serial = serial;
   seat->last_serial = serial;
-  seat->button_mask = 0;
-  seat->buttons_down = 0;
 
   impl = surface != NULL ? _gdk_wayland_impl_from_surface (wd, surface) : NULL;
   if (impl == NULL)
@@ -1147,7 +1200,7 @@ wl_pointer_leave (void *data,
 
   seat->last_serial = serial;
 
-  pointer_focus_lost (wd);
+  pointer_focus_lost (wd, TRUE);
 }
 
 /* The window GDK should see the pointer in.  While a button is down the
@@ -1245,7 +1298,7 @@ wl_pointer_button (void *data,
   guint32 bit;
   guint state_before;
   GDKWWindowImplWayland *target;
-  gboolean held;
+  gboolean held, stray = FALSE;
   GdkEvent *event;
   gdouble x, y;
 
@@ -1260,12 +1313,33 @@ wl_pointer_button (void *data,
 
   bit = 1u << (gdk_button - 1);
   if (pressed && (seat->buttons_down & bit))
-    return;
+    {
+      /* The compositor sends a press only for a button that is up, so the
+       * release of the earlier press never came here.  End that gesture and
+       * start the new one. */
+      seat->buttons_down &= ~bit;
+      if (gdk_button <= 5)
+	seat->button_mask &= ~(GDK_BUTTON1_MASK << (gdk_button - 1));
+      end_implicit_grabs (GDK_DISPLAY_OBJECT (wd));
+    }
   if (!pressed && !(seat->buttons_down & bit))
-    return;
+    {
+      /* A release whose press this client did not record: the press was
+       * forgotten when no surface had the focus for a moment.  A release must
+       * reach whoever waits for it, so it goes on when a GDK pointer grab (a
+       * menu) is active.  Otherwise it belongs to another client. */
+      GdkPointerGrabInfo *grab =
+	_gdk_display_get_last_pointer_grab (GDK_DISPLAY_OBJECT (wd));
+
+      if (grab == NULL || grab->serial_end != G_MAXULONG)
+	return;
+      stray = TRUE;
+    }
 
   state_before = _gdk_wayland_seat_get_state (seat);
-  held = seat->buttons_down != 0;
+  if (stray && gdk_button <= 5)
+    state_before |= GDK_BUTTON1_MASK << (gdk_button - 1);
+  held = seat->buttons_down != 0 || stray;
 
   if (pressed)
     seat->buttons_down |= bit;
@@ -1531,7 +1605,8 @@ release_pointer (GDKWDisplayWayland *wd, gboolean notify)
    * implicit grab, as wl_pointer.leave would.  Skipped during finalize, when
    * the windows are already gone. */
   if (notify && seat->pointer_focus != NULL)
-    pointer_focus_lost (wd);
+    pointer_focus_lost (wd, FALSE);
+  held_settle_cancel (seat);
 
   if (wd->wl_pointer)
     {
@@ -1587,7 +1662,7 @@ _gdk_wayland_seat_surface_gone (GDKWDisplayWayland *wd,
   seat = _gdk_wayland_display_get_seat (GDK_DISPLAY_OBJECT (wd));
 
   if (seat->pointer_focus == impl)
-    pointer_focus_lost (wd);
+    pointer_focus_lost (wd, FALSE);
 
   if (seat->keyboard_focus == impl)
     {
