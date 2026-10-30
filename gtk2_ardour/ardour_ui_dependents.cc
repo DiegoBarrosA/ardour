@@ -59,6 +59,7 @@
 #include "trigger_ui.h"
 #include "step_entry.h"
 #include "opts.h"
+#include "utils.h"
 
 #ifdef GDK_WINDOWING_X11
 #include <ydk/gdkx.h>
@@ -339,8 +340,20 @@ ARDOUR_UI::setup_windows ()
 	g_signal_connect (_tabs.gobj(), "create-window", (GCallback) ::tab_window_root_drop, this);
 
 #ifdef GDK_WINDOWING_X11
-	/* allow externalUIs to be transient, on top of the main window */
-	LV2Plugin::set_main_window_id (GDK_DRAWABLE_XID(_main_window.get_window()->gobj()));
+	/* GDK_WINDOWING_X11 only says that the X11 backend is compiled in.
+	 * With a Wayland display the main window has no X11 window id, and
+	 * plugin UIs that embed an X11 window cannot work.
+	 */
+	const bool on_x11 = ARDOUR_UI_UTILS::display_is_x11 ();
+	if (on_x11) {
+		/* allow externalUIs to be transient, on top of the main window */
+		LV2Plugin::set_main_window_id (GDK_DRAWABLE_XID(_main_window.get_window()->gobj()));
+	}
+	/* ARDOUR::init() runs before the display exists, so the LV2 plugin
+	 * class learns here whether it can use X11 UIs. This applies to
+	 * plugins that are created after this point.
+	 */
+	LV2Plugin::set_x11_ui_supported (on_x11);
 #endif
 
 	return 0;
