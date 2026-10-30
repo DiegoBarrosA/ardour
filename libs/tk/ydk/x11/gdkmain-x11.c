@@ -722,7 +722,14 @@ gdk_x11_ungrab_server (void)
 gint
 gdk_x11_get_default_screen (void)
 {
-  return gdk_screen_get_number (gdk_screen_get_default ());
+  GdkScreen *screen = gdk_screen_get_default ();
+
+  /* ydk-wayland: no default screen, or one that is not an X11 screen
+   * (Wayland): there is no X screen number, report the first one. */
+  if (screen == NULL || !GDK_IS_SCREEN_X11 (screen))
+    return 0;
+
+  return gdk_screen_get_number (screen);
 }
 
 /**
@@ -736,7 +743,14 @@ gdk_x11_get_default_screen (void)
 Window
 gdk_x11_get_default_root_xwindow (void)
 {
-  return GDK_SCREEN_XROOTWIN (gdk_screen_get_default ());
+  GdkScreen *screen = gdk_screen_get_default ();
+
+  /* ydk-wayland: only an X11 screen has an X root window.  Return None
+   * (0) for no screen and for a Wayland screen. */
+  if (screen == NULL || !GDK_IS_SCREEN_X11 (screen))
+    return None;
+
+  return GDK_SCREEN_XROOTWIN (screen);
 }
 
 /**
@@ -751,7 +765,33 @@ gdk_x11_get_default_root_xwindow (void)
 Display *
 gdk_x11_get_default_xdisplay (void)
 {
-  return GDK_DISPLAY_XDISPLAY (gdk_display_get_default ());
+  GdkDisplay *display = gdk_display_get_default ();
+
+  /* ydk-wayland: only an X11 display has a Display *.  Return NULL for no
+   * display and for a Wayland display.  A NULL Display * still crashes inside
+   * Xlib, so test gdk_x11_display_is_x11 () before you call Xlib. */
+  if (display == NULL || !GDK_IS_DISPLAY_X11 (display))
+    return NULL;
+
+  return GDK_DISPLAY_XDISPLAY (display);
+}
+
+/**
+ * gdk_x11_display_is_x11:
+ * @display: (allow-none): a #GdkDisplay, or %NULL
+ *
+ * Tests whether @display is a live X11 display.  libydk can run on the X11
+ * or on the Wayland backend, and a Wayland display has no X11 handles:
+ * GDK_DISPLAY_XDISPLAY gives NULL and GDK_WINDOW_XID gives 0 for it.  Test
+ * this before you pass those handles to Xlib.
+ *
+ * Return value: %TRUE if @display is an X11 display, %FALSE for %NULL and
+ *   for a display of another backend.
+ **/
+gboolean
+gdk_x11_display_is_x11 (GdkDisplay *display)
+{
+  return display != NULL && GDK_IS_DISPLAY_X11 (display);
 }
 
 #define __GDK_MAIN_X11_C__

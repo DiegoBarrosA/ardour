@@ -559,6 +559,11 @@ gdk_screen_get_rgba_visual (GdkScreen *screen)
 Screen *
 gdk_x11_screen_get_xscreen (GdkScreen *screen)
 {
+  /* ydk-wayland: only an X11 screen has an X Screen *.  NULL for NULL and for a
+   * Wayland screen. */
+  if (screen == NULL || !GDK_IS_SCREEN_X11 (screen))
+    return NULL;
+
   return GDK_SCREEN_X11 (screen)->xscreen;
 }
 
@@ -575,6 +580,10 @@ gdk_x11_screen_get_xscreen (GdkScreen *screen)
 int
 gdk_x11_screen_get_screen_number (GdkScreen *screen)
 {
+  /* ydk-wayland: a Wayland screen has no X screen number.  Report the first. */
+  if (screen == NULL || !GDK_IS_SCREEN_X11 (screen))
+    return 0;
+
   return GDK_SCREEN_X11 (screen)->screen_num;
 }
 
