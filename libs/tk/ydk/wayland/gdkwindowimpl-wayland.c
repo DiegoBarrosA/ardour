@@ -667,9 +667,10 @@ gdk_window_wayland_move_resize (GdkWindow *window,
 				gint height)
 {
   GDKWWindowImplWayland *impl;
+  GdkWindowObject *private = (GdkWindowObject *) window;
   gboolean size_changed;
 
-  impl = GDKW_WINDOW_IMPL_WAYLAND (((GdkWindowObject *) window)->impl);
+  impl = GDKW_WINDOW_IMPL_WAYLAND (private->impl);
   if (with_move)
     {
       impl->x = x;
@@ -678,6 +679,19 @@ gdk_window_wayland_move_resize (GdkWindow *window,
   size_changed = (guint) width != impl->width || (guint) height != impl->height;
   impl->width = width;
   impl->height = height;
+
+  /* The core does not set the size of a toplevel after this call: the X11
+   * backend gets it from the ConfigureNotify, and a compositor configure sets
+   * it in _gdk_wayland_frame_apply_configure_size (), but Wayland never
+   * answers a client resize.  Without this the GdkWindow keeps its old size,
+   * so its clip region, gdk_drawable_get_size () and the pixel reader stay
+   * stale.  Children are sized by the core and popups by the popup piece. */
+  if (impl->popup == NULL && private->window_type != GDK_WINDOW_CHILD &&
+      width > 0 && height > 0)
+    {
+      private->width = width;
+      private->height = height;
+    }
 
   /* M9: no-op unless the impl is a popup */
   _gdk_wayland_popup_move_resize (window, with_move, x, y, width, height);
