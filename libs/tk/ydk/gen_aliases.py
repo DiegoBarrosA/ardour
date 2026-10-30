@@ -38,7 +38,7 @@ def parse_marker_symbols(path, extra_defined=()):
 
     def eval_cond(expr):
         expr = re.sub(r'defined\s*\(\s*(\w+)\s*\)', repl_defined, expr)
-        expr = re.sub('IN_FILE\((%s)\)' % marker_pat, repl_defined, expr)
+        expr = re.sub(r'IN_FILE\((%s)\)' % marker_pat, repl_defined, expr)
         expr = re.sub(r'IN_HEADER\([^)]*\)', '1', expr)
         expr = re.sub(r'\b[A-Za-z_]\w*\b',
                       lambda m: '1' if m.group() in defined else '0', expr)

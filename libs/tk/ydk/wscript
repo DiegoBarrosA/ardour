@@ -146,6 +146,42 @@ libydk_win32_sources = [
     'win32/gdkwindow-win32.c',
 ]
 
+libydk_wayland_sources = [
+    'wayland/fractional-scale-v1-protocol.c',
+    'wayland/gdkbuffer-wayland.c',
+    'wayland/gdkcolor-wayland.c',
+    'wayland/gdkcursor-wayland.c',
+    'wayland/gdkdatadevice-wayland.c',
+    'wayland/gdkdisplay-misc-wayland.c',
+    'wayland/gdkdisplay-wayland.c',
+    'wayland/gdkdnd-source-wayland.c',
+    'wayland/gdkdnd-wayland.c',
+    'wayland/gdkdrawable-wayland.c',
+    'wayland/gdkevents-wayland.c',
+    'wayland/gdkfont-wayland.c',
+    'wayland/gdkframe-wayland.c',
+    'wayland/gdkgc-wayland.c',
+    'wayland/gdkinputonly-wayland.c',
+    'wayland/gdkkeys-wayland.c',
+    'wayland/gdkmain-wayland.c',
+    'wayland/gdkpixmap-wayland.c',
+    'wayland/gdkpopup-wayland.c',
+    'wayland/gdkproperty-wayland.c',
+    'wayland/gdkreparent-wayland.c',
+    'wayland/gdkscale-wayland.c',
+    'wayland/gdkscreen-wayland.c',
+    'wayland/gdkselection-wayland.c',
+    'wayland/gdkshape-wayland.c',
+    'wayland/gdkvisual-wayland.c',
+    'wayland/gdkwindow-hints-wayland.c',
+    'wayland/gdkwindowimpl-wayland.c',
+    'wayland/gdkx11-guards-wayland.c',
+    'wayland/gdkxhandles-wayland.c',
+    'wayland/primary-selection-unstable-v1-protocol.c',
+    'wayland/viewporter-protocol.c',
+    'wayland/xdg-shell-protocol.c',
+]
+
 def options(opt):
     pass
 
@@ -164,9 +200,134 @@ def configure(conf):
                       lib='Xinerama', uselib_store="XINERAMA", define_name='HAVE_XFREE_XINERAMA',
                       execute = False, mandatory=False)
         autowaf.check_pkg(conf, 'xi', uselib_store='XINPUT2', mandatory=False, atleast_version='1.7.10')
+        # Wayland backend (compiled next to X11 into the same libydk, picked at
+        # run time by GDK_BACKEND / WAYLAND_DISPLAY, see gdkbackend.c).
+        # Versions: glib 2.68 (g_memdup2), cairo 1.14 (cairo_surface_set_device_scale),
+        # wayland 1.20 (wl_proxy_marshal_flags in the committed *-client.h; unverified),
+        # xkbcommon 0.7 (xkb_state_key_get_consumed_mods2, @since 0.7.0 in xkbcommon.h).
+        autowaf.check_pkg(conf, 'glib-2.0', uselib_store='GLIB_WL', atleast_version='2.68', mandatory=True)
+        autowaf.check_pkg(conf, 'cairo', uselib_store='CAIRO_WL', atleast_version='1.14', mandatory=True)
+        autowaf.check_pkg(conf, 'wayland-client', uselib_store='WAYLAND', atleast_version='1.20.0', mandatory=True)
+        autowaf.check_pkg(conf, 'wayland-cursor', uselib_store='WAYLAND-CURSOR', atleast_version='1.20.0', mandatory=True)
+        autowaf.check_pkg(conf, 'xkbcommon', uselib_store='XKBCOMMON', atleast_version='0.7.0', mandatory=True)
     conf.check(header_name='unistd.h', define_name='HAVE_UNISTD_H',mandatory=False)
 
+def build_linux(bld):
+    """Linux: X11 and Wayland backends in one libydk.
+
+    Every source becomes its own object so that the per-source alias snippet
+    (gen_aliases.py) can be force-included, X11 sources get the rename map
+    force-included, and Wayland sources get their own include path.
+    """
+    import re
+    sys.path.insert(0, bld.path.abspath())
+    import gen_aliases
+
+    def need(path):
+        # find_node returns None for a missing file; fail with a clear message instead.
+        node = bld.path.find_node(path)
+        if node is None:
+            bld.fatal('libydk: required file is missing: libs/tk/ydk/%s' % path)
+        return node
+
+    core_sources = [s for s in libydk_sources if s != 'gdkaliasdef.c'] + ['gdkbackend.c']
+
+    base_defines = [ 'HAVE_CONFIG_H', '_LARGEFILE64_SOURCE', '_REENTRANT', 'G_LOG_DOMAIN="Gdk"', 'GDK_COMPILATION', '_FILE_OFFSET_BITS=64',
+                     'GDK_PIXBUF_DISABLE_DEPRECATED', 'G_DISABLE_CAST_CHECKS',
+                     'G_DISABLE_SINGLE_INCLUDES', 'ATK_DISABLE_SINGLE_INCLUDES', 'GDK_PIXBUF_DISABLE_SINGLE_INCLUDES',
+                     'YDK_PER_SOURCE_ALIASES']
+    pic = bld.env['compiler_flags_dict']['pic']
+
+    def new_obj(name, sources, includes, defines, uselib, extra_cflags):
+        o = bld.objects(target=name, source=sources)
+        o.cflags   = [pic, '-w'] + list(extra_cflags)
+        o.includes = includes
+        o.uselib   = uselib
+        o.use      = ['libztk', 'libydk-pixbuf']
+        o.defines  = list(base_defines) + defines
+        return o
+
+    def per_source(prefix, sources, includes, defines, uselib, extra_cflags):
+        return [new_obj('%s-%s' % (prefix, s.split('/')[-1].rsplit('.', 1)[0]),
+                        [s], includes, defines, uselib, extra_cflags) for s in sources]
+
+    common = 'GLIB PANGO CAIRO PANGOCAIRO GIO-UNIX'
+    core_objs = per_source('ydk-core', core_sources, ['.', 'ydk', 'wayland/ydk', 'x11', 'x11/ydk', 'ydk/x11'], [],
+                           common + ' WAYLAND', [])
+    for o in core_objs:
+        if o.source[0] == 'gdkbackend.c':
+            # defines gdk_x11_* accessors: needs gdkx.h (Display, XID) before the first gdkalias.h pass
+            o.defines = list(o.defines) + ['GDK_YDK_DISPATCH_OBJ']
+            o.uselib  = o.uselib + ' X11'
+
+    wl_objs = per_source('ydk-wayland', libydk_wayland_sources, ['.', 'ydk', 'wayland/ydk'], ['_GNU_SOURCE'],
+                         common + ' WAYLAND XKBCOMMON WAYLAND-CURSOR', [])
+
+    rename_map = need('x11/ydk/gdkwindowing-x11.h')
+    x11_objs = per_source('ydk-x11', libydk_x11_sources, ['.', 'ydk', 'x11', 'x11/ydk', 'ydk/x11'],
+                          ['GDK_WINDOWING_X11', 'GDK_YDK_X11_OBJ', 'HAVE_XSYNC=1'],
+                          common + ' X11 XEXT RANDR XINERAMA DL',
+                          ['-include', rename_map.abspath()])
+
+    # --- public-symbol aliases: one snippet per source, force-included ----------
+    marker_re = re.compile(r'^\s*#define\s+(__GDK[A-Z0-9_]*_C__)\s*$', re.M)
+    all_sources = core_sources + libydk_x11_sources + libydk_wayland_sources
+    compiled_markers = set()
+    for src in all_sources:
+        compiled_markers |= set(marker_re.findall(need(src).read()))
+    defined = {'GDK_WINDOWING_X11', 'GDK_WINDOWING_WAYLAND', 'YDK_PER_SOURCE_ALIASES'} | compiled_markers
+    marker_syms = gen_aliases.parse_marker_symbols(need('gdkaliasdef.c').abspath(), defined)
+    decls     = need('gdkaliasdef-decls.h').abspath()
+    x11_decls = need('gdkaliasdef-x11-decls.h').abspath()
+
+    all_symbols = set()
+    for glyphs in marker_syms.values():
+        all_symbols |= glyphs
+    eval_defined = set(defined) | gen_aliases.parse_defines(need('config.h').abspath())
+    eval_defined |= {'_REENTRANT', 'GDK_COMPILATION', 'G_LOG_DOMAIN', 'HAVE_CONFIG_H', 'G_HAVE_GNUC_VISIBILITY'}
+    for d in base_defines:
+        eval_defined.add(d.split('=', 1)[0])
+    def_owner = {}
+    for src in all_sources:
+        for sym in (gen_aliases.active_definitions(need(src).read(), eval_defined) & all_symbols):
+            def_owner.setdefault(sym, src)
+
+    def stamp(objs, decl_incs):
+        for o in objs:
+            for d in decl_incs:
+                o.cflags += ['-include', d]
+            src = o.source[0]
+            node = need(src)
+            glyphs = {s for s in def_owner if def_owner[s] == src}
+            for m in marker_re.findall(node.read()):
+                for s in marker_syms.get(m, set()):
+                    if s not in def_owner:
+                        glyphs.add(s)
+            if glyphs:
+                snippet = bld.path.find_or_declare('ydk-aliases/%s' % node.name.rsplit('.', 1)[0])
+                snippet.write(gen_aliases.render_aliases(glyphs))
+                o.cflags += ['-include', snippet.abspath()]
+
+    stamp(core_objs, [decls])
+    stamp(x11_objs,  [decls, x11_decls])
+    stamp(wl_objs,   [decls])
+
+    obj = bld.shlib(features = 'c cshlib')
+    obj.cflags          = [pic, '-w']
+    obj.export_includes = ['.', 'ydk', 'x11']
+    obj.includes        = ['.', 'ydk', 'x11', 'x11/ydk', 'ydk/x11']
+    obj.name            = 'libydk'
+    obj.target          = 'ydk'
+    obj.use             = ['libztk', 'libydk-pixbuf'] + [o.target for o in core_objs + wl_objs + x11_objs]
+    obj.uselib          = 'GLIB PANGO CAIRO PANGOCAIRO GIO-UNIX X11 XEXT XINERAMA RANDR DL WAYLAND XKBCOMMON WAYLAND-CURSOR'
+    obj.vnum            = LIBYDK_VERSION
+    obj.install_path    = bld.env['LIBDIR']
+
 def build(bld):
+    if sys.platform != 'darwin' and bld.env['build_target'] not in ('mingw', 'msvc'):
+        build_linux(bld)
+        return
+
     obj = bld.shlib(features = 'c cshlib')
     obj.cflags          = [ bld.env['compiler_flags_dict']['pic'], '-w' ]
     obj.export_includes = ['.', 'ydk']
@@ -197,9 +358,3 @@ def build(bld):
         obj.includes        += ['win32', 'win32/ydk']
         obj.export_includes += ['win32']
         obj.lib              = ['imm32', 'ole32', 'gdi32', 'comdlg32', 'winspool', 'comctl32', 'uuid']
-    else:
-        obj.source    = libydk_sources + libydk_x11_sources
-        obj.uselib   += ' GIO-UNIX X11 XEXT XINERAMA RANDR DL'
-        obj.includes        += ['x11', 'x11/ydk', 'ydk/x11']
-        obj.export_includes += ['x11']
-
