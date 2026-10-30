@@ -45,6 +45,16 @@
 #include "gdkx.h"           /* For workaround */
 #endif
 
+/* ydk-wayland: behaviour that only the Wayland backend needs is gated on the
+ * run time backend, so the X11 backend behaves as before.  On Linux the
+ * backend is chosen when the display opens (see gdkbackend.c).  The macro is
+ * FALSE where no Wayland backend is built (quartz, win32). */
+#ifdef GDK_WINDOWING_WAYLAND
+#define YDK_ON_WAYLAND() (_gdk_backend_is_wayland ())
+#else
+#define YDK_ON_WAYLAND() (FALSE)
+#endif
+
 #include "math.h"
 
 /* Historically a GdkWindow always matches a platform native window,
@@ -280,6 +290,7 @@ static cairo_surface_t *gdk_window_create_cairo_surface (GdkDrawable *drawable,
 							 int width,
 							 int height);
 static void             gdk_window_drop_cairo_surface (GdkWindowObject *private);
+static void             gdk_window_set_cairo_device_offset (GdkWindowObject *private);
 static void             gdk_window_set_cairo_clip    (GdkDrawable *drawable,
 						      cairo_t *cr);
 
@@ -1093,9 +1104,7 @@ recompute_visible_regions_internal (GdkWindowObject *private,
 
       _gdk_windowing_set_cairo_surface_size (private->cairo_surface,
 					     width, height);
-      cairo_surface_set_device_offset (private->cairo_surface,
-				       private->abs_x,
-				       private->abs_y);
+      gdk_window_set_cairo_device_offset (private);
     }
 }
 
@@ -1371,7 +1380,8 @@ gdk_window_new (GdkWindow     *parent,
    */
   if (attributes->wclass == GDK_INPUT_ONLY &&
       private->parent->window_type == GDK_WINDOW_ROOT &&
-      !G_LIKELY (GDK_DISPLAY_X11 (GDK_WINDOW_DISPLAY (parent))->trusted_client))
+      GDK_IS_DISPLAY_X11 (gdk_drawable_get_display (GDK_DRAWABLE (parent))) &&
+      !G_LIKELY (GDK_DISPLAY_X11 (gdk_drawable_get_display (GDK_DRAWABLE (parent)))->trusted_client))
     {
       g_warning ("Coercing GDK_INPUT_ONLY toplevel window to GDK_INPUT_OUTPUT to work around bug in Xorg server");
       attributes->wclass = GDK_INPUT_OUTPUT;
@@ -1638,7 +1648,23 @@ gdk_window_reparent (GdkWindow *window,
 
   old_native_event_mask = 0;
   do_reparent_to_impl = FALSE;
-  if (gdk_window_has_impl (private))
+  if (gdk_window_has_impl (private) &&
+      new_parent_private->window_type != GDK_WINDOW_ROOT &&
+      new_parent_private->window_type != GDK_WINDOW_FOREIGN &&
+      impl_iface->demote_to_child != NULL &&
+      impl_iface->demote_to_child (window, new_parent))
+    {
+      /* M9: the backend gave up the native window; continue as for a client
+       * side child.  gdk_window_has_impl () is FALSE from here on. */
+      show = was_mapped;
+      gdk_window_hide (window);
+
+      do_reparent_to_impl = TRUE;
+      change_impl (private,
+		   new_parent_private->impl_window,
+		   new_parent_private->impl);
+    }
+  else if (gdk_window_has_impl (private))
     {
       old_native_event_mask = get_native_event_mask (private);
       /* Native window */
@@ -1889,6 +1915,15 @@ gdk_window_ensure_native (GdkWindow *window)
 
   private->impl = old_impl;
   change_impl (private, private, new_impl);
+
+  /* _gdk_window_impl_new () returned the new impl with the creation reference,
+   * and change_impl () took its own: drop the creation one or the impl (and
+   * with it the wl_surface and the shm buffer of a promoted window) outlives
+   * its window.  Found by valgrind --leak-check=full on the M9 reparent test.
+   * Gated: the X11 backend keeps its old reference counting until a valgrind
+   * run on X11 shows that the same unref is correct there. */
+  if (YDK_ON_WAYLAND ())
+    g_object_unref (new_impl);
 
   impl_iface = GDK_WINDOW_IMPL_GET_IFACE (private->impl);
 
@@ -5140,6 +5175,50 @@ gdk_window_drop_cairo_surface (GdkWindowObject *private)
     }
 }
 
+/* M10 C1.  The cairo device offset is in DEVICE pixels, not scaled by the
+ * device scale (cairo_surface_set_device_scale), so a backend whose cairo
+ * surfaces carry a device scale (Wayland output scale) needs the window
+ * origin multiplied by it.  Scale 1 behaves as before. */
+static void
+gdk_window_set_cairo_device_offset (GdkWindowObject *private)
+{
+  double sx = 1.0, sy = 1.0;
+
+#if CAIRO_VERSION >= CAIRO_VERSION_ENCODE (1, 14, 0)
+  /* cairo_surface_get_device_scale () exists since cairo 1.14.  With an older
+   * cairo no surface can carry a device scale, so the factor stays 1. */
+  cairo_surface_get_device_scale (private->cairo_surface, &sx, &sy);
+#endif
+  cairo_surface_set_device_offset (private->cairo_surface,
+				   private->abs_x * sx,
+				   private->abs_y * sy);
+}
+
+/* M10 C2.  Detach (do not finish) the cached cairo surface of @window and of
+ * every non native descendant.  A surface that someone still holds stays valid
+ * and drawable; the next ref_cairo_surface builds a fresh one. */
+void
+_gdk_window_detach_cairo_surfaces (GdkWindow *window)
+{
+  GdkWindowObject *private = (GdkWindowObject *) window;
+  GList *l;
+
+  if (private == NULL)
+    return;
+
+  if (private->cairo_surface)
+    cairo_surface_set_user_data (private->cairo_surface, &gdk_window_cairo_key,
+				 NULL, NULL);
+
+  for (l = private->children; l != NULL; l = l->next)
+    {
+      GdkWindowObject *child = l->data;
+
+      if (!gdk_window_has_impl (child))
+	_gdk_window_detach_cairo_surfaces ((GdkWindow *) child);
+    }
+}
+
 static void
 gdk_window_cairo_surface_destroy (void *data)
 {
@@ -5194,9 +5273,7 @@ gdk_window_ref_cairo_surface (GdkDrawable *drawable)
 	    {
 	      private->impl_window->outstanding_surfaces++;
 
-	      cairo_surface_set_device_offset (private->cairo_surface,
-					       private->abs_x,
-					       private->abs_y);
+	      gdk_window_set_cairo_device_offset (private);
 
 	      cairo_surface_set_user_data (private->cairo_surface, &gdk_window_cairo_key,
 					   drawable, gdk_window_cairo_surface_destroy);
@@ -6966,6 +7043,14 @@ gdk_window_raise (GdkWindow *window)
       gdk_region_destroy (old_region);
       gdk_region_destroy (new_region);
     }
+
+  /* M9: gdk_window_lower () and every other geometry change already do this.
+   * Without it a window raised under a stationary pointer (an input-only
+   * child above an input-output sibling, for one) gets no crossing events
+   * until the pointer moves.  Queues one idle, and only when the pointer is
+   * in this toplevel.  Gated: the X11 backend keeps its old behaviour. */
+  if (YDK_ON_WAYLAND ())
+    _gdk_synthesize_crossing_events_for_geometry_change (window);
 }
 
 static void
