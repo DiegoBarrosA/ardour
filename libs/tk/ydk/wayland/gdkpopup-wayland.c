@@ -70,6 +70,7 @@ struct _GDKWPopup
   gboolean               releasing;  /* dismissal in progress */
   gboolean               no_grab;    /* retry mode: never grab */
   gboolean               kbd_focus_at_commit; /* the family had the keyboard focus when the popup was committed */
+  guint                  done_source; /* idle that decides a popup_done after the events of the batch, 0 if none */
 
   /* position relative to the parent geometry, last known */
   gint                   rel_x, rel_y;
@@ -416,6 +417,12 @@ popup_free (GDKWPopup *p, gboolean unregister, gboolean notify_seat)
     }
   p->in_stack = FALSE;
   p->in_pending = FALSE;
+
+  if (p->done_source != 0)
+    {
+      g_source_remove (p->done_source);
+      p->done_source = 0;
+    }
 
   if (notify_seat)
     _gdk_wayland_seat_surface_gone (display, impl);
@@ -1054,10 +1061,39 @@ kbd_focus_lost_since_commit (GDKWPopup *p)
 }
 
 static void
+popup_done_run (GDKWPopup *p, gboolean settled);
+
+/* A popup_done that may come from a lost keyboard focus is decided here, after
+ * the events of the batch were dispatched. */
+static gboolean
+popup_done_settle_cb (gpointer data)
+{
+  GDKWPopup *p = data;
+
+  p->done_source = 0;
+  popup_done_run (p, TRUE);
+
+  return G_SOURCE_REMOVE;
+}
+
+static void
 xdg_popup_handle_popup_done (void *data, struct xdg_popup *xdg_popup)
 {
   GDKWWindowImplWayland *impl = data;
   GDKWPopup *p = impl != NULL ? impl->popup : NULL;
+
+  if (p == NULL || p->releasing || get_pd (p->display, FALSE) == NULL)
+    return;
+
+  p->popup_done_events++;
+  popup_done_run (p, FALSE);
+}
+
+/* @settled: the decision was postponed to the idle after the batch. */
+static void
+popup_done_run (GDKWPopup *p, gboolean settled)
+{
+  GDKWWindowImplWayland *impl = p->impl;
   PopupDisplay *pd;
   GDKWDisplayWayland *display;
   GdkDisplay *gd;
@@ -1065,7 +1101,7 @@ xdg_popup_handle_popup_done (void *data, struct xdg_popup *xdg_popup)
   gboolean had_grab, parent_grabs;
   guint i;
 
-  if (p == NULL || p->releasing)
+  if (p->releasing)
     return;
 
   display = p->display;
@@ -1073,15 +1109,28 @@ xdg_popup_handle_popup_done (void *data, struct xdg_popup *xdg_popup)
   if (pd == NULL)
     return;
 
-  p->popup_done_events++;
-
   /* D8.1: refused before the first configure, grab was part of the request.
    * Not when the parent lost the keyboard focus since the commit: then the
    * compositor closes the popup, and the chain below hides it and breaks the
-   * GDK grabs, so that GTK closes its menu. */
-  if (p->state == GDKW_POPUP_COMMITTED && p->grab_sent && !p->retried &&
+   * GDK grabs, so that GTK closes its menu.
+   *
+   * Sway sends popup_done BEFORE wl_keyboard.leave (view_close_popups runs in
+   * send_unfocus, the leave goes out with the next focus change), both in one
+   * batch.  At the popup_done the family still has the focus.  So when it had
+   * the focus at the commit and has it now, wait for the idle after the batch
+   * and look again.  The idle only decides the focus question: the popup was
+   * refused early when the wire event came, whatever its state is now. */
+  if ((settled || (p->state == GDKW_POPUP_COMMITTED && p->grab_sent &&
+                   !p->retried)) &&
       !kbd_focus_lost_since_commit (p))
     {
+      if (!settled && p->kbd_focus_at_commit)
+        {
+          if (p->done_source == 0)
+            p->done_source = g_idle_add_full (G_PRIORITY_HIGH,
+                                              popup_done_settle_cb, p, NULL);
+          return;
+        }
       p->retried = TRUE;
       p->no_grab = TRUE;
       popup_recreate (p);

@@ -306,7 +306,12 @@
  *
  * D8  POPUP_DONE.  The compositor dismissed popup P (typically a click
  *     outside).  Real listener xdg_popup_handle_popup_done () does, in order:
- *       1. before P ever configured and grab_sent: retry (D7), stop;
+ *       1. before P ever configured and grab_sent: retry (D7), stop.  Not
+ *          when the family lost the keyboard focus since the commit.  Sway
+ *          sends popup_done BEFORE wl_keyboard.leave, in one batch. So a
+ *          popup_done of a family that still has the focus is decided in an
+ *          idle after the batch (M11 review).  The chain below runs when the
+ *          focus is gone by then;
  *       2. chain = P plus every popup above P in its family stack;
  *       3. GDK grabs: if the CHAIN held the grab (some member sent a grab and
  *          its parent is not a live grabbing popup outside the chain; looking

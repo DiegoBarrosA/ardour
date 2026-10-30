@@ -14,7 +14,8 @@
  * C  popup target    the pointer target leaves a popup that is hidden or ended under a held
  *                    button.
  * D  popup_done      before the first configure: a refused grab is retried once without a grab,
- *                    but not when the parent lost the keyboard focus.
+ *                    but not when the parent lost the keyboard focus, whether the leave comes
+ *                    before the popup_done or (as on sway) after it in the same batch.
  * E  committed popup events that come before the first configure of the popup go to the popup.
  * F  monitor view    the monitor list is relative to the output of the window in use.
  * G  screen signals  size-changed and monitors-changed fire once per output update.
@@ -497,16 +498,25 @@ test_dismiss_under_held_button (gboolean compositor)
  * refused, the popup is created again once without a grab and stays on the screen.  If the
  * parent lost the keyboard focus after the commit, the compositor closes the popup (sway does
  * that for every popup of a toplevel that loses the focus).  Then nothing is created again, the
- * GDK grabs end and GTK hides its menu. */
+ * GDK grabs end and GTK hides its menu.
+ *
+ * Sway sends popup_done BEFORE the wl_keyboard.leave, both in one batch (view_close_popups runs
+ * in send_unfocus).  FOCUS_LEAVE_FIRST is the reverse order, kept for a compositor that does
+ * that.  FOCUS_DONE_FIRST is the order that sway has on the wire: the two hooks run without a
+ * pass of the main loop between them, as the listeners of one wl_display_dispatch_pending do. */
+enum { REFUSED, FOCUS_LEAVE_FIRST, FOCUS_DONE_FIRST };
+
 static void
-test_popup_done_before_configure (gboolean focus_lost)
+test_popup_done_before_configure (int order)
 {
   GtkWidget *menu = make_menu ();
   GDKWTestPopupInfo pi;
   GDKWTestObjectCounts oc;
   GdkWindow *pw;
   int gb0 = ev.grab_broken;
-  const char *what = focus_lost ? "focus lost" : "refused";
+  gboolean focus_lost = order != REFUSED;
+  const char *what = order == REFUSED ? "refused" : order == FOCUS_LEAVE_FIRST ? "focus lost, leave first"
+                                                                              : "focus lost, popup_done first";
 
   HOOK (_gdk_wayland_test_keyboard_key (disp, tick (), GDKW_TEST_KEY_A, TRUE), "key down");
   HOOK (_gdk_wayland_test_keyboard_key (disp, tick (), GDKW_TEST_KEY_A, FALSE), "key up");
@@ -518,9 +528,11 @@ test_popup_done_before_configure (gboolean focus_lost)
   T_CHECK (pi.grab_sent, "D %s: the commit carried a grab", what);
   pw = GTK_WIDGET (GTK_MENU (menu)->toplevel)->window;
 
-  if (focus_lost)
+  if (order == FOCUS_LEAVE_FIRST)
     HOOK (_gdk_wayland_test_keyboard_leave (disp, main_win->window), "keyboard leave");
   HOOK (_gdk_wayland_test_popup_done (pw), "popup_done");
+  if (order == FOCUS_DONE_FIRST)
+    HOOK (_gdk_wayland_test_keyboard_leave (disp, main_win->window), "keyboard leave");
   t_settle (300);
 
   if (focus_lost)
@@ -770,8 +782,9 @@ main (int argc, char **argv)
   test_stray_release ();
   test_dismiss_under_held_button (FALSE);
   test_dismiss_under_held_button (TRUE);
-  test_popup_done_before_configure (FALSE);
-  test_popup_done_before_configure (TRUE);
+  test_popup_done_before_configure (REFUSED);
+  test_popup_done_before_configure (FOCUS_LEAVE_FIRST);
+  test_popup_done_before_configure (FOCUS_DONE_FIRST);
   test_drag_onto_committed_popup ();
   test_monitor_view ();
   test_screen_signals ();
