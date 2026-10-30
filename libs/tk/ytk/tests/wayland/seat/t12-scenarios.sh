@@ -562,3 +562,23 @@ s23_click_on_desktop() {
 }
 
 T12_ALL_SCENARIOS="$T12_ALL_SCENARIOS s23_click_on_desktop"
+
+# The screen and monitor sizes that GTK sees have to be the logical size of the output.  GTK sizes
+# and flips menus with them: a size that is too small gives scroll arrows on tall menus.  A
+# fractional scale (sway-scale125.conf) is the case that matters: wl_output.scale is 2 there, so
+# mode / scale is wrong and the xdg_output logical size has to be used.
+s24_monitor_size() {
+  t12_reset quiet; step s24-monitor-size
+  local m="g$RANDOM$RANDOM" start; start=$(( $(lines) + 1 ))
+  app_send geom; app_send "mark $m"
+  for _ in $(seq 1 60); do grep -q "MARK .*$m" "$APP_LOG" && break; sleep 0.05; done
+  local mon scr ow oh
+  mon=$(tail -n +"$start" "$APP_LOG" | payload | grep '^MONITOR 0 ' | head -n 1)
+  scr=$(tail -n +"$start" "$APP_LOG" | payload | grep '^SCREEN ' | head -n 1)
+  read -r ow oh <<<"$(swaymsg -s "$HARNESS_SWAYSOCK" -t get_outputs -r | jq -r '.[0] | "\(.rect.width) \(.rect.height)"')"
+  [ "$mon" = "MONITOR 0 0 0 $ow $oh" ] && ok "monitor 0 is ${ow}x${oh}, the logical size of the output" \
+    || fail "monitor 0 is '$mon', the output is ${ow}x${oh} (logical)"
+  [ "$scr" = "SCREEN $ow $oh" ] && ok "the screen is ${ow}x${oh}" || fail "the screen is '$scr', the output is ${ow}x${oh}"
+}
+
+T12_ALL_SCENARIOS="$T12_ALL_SCENARIOS s24_monitor_size"

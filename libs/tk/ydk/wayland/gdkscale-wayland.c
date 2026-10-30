@@ -36,6 +36,7 @@
 #include "gdkm10-wayland.h"
 #include "fractional-scale-v1-client.h"
 #include "viewporter-client.h"
+#include "xdg-output-unstable-v1-client.h"
 
 #define GDKW_SCALE_DATA_KEY   "ydk-wayland-m10-scale"
 #define GDKW_FAKE_NAME_BASE   0x80000000u
@@ -69,7 +70,15 @@ typedef struct
   gchar   *model;
   gchar    name[32];
 
-  gint     logical_w, logical_h;      /* mode / scale, axes swapped if odd */
+  gint     logical_w, logical_h;      /* xdg-output size, else mode / scale, axes swapped if odd */
+
+  /* zxdg_output_v1: the compositor's own logical size.  wl_output.scale is an
+   * integer (a fractional output reports the next integer up), so
+   * mode / scale is wrong for a scale like 1.25.  The size already has the
+   * transform applied. */
+  struct zxdg_output_v1 *xdg;
+  gint     pending_xdg_w, pending_xdg_h;
+  gint     xdg_w, xdg_h;              /* 0 until the first xdg_output.done */
 } GDKWOutput;
 
 struct _GDKWSurfaceScale
@@ -105,6 +114,8 @@ struct _GDKWScaleDisplay
   guint32               viewporter_name;
   struct wp_fractional_scale_manager_v1 *manager;
   guint32               manager_name;
+  struct zxdg_output_manager_v1 *xdg_manager;
+  guint32               xdg_manager_name;
   gboolean              force_fractional;
   gboolean              finalized;
 
@@ -630,6 +641,13 @@ output_compute_logical (GDKWOutput *out)
   gint w = out->mode_w / s;
   gint h = out->mode_h / s;
 
+  if (out->have_mode && out->xdg_w > 0 && out->xdg_h > 0)
+    {
+      out->logical_w = out->xdg_w;
+      out->logical_h = out->xdg_h;
+      return;
+    }
+
   if (out->have_mode)
     {
       w = MAX (1, w);
@@ -929,6 +947,76 @@ static const struct wl_output_listener output_listener = {
   output_description
 };
 
+static void
+xdg_output_logical_position (void *data, struct zxdg_output_v1 *xdg,
+                             int32_t x, int32_t y)
+{
+  /* wl_output.geometry gives the same position */
+}
+
+static void
+xdg_output_logical_size (void *data, struct zxdg_output_v1 *xdg,
+                         int32_t width, int32_t height)
+{
+  GDKWOutput *out = data;
+
+  out->pending_xdg_w = width;
+  out->pending_xdg_h = height;
+}
+
+static void
+xdg_output_done (void *data, struct zxdg_output_v1 *xdg)
+{
+  GDKWOutput *out = data;
+
+  out->xdg_w = out->pending_xdg_w;
+  out->xdg_h = out->pending_xdg_h;
+  output_apply (out);
+}
+
+static void
+xdg_output_name (void *data, struct zxdg_output_v1 *xdg, const char *name)
+{
+}
+
+static void
+xdg_output_description (void *data, struct zxdg_output_v1 *xdg,
+                        const char *description)
+{
+}
+
+static const struct zxdg_output_v1_listener xdg_output_listener = {
+  xdg_output_logical_position,
+  xdg_output_logical_size,
+  xdg_output_done,
+  xdg_output_name,
+  xdg_output_description
+};
+
+/* Asks for the xdg_output of a real output when the manager is there. */
+static void
+output_make_xdg (GDKWScaleDisplay *st, GDKWOutput *out)
+{
+  if (st->xdg_manager == NULL || out->proxy == NULL || out->xdg != NULL ||
+      st->finalized)
+    return;
+
+  out->xdg = zxdg_output_manager_v1_get_xdg_output (st->xdg_manager,
+                                                   out->proxy);
+  if (out->xdg != NULL)
+    zxdg_output_v1_add_listener (out->xdg, &xdg_output_listener, out);
+}
+
+static void
+output_destroy_xdg (GDKWOutput *out)
+{
+  if (out->xdg == NULL)
+    return;
+  zxdg_output_v1_destroy (out->xdg);
+  out->xdg = NULL;
+  out->xdg_w = out->xdg_h = 0;
+}
+
 static GDKWOutput *
 output_new (GDKWScaleDisplay *st, struct wl_output *proxy, guint32 name,
             guint32 version, gboolean fake)
@@ -949,6 +1037,7 @@ output_new (GDKWScaleDisplay *st, struct wl_output *proxy, guint32 name,
 static void
 output_destroy_proxy (GDKWOutput *out)
 {
+  output_destroy_xdg (out);
   if (out->proxy == NULL)
     return;
   if (out->version >= WL_OUTPUT_RELEASE_SINCE_VERSION)
@@ -1000,6 +1089,7 @@ _gdk_wayland_scale_bind_output (GDKWDisplayWayland *display,
 
   out = output_new (st, proxy, name, v, FALSE);
   wl_output_add_listener (proxy, &output_listener, out);
+  output_make_xdg (st, out);
   mirror_first (st);
 }
 
@@ -1027,6 +1117,24 @@ _gdk_wayland_scale_bind_global (GDKWDisplayWayland *display,
           for (l = st->surfaces; l; l = l->next)
             surface_make_viewport (l->data);
           update_all_surfaces (st);
+        }
+      return TRUE;
+    }
+
+  if (strcmp (interface, zxdg_output_manager_v1_interface.name) == 0)
+    {
+      st = scale_state_get (display, TRUE);
+      if (st->xdg_manager == NULL && !st->finalized)
+        {
+          /* version 2 adds name and description, version 3 deprecates done:
+           * wl_output.done then ends an update.  Version 2 is enough. */
+          st->xdg_manager =
+            wl_registry_bind (registry, name,
+                              &zxdg_output_manager_v1_interface,
+                              MIN (version, 2));
+          st->xdg_manager_name = name;
+          for (l = st->outputs; l; l = l->next)
+            output_make_xdg (st, l->data);
         }
       return TRUE;
     }
@@ -1063,6 +1171,18 @@ _gdk_wayland_scale_global_remove (GDKWDisplayWayland *display, guint32 name)
   if (out != NULL)
     {
       output_remove (st, out);
+      return TRUE;
+    }
+
+  if (st->xdg_manager != NULL && st->xdg_manager_name == name)
+    {
+      for (l = st->outputs; l; l = l->next)
+        output_destroy_xdg (l->data);
+      zxdg_output_manager_v1_destroy (st->xdg_manager);
+      st->xdg_manager = NULL;
+      st->xdg_manager_name = 0;
+      outputs_changed (st, TRUE);
+      update_all_surfaces (st);
       return TRUE;
     }
 
@@ -1143,6 +1263,11 @@ _gdk_wayland_scale_display_finalize (GdkDisplay *gdk_display)
   for (l = st->outputs; l; l = l->next)
     output_destroy_proxy (l->data);
 
+  if (st->xdg_manager != NULL)
+    {
+      zxdg_output_manager_v1_destroy (st->xdg_manager);
+      st->xdg_manager = NULL;
+    }
   if (st->viewporter != NULL)
     {
       wp_viewporter_destroy (st->viewporter);

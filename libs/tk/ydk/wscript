@@ -179,6 +179,7 @@ libydk_wayland_sources = [
     'wayland/gdkxhandles-wayland.c',
     'wayland/primary-selection-unstable-v1-protocol.c',
     'wayland/viewporter-protocol.c',
+    'wayland/xdg-output-unstable-v1-protocol.c',
     'wayland/xdg-shell-protocol.c',
 ]
 

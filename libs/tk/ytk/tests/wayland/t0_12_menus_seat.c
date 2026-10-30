@@ -580,6 +580,18 @@ dump_geometry (void)
 
   main_origin (&mx, &my);
   lg ("GEOM", "main origin %d,%d", mx, my);
+  {
+    GdkScreen *scr = gdk_screen_get_default ();
+    int nm = gdk_screen_get_n_monitors (scr), j;
+    GdkRectangle mg;
+
+    lg ("SCREEN", "%d %d", gdk_screen_get_width (scr), gdk_screen_get_height (scr));
+    for (j = 0; j < nm; j++)
+      {
+        gdk_screen_get_monitor_geometry (scr, j, &mg);
+        lg ("MONITOR", "%d %d %d %d %d", j, mg.x, mg.y, mg.width, mg.height);
+      }
+  }
   g_hash_table_iter_init (&it, named);
   while (g_hash_table_iter_next (&it, &k, &v))
     {
