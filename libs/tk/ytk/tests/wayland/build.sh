@@ -5,6 +5,10 @@
 # Not part of the default Ardour build.  Run it inside the nix shell of the
 # merge plan (section 6), after "waf build --targets=libydk-pixbuf,libztk,libydk,libytk":
 #
+# T0.3 also needs the clearlooks engine.  Build it with
+# "waf build --targets=clearlooks-newer,engines".  Without the "engines"
+# target, GTK does not find the engine and T0.3 fails on its clearlooks phase.
+#
 #   nix-shell shell.nix --run 'unset AS; libs/tk/ytk/tests/wayland/build.sh'
 #
 # usage: build.sh [test-source-stem ...]     (default: every t0_*.c)
