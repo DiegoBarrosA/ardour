@@ -19,12 +19,13 @@
 # dbus-run-session and ImageMagick on PATH.
 #
 # PASS rule: the program prints "T0.N: PASS" (or SKIP) and exits 0.  Under
-# valgrind it must also report "ERROR SUMMARY: 0 errors" in the text log and
-# have no error with a libydk frame in the XML log; the suppression file names
-# no libydk frame (the SNAP rule).  Frames of libytk and other libraries are
-# counted and reported, but only an error makes a run fail.  The XML log of
-# valgrind 3.27 lists "Leak_*" records although --leak-check=no is given (the
-# text log has none); they are not errors and are counted separately.
+# valgrind it must also have no error in the XML log (any error fails the run)
+# and none of them may have a libydk frame; the suppression file names no
+# libydk frame (the SNAP rule).  Frames of libytk and other libraries are
+# counted and reported.  With --xml=yes, valgrind 3.27 lists "Leak_*" records
+# and exits with the --error-exitcode although --leak-check=no is given (a
+# text run has neither).  Those records are not errors: they are counted
+# separately and exit code 9 is accepted when no other error is in the log.
 #
 # Origin: Wayland backend of the ydk fork, snapshot commit 23f48f0
 # (scripts/smoke-test.sh, baseline-diff.sh and valgrind-smoke.sh).
@@ -193,8 +194,7 @@ for t in "${TESTS[@]}"; do
     cmd+=(G_SLICE=always-malloc G_DEBUG=gc-friendly,fatal-criticals T_TIMEOUT_SCALE=15)
     vgxml="$LOGS/$t.vg.xml"
     cmd+=(valgrind --xml=yes --xml-file="$vgxml" --error-exitcode=9 --track-origins=yes
-          --num-callers=30 --leak-check=no --log-file="$LOGS/$t.vg.txt"
-          --suppressions="$HERE/valgrind.supp" "$bin")
+          --num-callers=30 --leak-check=no --suppressions="$HERE/valgrind.supp" "$bin")
   else
     [ "$SHOTS" = 1 ] && cmd+=(T_SYNC_DIR="$sync")
     cmd+=("$bin")
@@ -221,12 +221,16 @@ for t in "${TESTS[@]}"; do
   case "$verdict" in *": PASS"*) status=PASS ;; *": SKIP"*) status=SKIP ;; esac
   note=""
   [ "$rc" = 124 ] && { status=FAIL; note="timeout after ${TMO}s"; }
+  if [ "$VG" = 1 ] && [ "$rc" = 9 ] && [ -f "$LOGS/$t.vg.xml" ]; then
+    # exit code 9 with only Leak_* records in the XML log is not an error
+    read -r vnerr _ <<<"$(vg_summary "$LOGS/$t.vg.xml" | head -n 1)"
+    [ "$vnerr" = 0 ] && rc=0
+  fi
   [ "$rc" != 0 ] && [ "$rc" != 124 ] && [ "$status" != FAIL ] && { status=FAIL; note="rc=$rc with verdict line"; }
   if [ "$VG" = 1 ]; then
     read -r nerr nydk nytk nleak <<<"$(vg_summary "$vgxml" | head -n 1)"
     vg_summary "$vgxml" | tail -n +2 > "$LOGS/$t.vg-errors.txt"
-    summ=$(grep "ERROR SUMMARY" "$LOGS/$t.vg.txt" | tail -n 1 | sed -E 's/^==[0-9]+== //')
-    case "$summ" in "ERROR SUMMARY: 0 errors"*) ;; *) status=FAIL; note="$note [$summ]" ;; esac
+    if [ "$nerr" != 0 ]; then status=FAIL; note="$note $nerr valgrind errors"; fi
     if [ "$nydk" != 0 ]; then status=FAIL; note="$note libydk frames in $nydk valgrind errors"; fi
     note="$note valgrind errors=$nerr libydk=$nydk libytk=$nytk (leak records ignored: $nleak)"
   fi
