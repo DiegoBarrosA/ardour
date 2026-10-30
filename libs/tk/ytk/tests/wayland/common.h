@@ -1,5 +1,5 @@
 /*
- * common.h -- helpers shared by the stage 0 ytk test programs (T0.1 to T0.10).
+ * common.h -- helpers shared by the stage 0 ytk test programs (T0.1 to T0.11).
  *
  * Each test prints one verdict line of the form
  *     T0.N: PASS | FAIL | SKIP ...
