@@ -1056,6 +1056,13 @@ gboolean _gdk_wayland_popup_root_origin    (GDKWWindowImplWayland *impl,
 GDKWWindowImplWayland *
          _gdk_wayland_popup_family_root    (GDKWWindowImplWayland *impl);
 
+/* The window of the family of @focus (mapped popups, topmost first, then
+ * the base toplevel) that holds the root point (@rx, @ry), or NULL.  Popups
+ * with an empty input region never hold the pointer. */
+GDKWWindowImplWayland *
+         _gdk_wayland_popup_family_hit     (GDKWWindowImplWayland *focus,
+                                            gdouble rx, gdouble ry);
+
 /* TRUE if the family of @impl has at least one committed popup, or @impl is
  * a popup.  Used by the focus rule D12. */
 gboolean _gdk_wayland_popup_family_active  (GDKWWindowImplWayland *impl);

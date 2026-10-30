@@ -997,6 +997,21 @@ translate_button (guint button)
     }
 }
 
+/* The pointer position in the coordinates of @impl.  px and py belong to
+ * last_pointer_impl, a popup is placed at its root origin. */
+static void
+seat_coords_in (GDKWSeat *seat, GDKWWindowImplWayland *impl,
+		gdouble *x, gdouble *y)
+{
+  gint fx = 0, fy = 0, ix = 0, iy = 0;
+
+  _gdk_wayland_popup_root_origin (seat->last_pointer_impl, &fx, &fy);
+  _gdk_wayland_popup_root_origin (impl, &ix, &iy);
+
+  *x = seat->px + fx - ix;
+  *y = seat->py + fy - iy;
+}
+
 static void
 queue_crossing (GDKWDisplayWayland *wd, GdkEventType type,
 		GDKWWindowImplWayland *impl)
@@ -1009,9 +1024,8 @@ queue_crossing (GDKWDisplayWayland *wd, GdkEventType type,
 
   event->crossing.subwindow = NULL;
   event->crossing.time = seat_time (seat);
-  event->crossing.x = seat->px;
-  event->crossing.y = seat->py;
-  _gdk_wayland_event_root_coords (impl, seat->px, seat->py,
+  seat_coords_in (seat, impl, &event->crossing.x, &event->crossing.y);
+  _gdk_wayland_event_root_coords (impl, event->crossing.x, event->crossing.y,
 				  &event->crossing.x_root,
 				  &event->crossing.y_root);
   event->crossing.mode = GDK_CROSSING_NORMAL;
@@ -1056,11 +1070,13 @@ pointer_focus_lost (GDKWDisplayWayland *wd)
 {
   GdkDisplay *display = GDK_DISPLAY_OBJECT (wd);
   GDKWSeat *seat = _gdk_wayland_display_get_seat (display);
-  GDKWWindowImplWayland *impl = seat->pointer_focus;
+  GDKWWindowImplWayland *impl =
+    seat->pointer_target != NULL ? seat->pointer_target : seat->pointer_focus;
 
   _gdk_wayland_cursor_pointer_leave (display);
 
   seat->pointer_focus = NULL;
+  seat->pointer_target = NULL;
 
   if (impl != NULL)
     queue_crossing (wd, GDK_LEAVE_NOTIFY, impl);
@@ -1098,10 +1114,12 @@ wl_pointer_enter (void *data,
   if (impl == NULL)
     {
       seat->pointer_focus = NULL;
+      seat->pointer_target = NULL;
       return;
     }
 
   seat->pointer_focus = impl;
+  seat->pointer_target = impl;
   seat->last_pointer_impl = impl;
   seat->px = wl_fixed_to_double (surface_x);
   seat->py = wl_fixed_to_double (surface_y);
@@ -1125,6 +1143,43 @@ wl_pointer_leave (void *data,
   pointer_focus_lost (wd);
 }
 
+/* The window GDK should see the pointer in.  While a button is down the
+ * compositor keeps wl_pointer focus on the surface of the press, also when
+ * the pointer is over a popup of the same family (a menu that opened under
+ * the press).  X reports such events against the window under the pointer,
+ * and GTK menus rely on that for the highlight and for the activation on
+ * release.  So when the pointer is over another window of the family, move
+ * the target there and send the crossing events the compositor will not.
+ * @held is TRUE when a button is down, also the one this event releases. */
+static void
+update_pointer_target (GDKWDisplayWayland *wd, gboolean held)
+{
+  GDKWSeat *seat = _gdk_wayland_display_get_seat (GDK_DISPLAY_OBJECT (wd));
+  GDKWWindowImplWayland *want = seat->pointer_focus;
+  gint ox = 0, oy = 0;
+
+  if (want == NULL)
+    return;
+
+  if (held || seat->pointer_target != seat->pointer_focus)
+    {
+      GDKWWindowImplWayland *hit;
+
+      _gdk_wayland_popup_root_origin (want, &ox, &oy);
+      hit = _gdk_wayland_popup_family_hit (want, seat->px + ox, seat->py + oy);
+      if (hit != NULL)
+	want = hit;
+    }
+
+  if (want == seat->pointer_target)
+    return;
+
+  if (seat->pointer_target != NULL)
+    queue_crossing (wd, GDK_LEAVE_NOTIFY, seat->pointer_target);
+  seat->pointer_target = want;
+  queue_crossing (wd, GDK_ENTER_NOTIFY, want);
+}
+
 static void
 wl_pointer_motion (void *data,
 		   struct wl_pointer *pointer,
@@ -1134,7 +1189,9 @@ wl_pointer_motion (void *data,
 {
   GDKWDisplayWayland *wd = data;
   GDKWSeat *seat = _gdk_wayland_display_get_seat (GDK_DISPLAY_OBJECT (wd));
+  GDKWWindowImplWayland *target;
   GdkEvent *event;
+  gdouble x, y;
 
   if (!seat->pointer_focus)
     return;
@@ -1143,14 +1200,19 @@ wl_pointer_motion (void *data,
   seat->py = wl_fixed_to_double (surface_y);
   seat->last_time = time;
 
-  event = new_event (wd, GDK_MOTION_NOTIFY, seat->pointer_focus);
+  update_pointer_target (wd, seat->buttons_down != 0);
+  target = seat->pointer_target != NULL ? seat->pointer_target
+					: seat->pointer_focus;
+  seat_coords_in (seat, target, &x, &y);
+
+  event = new_event (wd, GDK_MOTION_NOTIFY, target);
   if (event == NULL)
     return;
 
   event->motion.time = time;
-  event->motion.x = seat->px;
-  event->motion.y = seat->py;
-  _gdk_wayland_event_root_coords (seat->pointer_focus, seat->px, seat->py,
+  event->motion.x = x;
+  event->motion.y = y;
+  _gdk_wayland_event_root_coords (target, x, y,
 				  &event->motion.x_root,
 				  &event->motion.y_root);
   event->motion.state = _gdk_wayland_seat_get_state (seat);
@@ -1175,7 +1237,10 @@ wl_pointer_button (void *data,
   guint gdk_button;
   guint32 bit;
   guint state_before;
+  GDKWWindowImplWayland *target;
+  gboolean held;
   GdkEvent *event;
+  gdouble x, y;
 
   if (!seat->pointer_focus)
     return;
@@ -1191,6 +1256,7 @@ wl_pointer_button (void *data,
     return;
 
   state_before = _gdk_wayland_seat_get_state (seat);
+  held = seat->buttons_down != 0;
 
   if (pressed)
     seat->buttons_down |= bit;
@@ -1214,15 +1280,20 @@ wl_pointer_button (void *data,
   seat->last_serial = serial;
   seat->last_time = time;
 
+  update_pointer_target (wd, held);
+  target = seat->pointer_target != NULL ? seat->pointer_target
+					: seat->pointer_focus;
+  seat_coords_in (seat, target, &x, &y);
+
   event = new_event (wd, pressed ? GDK_BUTTON_PRESS : GDK_BUTTON_RELEASE,
-		     seat->pointer_focus);
+		     target);
   if (event == NULL)
     return;
 
   event->button.time = time;
-  event->button.x = seat->px;
-  event->button.y = seat->py;
-  _gdk_wayland_event_root_coords (seat->pointer_focus, seat->px, seat->py,
+  event->button.x = x;
+  event->button.y = y;
+  _gdk_wayland_event_root_coords (target, x, y,
 				  &event->button.x_root,
 				  &event->button.y_root);
   event->button.state = state_before;
@@ -1240,19 +1311,25 @@ emit_scroll (GDKWDisplayWayland *wd, GdkScrollDirection direction,
 	     guint32 time)
 {
   GDKWSeat *seat = _gdk_wayland_display_get_seat (GDK_DISPLAY_OBJECT (wd));
+  GDKWWindowImplWayland *target;
   GdkEvent *event;
+  gdouble x, y;
 
   if (!seat->pointer_focus)
     return;
 
-  event = new_event (wd, GDK_SCROLL, seat->pointer_focus);
+  target = seat->pointer_target != NULL ? seat->pointer_target
+					: seat->pointer_focus;
+  seat_coords_in (seat, target, &x, &y);
+
+  event = new_event (wd, GDK_SCROLL, target);
   if (event == NULL)
     return;
 
   event->scroll.time = time;
-  event->scroll.x = seat->px;
-  event->scroll.y = seat->py;
-  _gdk_wayland_event_root_coords (seat->pointer_focus, seat->px, seat->py,
+  event->scroll.x = x;
+  event->scroll.y = y;
+  _gdk_wayland_event_root_coords (target, x, y,
 				  &event->scroll.x_root,
 				  &event->scroll.y_root);
   event->scroll.state = _gdk_wayland_seat_get_state (seat);
@@ -1457,6 +1534,7 @@ release_pointer (GDKWDisplayWayland *wd, gboolean notify)
     }
 
   seat->pointer_focus = NULL;
+  seat->pointer_target = NULL;
   seat->last_pointer_impl = NULL;
   seat->button_mask = 0;
   seat->buttons_down = 0;
@@ -1642,10 +1720,12 @@ _gdk_wayland_events_finalize (GdkDisplay *display)
 
   release_keyboard (wayland_display);
   seat->pointer_focus = NULL;
+  seat->pointer_target = NULL;
   release_pointer (wayland_display, FALSE);
 
   seat->keyboard_focus = NULL;
   seat->pointer_focus = NULL;
+  seat->pointer_target = NULL;
   seat->last_pointer_impl = NULL;
 
   if (wayland_display->wl_seat)

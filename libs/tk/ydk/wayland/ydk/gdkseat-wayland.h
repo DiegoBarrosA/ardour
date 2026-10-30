@@ -352,6 +352,10 @@ struct _GDKWSeat
    * survives wl_pointer.leave so get_pointer () can still answer.  px / py
    * are in last_pointer_impl's surface coordinates. */
   GDKWWindowImplWayland *pointer_focus;
+  /* The window GDK believes the pointer is in.  It is pointer_focus, except
+   * while a button is down: the compositor then keeps focus on the surface of
+   * the press, and the pointer may be over a popup of the same family. */
+  GDKWWindowImplWayland *pointer_target;
   GDKWWindowImplWayland *last_pointer_impl;
   gdouble  px, py;
   guint    button_mask;           /* GDK_BUTTONn_MASK bits, n = 1..5 */
@@ -553,9 +557,12 @@ _gdk_wayland_seat_forget_impl (GDKWSeat *seat, GDKWWindowImplWayland *impl)
        * ignored, so a button held on the dead window would stay pressed
        * in get_pointer () until the next wl_pointer.enter. */
       seat->pointer_focus = NULL;
+      seat->pointer_target = NULL;
       seat->button_mask = 0;
       seat->buttons_down = 0;
     }
+  if (seat->pointer_target == impl)
+    seat->pointer_target = NULL;
   if (seat->last_pointer_impl == impl)
     seat->last_pointer_impl = NULL;
   if (seat->keyboard_focus == impl)

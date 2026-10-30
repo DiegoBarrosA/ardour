@@ -1653,6 +1653,48 @@ _gdk_wayland_popup_family_root (GDKWWindowImplWayland *impl)
   return impl;
 }
 
+/* The window of the family of @focus that holds the root point (@rx, @ry),
+ * topmost popup first, then the base toplevel.  NULL when no window of the
+ * family holds it.  Popups with an empty input region (tooltips) never hold
+ * the pointer. */
+GDKWWindowImplWayland *
+_gdk_wayland_popup_family_hit (GDKWWindowImplWayland *focus,
+                               gdouble rx, gdouble ry)
+{
+  GDKWWindowImplWayland *root = _gdk_wayland_popup_family_root (focus);
+  PopupDisplay *pd = get_pd (impl_display (focus), FALSE);
+  GList *l;
+
+  if (root == NULL)
+    return NULL;
+
+  if (pd != NULL)
+    for (l = g_list_last (pd->stack); l != NULL; l = l->prev)
+      {
+        GDKWPopup *p = l->data;
+        GdkWindowObject *w;
+
+        if (p->root != root || p->state != GDKW_POPUP_MAPPED ||
+            p->input_region_empty || !window_mapped (p->impl->wrapper))
+          continue;
+
+        w = GDK_WINDOW_OBJECT (p->impl->wrapper);
+        if (rx >= p->impl->x && rx < p->impl->x + w->width &&
+            ry >= p->impl->y && ry < p->impl->y + w->height)
+          return p->impl;
+      }
+
+  if (window_alive (root->wrapper))
+    {
+      GdkWindowObject *w = GDK_WINDOW_OBJECT (root->wrapper);
+
+      if (rx >= 0 && rx < w->width && ry >= 0 && ry < w->height)
+        return root;
+    }
+
+  return NULL;
+}
+
 gboolean
 _gdk_wayland_popup_family_active (GDKWWindowImplWayland *impl)
 {

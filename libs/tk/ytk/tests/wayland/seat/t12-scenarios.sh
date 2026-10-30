@@ -223,6 +223,7 @@ s12_dropdowns() {
   hover $(center dd-press)
   "$CLICK" press $(center dd-press); expect "press shows the menu" 'SIG show menu\[DropPress\]'; refresh_geom
   hover $(item_center DropPress "DropPress 3")
+  expect "the item under the pointer is selected during the drag" 'SIG select item\[DropPress 3\]'
   "$CLICK" release
   expect "release over an item activates it" 'SIG activate item\[DropPress 3\]'
   all_closed "closed after the release"
@@ -336,7 +337,50 @@ s18_keyboard_focus_back() {
   keys d; expect "a key reaches the main window after a combo choice" 'KEY_PRESS .* main keyval=0x64'
 }
 
-T12_ALL_SCENARIOS="$T12_ALL_SCENARIOS s16_pointer_leaves_client s17_second_window s18_keyboard_focus_back"
+# Press on the menu bar, drag, release: the item under the pointer activates.  While the button is
+# down the compositor keeps pointer focus on the main surface, so the backend has to aim the events
+# at the popup under the pointer (update_pointer_target in gdkevents-wayland.c).
+s19_press_drag_release() {
+  t12_reset; step s19-bar-drag-item
+  hover $(center bar:File)
+  "$CLICK" press $(center bar:File); expect "press on File shows the menu" 'SIG show menu\[File\]'; refresh_geom
+  hovv $(item_center File "New")
+  expect "New is selected during the drag" 'SIG select item\[New\]'
+  "$CLICK" release
+  expect "release over New activates it" 'SIG activate item\[New\]'
+  all_closed "closed after the release"
+
+  t12_reset quiet; step s19-bar-drag-cascade
+  hover $(center bar:File)
+  "$CLICK" press $(center bar:File); expect "press on File shows the menu" 'SIG show menu\[File\]'; refresh_geom
+  hovv $(item_center File "Open Recent")
+  expect "Recent shows during the drag" 'SIG show menu\[Recent\]' 2000
+  refresh_geom
+  hover $(item_center Recent "More")
+  expect "More shows during the drag (level 2)" 'SIG show menu\[More\]' 2000
+  refresh_geom
+  hover $(item_center More "Deeper")
+  expect "Deeper shows during the drag (level 3)" 'SIG show menu\[Deeper\]' 2000
+  refresh_geom
+  hover $(item_center Deeper "Deepest 2")
+  expect "Deepest 2 is selected during the drag" 'SIG select item\[Deepest 2\]'
+  "$CLICK" release
+  expect "release over Deepest 2 activates it" 'SIG activate item\[Deepest 2\]'
+  all_closed "everything is closed after the release"
+
+  t12_reset quiet; step s19-release-outside
+  hover $(center bar:File)
+  "$CLICK" press $(center bar:File); expect "press on File shows the menu" 'SIG show menu\[File\]'; refresh_geom
+  hovv $(item_center File "New")
+  expect "New is selected during the drag" 'SIG select item\[New\]'
+  hover 330 $(( OY + 100 ))
+  "$CLICK" release
+  expect "release outside the menu hides it" 'SIG hide menu\[File\]'
+  expect_not "no leaf item activates on a release outside" 'SIG activate item\[(New|Close|Project|Deepest)' 200
+  all_closed "everything is closed after the release"
+}
+
+T12_ALL_SCENARIOS="$T12_ALL_SCENARIOS s16_pointer_leaves_client s17_second_window s18_keyboard_focus_back s19_press_drag_release"
 
 t12_run() { # [only list: s01 s02 ...]
   local only=$1 s
