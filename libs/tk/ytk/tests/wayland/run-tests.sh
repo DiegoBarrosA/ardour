@@ -19,9 +19,12 @@
 # dbus-run-session and ImageMagick on PATH.
 #
 # PASS rule: the program prints "T0.N: PASS" (or SKIP) and exits 0.  Under
-# valgrind it must also have no valgrind error that has a libydk frame; the
-# suppression file names no libydk frame (the SNAP rule).  Errors with a libytk
-# frame and other errors are reported separately.
+# valgrind it must also report "ERROR SUMMARY: 0 errors" in the text log and
+# have no error with a libydk frame in the XML log; the suppression file names
+# no libydk frame (the SNAP rule).  Frames of libytk and other libraries are
+# counted and reported, but only an error makes a run fail.  The XML log of
+# valgrind 3.27 lists "Leak_*" records although --leak-check=no is given (the
+# text log has none); they are not errors and are counted separately.
 #
 # Origin: Wayland backend of the ydk fork, snapshot commit 23f48f0
 # (scripts/smoke-test.sh, baseline-diff.sh and valgrind-smoke.sh).
@@ -146,8 +149,10 @@ import sys, xml.etree.ElementTree as ET
 try:
     root = ET.parse(sys.argv[1]).getroot()
 except Exception as e:
-    print("-1 -1 -1"); print("  cannot parse valgrind xml: %s" % e); sys.exit(0)
-errs = root.findall("error")
+    print("-1 -1 -1 0"); print("  cannot parse valgrind xml: %s" % e); sys.exit(0)
+allerrs = root.findall("error")
+errs = [e for e in allerrs if not (e.findtext("kind") or "").startswith("Leak_")]
+leaks = len(allerrs) - len(errs)
 ydk = ytk = 0
 lines = []
 for e in errs:
@@ -166,7 +171,7 @@ for e in errs:
                  top[1], top[2], top[3]))
     for o, fn, f, l in objs[:12]:
         lines.append("      %s %s:%s %s" % (fn, f, l, o.rsplit("/", 1)[-1]))
-print(len(errs), ydk, ytk)
+print(len(errs), ydk, ytk, leaks)
 print("\n".join(lines))
 PY
 }
@@ -188,7 +193,8 @@ for t in "${TESTS[@]}"; do
     cmd+=(G_SLICE=always-malloc G_DEBUG=gc-friendly,fatal-criticals T_TIMEOUT_SCALE=15)
     vgxml="$LOGS/$t.vg.xml"
     cmd+=(valgrind --xml=yes --xml-file="$vgxml" --error-exitcode=9 --track-origins=yes
-          --num-callers=30 --leak-check=no --suppressions="$HERE/valgrind.supp" "$bin")
+          --num-callers=30 --leak-check=no --log-file="$LOGS/$t.vg.txt"
+          --suppressions="$HERE/valgrind.supp" "$bin")
   else
     [ "$SHOTS" = 1 ] && cmd+=(T_SYNC_DIR="$sync")
     cmd+=("$bin")
@@ -217,10 +223,12 @@ for t in "${TESTS[@]}"; do
   [ "$rc" = 124 ] && { status=FAIL; note="timeout after ${TMO}s"; }
   [ "$rc" != 0 ] && [ "$rc" != 124 ] && [ "$status" != FAIL ] && { status=FAIL; note="rc=$rc with verdict line"; }
   if [ "$VG" = 1 ]; then
-    read -r nerr nydk nytk <<<"$(vg_summary "$vgxml" | head -n 1)"
+    read -r nerr nydk nytk nleak <<<"$(vg_summary "$vgxml" | head -n 1)"
     vg_summary "$vgxml" | tail -n +2 > "$LOGS/$t.vg-errors.txt"
+    summ=$(grep "ERROR SUMMARY" "$LOGS/$t.vg.txt" | tail -n 1 | sed -E 's/^==[0-9]+== //')
+    case "$summ" in "ERROR SUMMARY: 0 errors"*) ;; *) status=FAIL; note="$note [$summ]" ;; esac
     if [ "$nydk" != 0 ]; then status=FAIL; note="$note libydk frames in $nydk valgrind errors"; fi
-    note="$note valgrind errors=$nerr libydk=$nydk libytk=$nytk"
+    note="$note valgrind errors=$nerr libydk=$nydk libytk=$nytk (leak records ignored: $nleak)"
   fi
   [ "$status" = FAIL ] && ALLRC=1
   printf '%-4s %-9s %-34s %-5s rc=%-3s %3ss %s\n' "$tn" "$MODE" "$t" "$status" "$rc" "$secs" "$note" | tee -a "$SUMMARY"

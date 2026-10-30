@@ -1,15 +1,19 @@
 /*
- * T0.8  A drag started without a seat fails cleanly (G3).
+ * T0.8  A drag started on a display without a seat does not crash (G3).
  *
- * gtk_drag_begin () grabs the pointer first.  On headless weston there is no
- * wl_seat, so the grab fails and gtk_drag_begin must return NULL, release its
- * IPC widget, log nothing critical and leave GTK usable.  With a seat (Xvfb)
- * the grab succeeds, the drag starts (grab_dnd_keys runs) and the program
- * ends it by dropping the grabs.  Either way: no crash, no CRITICAL, and a
- * second try behaves the same as the first.
+ * gtk_drag_begin () grabs the pointer first.  Two outcomes are legal:
+ *   - the grab fails: gtk_drag_begin returns NULL, releases its IPC widget and
+ *     logs nothing critical;
+ *   - the grab succeeds: the drag starts, grab_dnd_keys () runs (the portable
+ *     keyboard grab of G3 on a non-X11 display) and the program ends the drag
+ *     by dropping the grabs.
+ * Either way: no crash, no CRITICAL, GTK still works, and a second try
+ * behaves like the first.
  *
- * Without a seat the grab_dnd_keys / ungrab_dnd_keys code of G3 is not
- * reached; stage 3 on sway covers it.  This test says which path ran.
+ * Measured on headless weston 16 (no pointer, no keyboard): the Wayland
+ * backend grants the pointer grab, so the second path runs and grab_dnd_keys
+ * is reached.  The program prints which path ran.  Whether Escape cancels the
+ * drag needs a real seat (stage 3 on sway).
  */
 #include "common.h"
 
