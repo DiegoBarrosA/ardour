@@ -526,3 +526,39 @@ s22_fast_tap() {
 }
 
 T12_ALL_SCENARIOS="$T12_ALL_SCENARIOS s22_fast_tap"
+
+# A click outside every surface of the client dismisses the menu: the compositor ends the popup
+# grab (popup_done) because the pointer has no focus, and the click does not reach the client.
+s23_click_on_desktop() {
+  t12_reset; step s23-desktop-click-menu
+  open_file
+  hover 1700 900 14
+  lclick 1700 900
+  expect "File hides on a click on the empty desktop" 'SIG hide menu\[File\]'
+  expect_not "no menu item activates" 'SIG activate item' 200
+  all_closed "everything is closed"
+  open_file
+  expect_not "File opens again and stays open" 'SIG hide menu\[File\]' 500
+  keys Escape; pause 300; all_closed "closed after Escape"
+
+  t12_reset quiet; step s23-desktop-click-dropdown
+  lclick $(center dd-press)
+  expect "dropdown shows" 'SIG show menu\[DropPress\]'
+  hover 1700 900 14
+  rclick 1700 900
+  expect "the dropdown hides on a right click on the empty desktop" 'SIG hide menu\[DropPress\]'
+  all_closed "everything is closed"
+
+  t12_reset quiet; step s23-desktop-click-combo
+  lclick $(center combo)
+  expect "combo opens" 'notify::popup-shown combo 1'
+  hover 1700 900 14
+  lclick 1700 900
+  expect "the combo popup closes on a click on the empty desktop" 'notify::popup-shown combo 0'
+  all_closed "everything is closed"
+  lclick $(center combo)
+  expect "the combo opens again" 'notify::popup-shown combo 1'
+  keys Escape; pause 300; all_closed "closed after Escape"
+}
+
+T12_ALL_SCENARIOS="$T12_ALL_SCENARIOS s23_click_on_desktop"
