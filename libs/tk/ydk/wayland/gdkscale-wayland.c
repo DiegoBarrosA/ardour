@@ -738,9 +738,13 @@ monitor_count (GDKWScaleDisplay *st)
  *     focus (a toplevel and its popups), else of the one that has the pointer
  *     focus, else of any toplevel with an output, else the first monitor.  The
  *     output of a toplevel is the first one of its wl_surface.enter list.
- * With one monitor nothing changes: the rectangle is the compositor's.  The
- * screen size stays the bounding box of the compositor layout, so it does not
- * change when the reference changes, and no signal is emitted for that.
+ * With one monitor that monitor is the reference output, so it sits at (0,0)
+ * as well, whatever position the compositor gives it (a sole output at 864,40
+ * is common when the output left of it is off).  Every toplevel is at (0,0),
+ * so a rectangle at 864,40 would clamp the menus away from the window.  The
+ * screen size is the bounding box of the compositor layout, measured from the
+ * top left corner of the layout, so it does not change when the reference
+ * changes, and no signal is emitted for that.
  * A window on another output than the reference output is not described
  * correctly until the user works in it; a menu or dialog is opened by that
  * work, which makes its output the reference output.
@@ -813,14 +817,21 @@ static void
 bounding_box (GDKWScaleDisplay *st, gint *width, gint *height)
 {
   gint n = monitor_count (st);
-  gint i, w = 0, h = 0;
+  gint i, w = 0, h = 0, x0 = G_MAXINT, y0 = G_MAXINT;
 
   for (i = 0; i < n; i++)
     {
       GDKWOutput *out = monitor_nth (st, i);
 
-      w = MAX (w, out->x + out->logical_w);
-      h = MAX (h, out->y + out->logical_h);
+      x0 = MIN (x0, out->x);
+      y0 = MIN (y0, out->y);
+      w = i == 0 ? out->x + out->logical_w : MAX (w, out->x + out->logical_w);
+      h = i == 0 ? out->y + out->logical_h : MAX (h, out->y + out->logical_h);
+    }
+  if (n > 0)
+    {
+      w -= x0;
+      h -= y0;
     }
   if (w <= 0 || h <= 0)
     {
@@ -1503,7 +1514,7 @@ _gdk_wayland_scale_monitor_geometry (GdkDisplay *display, gint monitor,
   out = view_nth (st, monitor);
   if (out != NULL)
     {
-      GDKWOutput *ref = monitor_count (st) > 1 ? reference_output (st) : NULL;
+      GDKWOutput *ref = reference_output (st);
 
       dest->x = out->x - (ref != NULL ? ref->x : 0);
       dest->y = out->y - (ref != NULL ? ref->y : 0);

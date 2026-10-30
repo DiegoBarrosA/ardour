@@ -667,6 +667,38 @@ test_monitor_view (void)
   T_CHECK (gdk_screen_get_n_monitors (scr) == 1, "F: one monitor at the end");
   gdk_screen_get_monitor_geometry (scr, 0, &g);
   T_CHECK (rect_is (&g, real.x, real.y, real.width, real.height), "F: one monitor: the rectangle is the compositor's");
+
+  /* The only output sits at a non-zero layout position, as when the output on its left is off.
+   * Every toplevel is at 0,0, so the monitor must be at 0,0 too, and the screen has the size of
+   * the output (the rectangle at 864,40 clamped the menus away from the window). */
+  HOOK (_gdk_wayland_test_output_xdg (disp, rid, 3, 864, 40, real.width, real.height, FALSE), "xdg position 864,40");
+  HOOK (_gdk_wayland_test_output_done (disp, rid), "wl_output.done");
+  T_CHECK (gdk_screen_get_n_monitors (scr) == 1, "F: one monitor at a non-zero position");
+  gdk_screen_get_monitor_geometry (scr, 0, &g);
+  T_CHECK (rect_is (&g, 0, 0, real.width, real.height), "F: a sole output at 864,40: monitor 0 is at 0,0 (%d %d %d %d)", g.x, g.y,
+           g.width, g.height);
+  T_CHECK (gdk_screen_get_width (scr) == real.width && gdk_screen_get_height (scr) == real.height,
+           "F: a sole output at 864,40: the screen is %dx%d (%dx%d)", real.width, real.height, gdk_screen_get_width (scr),
+           gdk_screen_get_height (scr));
+  T_CHECK (gdk_screen_get_monitor_at_point (scr, 10, 10) == 0, "F: a sole output at 864,40: the point 10,10 is on monitor 0");
+
+  /* Two outputs, neither at 0,0: the screen starts at the top left corner of the layout. */
+  HOOK (_gdk_wayland_test_output_add (disp, 864 + real.width + 40, 100, 2560, 1440, 1, 0, &fid), "second output");
+  gdk_screen_get_monitor_geometry (scr, 0, &g);
+  gdk_screen_get_monitor_geometry (scr, 1, &g1);
+  T_CHECK (rect_is (&g, 0, 0, real.width, real.height), "F: two outputs away from 0,0: monitor 0 at 0,0 (%d %d)", g.x, g.y);
+  T_CHECK (rect_is (&g1, real.width + 40, 60, 2560, 1440), "F: two outputs away from 0,0: monitor 1 follows (%d %d %d %d)", g1.x, g1.y,
+           g1.width, g1.height);
+  T_CHECK (gdk_screen_get_width (scr) == real.width + 40 + 2560 &&
+             gdk_screen_get_height (scr) == MAX (real.height, 60 + 1440),
+           "F: two outputs away from 0,0: the screen is the bounding box of the layout (%dx%d)", gdk_screen_get_width (scr),
+           gdk_screen_get_height (scr));
+  HOOK (_gdk_wayland_test_output_remove (disp, fid), "remove the second output");
+
+  HOOK (_gdk_wayland_test_output_xdg (disp, rid, 3, real.x, real.y, real.width, real.height, FALSE), "xdg position back");
+  HOOK (_gdk_wayland_test_output_done (disp, rid), "wl_output.done");
+  gdk_screen_get_monitor_geometry (scr, 0, &g);
+  T_CHECK (rect_is (&g, real.x, real.y, real.width, real.height), "F: the output is back at its first position");
 }
 
 /* ---- G: the screen signals fire once per output update ------------------------ */
