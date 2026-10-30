@@ -36,6 +36,7 @@
 #include <X11/Xatom.h>
 #include <ytk/gtkicontheme.h>
 #include "gtkintl.h"
+#include "gtkprivate.h"
 
 /* for the kill(2) system call and errno - POSIX.1-2001 and later */
 #include <sys/types.h>
@@ -541,6 +542,14 @@ _gtk_mount_operation_lookup_context_get (GdkDisplay *display)
   context->pid_to_window = g_hash_table_new (g_direct_hash, g_direct_equal);
   context->display = display;
 
+  /* The window list comes from X11 properties on the root window. On a
+   * display that is not X11 there is no Display for Xlib. Return an empty
+   * context. The lookups then find no window, and
+   * _gtk_mount_operation_lookup_info does not ask Xlib.
+   */
+  if (!GTK_DISPLAY_IS_X11 (display))
+    return context;
+
   mapping = NULL;
   mapping_length = 0;
   get_window_list (GDK_DISPLAY_XDISPLAY (context->display),
@@ -900,9 +909,18 @@ _gtk_mount_operation_lookup_info (GtkMountOperationLookupContext *context,
 
   *out_command_line = pid_get_command_line (pid);
 
-  *out_name = get_name_for_window_with_pid (context, pid);
+  /* The name and the icon come from X11 window properties. A $WINDOWID in
+   * the process environment can give a window id even when the lookup
+   * context is empty. On a display that is not X11 that id is not usable
+   * and Xlib has no Display, so skip both lookups. The name then comes from
+   * the command line, below.
+   */
+  if (GTK_DISPLAY_IS_X11 (context->display))
+    {
+      *out_name = get_name_for_window_with_pid (context, pid);
 
-  *out_pixbuf = get_pixbuf_for_window_with_pid (context, pid, size_pixels);
+      *out_pixbuf = get_pixbuf_for_window_with_pid (context, pid, size_pixels);
+    }
 
   /* if we didn't manage to find the name via X, fall back to the basename
    * of the first element of the command line and, for maximum geek-comfort,

@@ -66,6 +66,12 @@ _gtk_socket_windowing_realize_window (GtkSocket *socket)
   GdkWindow *window = GTK_WIDGET (socket)->window;
   XWindowAttributes xattrs;
 
+  /* GtkSocket is an X11 mechanism. On a display that is not X11 there is no
+   * Display for Xlib, so every function below that calls Xlib returns early.
+   */
+  if (!GTK_DISPLAY_IS_X11 (gtk_widget_get_display (GTK_WIDGET (socket))))
+    return;
+
   XGetWindowAttributes (GDK_WINDOW_XDISPLAY (window),
 			GDK_WINDOW_XWINDOW (window),
 			&xattrs);
@@ -96,12 +102,20 @@ _gtk_socket_windowing_size_request (GtkSocket *socket)
 {
   XSizeHints hints;
   long supplied;
-	  
+
+  if (!GTK_DISPLAY_IS_X11 (gtk_widget_get_display (GTK_WIDGET (socket))))
+    {
+      socket->request_width = 1;
+      socket->request_height = 1;
+      socket->have_size = TRUE;
+      return;
+    }
+
   gdk_error_trap_push ();
 
   socket->request_width = 1;
   socket->request_height = 1;
-	  
+
   if (XGetWMNormalHints (GDK_WINDOW_XDISPLAY (socket->plug_window),
 			 GDK_WINDOW_XWINDOW (socket->plug_window),
 			 &hints, &supplied))
@@ -129,6 +143,9 @@ _gtk_socket_windowing_send_key_event (GtkSocket *socket,
 {
   XKeyEvent xkey;
   GdkScreen *screen = gdk_window_get_screen (socket->plug_window);
+
+  if (!GTK_DISPLAY_IS_X11 (gdk_screen_get_display (screen)))
+    return;
 
   memset (&xkey, 0, sizeof (xkey));
   xkey.type = (gdk_event->type == GDK_KEY_PRESS) ? KeyPress : KeyRelease;
@@ -215,6 +232,9 @@ _gtk_socket_windowing_send_configure_event (GtkSocket *socket)
 
   g_return_if_fail (socket->plug_window != NULL);
 
+  if (!GTK_DISPLAY_IS_X11 (gtk_widget_get_display (GTK_WIDGET (socket))))
+    return;
+
   memset (&xconfigure, 0, sizeof (xconfigure));
   xconfigure.type = ConfigureNotify;
 
@@ -249,6 +269,9 @@ _gtk_socket_windowing_send_configure_event (GtkSocket *socket)
 void
 _gtk_socket_windowing_select_plug_window_input (GtkSocket *socket)
 {
+  if (!GTK_DISPLAY_IS_X11 (gtk_widget_get_display (GTK_WIDGET (socket))))
+    return;
+
   XSelectInput (GDK_DISPLAY_XDISPLAY (gtk_widget_get_display (GTK_WIDGET (socket))),
 		GDK_WINDOW_XWINDOW (socket->plug_window),
 		StructureNotifyMask | PropertyChangeMask);
@@ -276,9 +299,12 @@ _gtk_socket_windowing_embed_get_info (GtkSocket *socket)
 void
 _gtk_socket_windowing_embed_notify (GtkSocket *socket)
 {
-#ifdef HAVE_XFIXES
   GdkDisplay *display = gtk_widget_get_display (GTK_WIDGET (socket));
 
+  if (!GTK_DISPLAY_IS_X11 (display))
+    return;
+
+#ifdef HAVE_XFIXES
   XFixesChangeSaveSet (GDK_DISPLAY_XDISPLAY (display),
 		       GDK_WINDOW_XWINDOW (socket->plug_window),
 		       SetModeInsert, SaveSetRoot, SaveSetUnmap);
@@ -295,14 +321,20 @@ xembed_get_info (GdkWindow     *window,
 		 unsigned long *flags)
 {
   GdkDisplay *display = gdk_window_get_display (window);
-  Atom xembed_info_atom = gdk_x11_get_xatom_by_name_for_display (display, "_XEMBED_INFO");
+  Atom xembed_info_atom;
   Atom type;
   int format;
   unsigned long nitems, bytes_after;
   unsigned char *data;
   unsigned long *data_long;
   int status;
-  
+
+  /* No Display on a display that is not X11: report "no info property". */
+  if (!GTK_DISPLAY_IS_X11 (display))
+    return FALSE;
+
+  xembed_info_atom = gdk_x11_get_xatom_by_name_for_display (display, "_XEMBED_INFO");
+
   gdk_error_trap_push();
   status = XGetWindowProperty (GDK_DISPLAY_XDISPLAY (display),
 			       GDK_WINDOW_XWINDOW (window),
