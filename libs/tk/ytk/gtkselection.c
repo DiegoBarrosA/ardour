@@ -1339,11 +1339,11 @@ selection_set_compound_text (GtkSelectionData *selection_data,
 
 #ifdef GDK_WINDOWING_X11
   tmp = g_strndup (str, len);
-  if (gdk_x11_display_utf8_to_compound_text (selection_data->display, tmp,
+  if (gdk_utf8_to_compound_text_for_display (selection_data->display, tmp,
                                              &encoding, &format, &text, &new_length))
     {
       gtk_selection_data_set (selection_data, encoding, format, text, new_length);
-      gdk_x11_free_compound_text (text);
+      gdk_free_compound_text (text);
 
       result = TRUE;
     }
