@@ -212,6 +212,16 @@ class LIBARDOUR_API LV2Plugin : public ARDOUR::Plugin, public ARDOUR::Workee
 		_ui_transient_win_id = id;
 	}
 
+	/** Tell LV2Plugin if the display can embed X11 plugin UIs.
+	 *
+	 * The default is true. ARDOUR::init() runs before the GUI toolkit
+	 * opens its display, so the GUI calls this later. It only affects
+	 * plugins that are instantiated after the call.
+	 */
+	static void set_x11_ui_supported (bool yn) {
+		_x11_ui_supported = yn;
+	}
+
   private:
 	struct Impl;
 	Impl*         _impl;
@@ -375,6 +385,7 @@ class LIBARDOUR_API LV2Plugin : public ARDOUR::Plugin, public ARDOUR::Workee
 	static uint32_t      _ui_contrasting_color;
 	static unsigned long _ui_transient_win_id;
 	static float         _ui_update_hz;
+	static bool          _x11_ui_supported;
 
 	mutable unsigned _state_version;
 

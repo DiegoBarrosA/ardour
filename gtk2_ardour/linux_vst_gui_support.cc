@@ -764,7 +764,12 @@ vstfx_launch_editor (VSTState* vstfx)
 void
 vstfx_destroy_editor (VSTState* vstfx)
 {
-	assert (0 == gui_state);
+	if (0 != gui_state) {
+		/* vstfx_init() failed (no X11 connection) or the GUI thread is gone.
+		 * No editor window can exist, and nobody would answer the wait below.
+		 */
+		return;
+	}
 	pthread_mutex_lock (&vstfx->lock);
 	if (vstfx->linux_window) {
 		vstfx->destroy = TRUE;
