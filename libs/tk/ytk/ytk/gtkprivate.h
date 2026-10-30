@@ -89,6 +89,26 @@ const gchar *_gtk_get_data_prefix ();
 
 #endif /* G_OS_WIN32 */
 
+/* GTK_DISPLAY_IS_X11 (display)
+ *
+ * TRUE if @display is a live X11 display.
+ *
+ * On Linux, gdkconfig.h defines GDK_WINDOWING_X11 and GDK_WINDOWING_WAYLAND
+ * together. An "#ifdef GDK_WINDOWING_X11" block is therefore compiled in and
+ * can also run on a Wayland display. Xlib calls on a Wayland display crash,
+ * because GDK_DISPLAY_XDISPLAY and the other X11 handle macros give NULL.
+ * Test this macro before every Xlib call on a GDK handle.
+ *
+ * When GDK_WINDOWING_X11 is not defined, the result is always FALSE.
+ * When it is defined, the macro calls gdk_x11_display_is_x11 (). The file
+ * that uses the macro must include <ydk/gdkx.h> under the same #ifdef.
+ */
+#ifdef GDK_WINDOWING_X11
+#define GTK_DISPLAY_IS_X11(display) (gdk_x11_display_is_x11 (display))
+#else
+#define GTK_DISPLAY_IS_X11(display) (((void) (display)), FALSE)
+#endif
+
 gboolean _gtk_fnmatch (const char *pattern,
 		       const char *string,
 		       gboolean    no_leading_period);

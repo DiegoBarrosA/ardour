@@ -148,6 +148,13 @@ _gtk_xembed_send_message (GdkWindow        *recipient,
   g_return_if_fail (GDK_IS_WINDOW (recipient));
 
   display = gdk_window_get_display (recipient);
+
+  /* XEMBED is an X11 protocol. On a display that is not X11 there is no
+   * Display to send to, and XSendEvent would crash.
+   */
+  if (!GTK_DISPLAY_IS_X11 (display))
+    return;
+
   GTK_NOTE (PLUGSOCKET,
 	    g_message ("Sending %s", _gtk_xembed_message_name (message)));
 

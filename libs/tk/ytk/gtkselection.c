@@ -60,6 +60,7 @@
 #include "gtkselection.h"
 #include "gtktextbufferrichtext.h"
 #include "gtkintl.h"
+#include "gtkprivate.h"
 #include "ydk-pixbuf/ydk-pixbuf.h"
 
 #ifdef GDK_WINDOWING_X11
@@ -77,11 +78,30 @@
 /* Maximum size of a sent chunk, in bytes. Also the default size of
    our buffers */
 #ifdef GDK_WINDOWING_X11
-#define GTK_SELECTION_MAX_SIZE(display)                                 \
-  MIN(262144,                                                           \
-      XExtendedMaxRequestSize (GDK_DISPLAY_XDISPLAY (display)) == 0     \
-       ? XMaxRequestSize (GDK_DISPLAY_XDISPLAY (display)) - 100         \
-       : XExtendedMaxRequestSize (GDK_DISPLAY_XDISPLAY (display)) - 100)
+/* This was a macro that called Xlib on GDK_DISPLAY_XDISPLAY (display).
+ * On a Wayland display that handle is NULL and Xlib crashes. There is no
+ * X request size limit on a display that is not X11, so use G_MAXINT, as the
+ * non-X11 build does.
+ */
+static gulong
+gtk_selection_max_size (GdkDisplay *display)
+{
+  Display *xdisplay;
+  long     extended;
+
+  if (!GTK_DISPLAY_IS_X11 (display))
+    return G_MAXINT;
+
+  xdisplay = GDK_DISPLAY_XDISPLAY (display);
+  extended = XExtendedMaxRequestSize (xdisplay);
+
+  return MIN (262144,
+              extended == 0
+              ? XMaxRequestSize (xdisplay) - 100
+              : extended - 100);
+}
+
+#define GTK_SELECTION_MAX_SIZE(display) gtk_selection_max_size (display)
 #else
 /* No chunks on Win32 */
 #define GTK_SELECTION_MAX_SIZE(display) G_MAXINT
@@ -1319,11 +1339,11 @@ selection_set_compound_text (GtkSelectionData *selection_data,
 
 #ifdef GDK_WINDOWING_X11
   tmp = g_strndup (str, len);
-  if (gdk_x11_display_utf8_to_compound_text (selection_data->display, tmp,
+  if (gdk_utf8_to_compound_text_for_display (selection_data->display, tmp,
                                              &encoding, &format, &text, &new_length))
     {
       gtk_selection_data_set (selection_data, encoding, format, text, new_length);
-      gdk_x11_free_compound_text (text);
+      gdk_free_compound_text (text);
 
       result = TRUE;
     }
