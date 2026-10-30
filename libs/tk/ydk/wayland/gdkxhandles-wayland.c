@@ -27,21 +27,16 @@
  * NULL, a pixmap or an unmapped window.
  *
  * Returning NULL does not make Xlib calls safe: a NULL Display handed to
- * XGrabKey and friends still crashes.  Callers must test first, so this
- * file also exports a runtime predicate that ytk and applications can use:
- *
- *   gboolean gdk_x11_display_is_x11 (GdkDisplay *display);
- *
- * It is TRUE only for a live X11 display (NULL gives FALSE).  Declare it in
- * x11/ydk/gdkx.h next to gdk_x11_display_get_xdisplay.
+ * XGrabKey and friends still crashes.  Callers must test first, with the
+ * runtime predicate gdk_x11_display_is_x11 (GdkDisplay *display).  It is
+ * defined in x11/gdkmain-x11.c and declared in x11/ydk/gdkx.h.
  *
  * The prototypes return gpointer / gulong instead of Display * / XID on
  * purpose: this file has no Xlib.  The dispatchers assign the gpointer to
  * Display * with no cast, and gulong is what XID is.
  *
  * Naming: `_gdk_wayland_x11_*` (public name minus gdk_, see the audit script),
- * prototypes in gdkprivate-wayland.h, no alias blocks.  gdk_x11_display_is_x11 is a
- * new public name with no IA__ alias.
+ * prototypes in gdkprivate-wayland.h, no alias blocks.
  */
 
 #include "config.h"
@@ -82,13 +77,4 @@ _gdk_wayland_x11_window_get_drawable_impl (GdkWindow *window)
     return NULL;
 
   return ((GdkWindowObject *) window)->impl;
-}
-
-gboolean
-gdk_x11_display_is_x11 (GdkDisplay *display)
-{
-  if (display == NULL || !GDK_IS_DISPLAY (display))
-    return FALSE;
-
-  return !GDKW_IS_DISPLAY_WAYLAND (display);
 }

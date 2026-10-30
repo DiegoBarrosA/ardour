@@ -559,7 +559,6 @@ gpointer _gdk_wayland_x11_display_get_xdisplay (GdkDisplay *display);
 gpointer _gdk_wayland_x11_drawable_get_xdisplay (GdkDrawable *drawable);
 gulong _gdk_wayland_x11_drawable_get_xid (GdkDrawable *drawable);
 GdkDrawable * _gdk_wayland_x11_window_get_drawable_impl (GdkWindow *window);
-/* New public predicate declared in x11/ydk/gdkx.h: FALSE for a Wayland display. */
-gboolean gdk_x11_display_is_x11 (GdkDisplay *display);
+/* gdk_x11_display_is_x11 is defined in x11/gdkmain-x11.c and declared in x11/ydk/gdkx.h. */
 
 #endif /* __YDK_GDKP_PRIVATE_WAYLAND_H__ */
