@@ -711,6 +711,7 @@ gdk_window_wayland_move_resize (GdkWindow *window,
   GDKWWindowImplWayland *impl;
   GdkWindowObject *private = (GdkWindowObject *) window;
   gboolean size_changed;
+  gint new_width, new_height;
 
   impl = GDKW_WINDOW_IMPL_WAYLAND (private->impl);
   if (with_move)
@@ -718,9 +719,13 @@ gdk_window_wayland_move_resize (GdkWindow *window,
       impl->x = x;
       impl->y = y;
     }
-  size_changed = (guint) width != impl->width || (guint) height != impl->height;
-  impl->width = width;
-  impl->height = height;
+  /* gdk_window_move () passes -1 for width and height: keep the old size. */
+  new_width = width == -1 ? (gint) impl->width : width;
+  new_height = height == -1 ? (gint) impl->height : height;
+  size_changed = (guint) new_width != impl->width ||
+                 (guint) new_height != impl->height;
+  impl->width = new_width;
+  impl->height = new_height;
 
   /* The core does not set the size of a toplevel after this call: the X11
    * backend gets it from the ConfigureNotify, and a compositor configure sets
@@ -741,7 +746,7 @@ gdk_window_wayland_move_resize (GdkWindow *window,
   /* M10 D9: a client resize of a toplevel replaces the back store (a popup
    * does it in its own positioner path) */
   if (impl->popup == NULL && size_changed)
-    _gdk_wayland_frame_client_resize (impl, width, height);
+    _gdk_wayland_frame_client_resize (impl, new_width, new_height);
 }
 
 static void
