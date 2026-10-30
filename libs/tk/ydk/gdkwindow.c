@@ -11639,4 +11639,6 @@ gdk_window_set_modal_notify (void (*modal_notify)(GdkWindow*,gboolean))
 }
 
 #define __GDK_WINDOW_C__
+#ifndef YDK_PER_SOURCE_ALIASES
 #include "gdkaliasdef.c"
+#endif

@@ -842,4 +842,6 @@ _gdk_x11_roundtrip_async (GdkDisplay           *display,
 }
 
 #define __GDK_ASYNC_C__
+#ifndef YDK_PER_SOURCE_ALIASES
 #include "gdkaliasdef.c"
+#endif

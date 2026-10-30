@@ -811,4 +811,6 @@ _gdk_windowing_get_bits_for_depth (GdkDisplay *display,
 
 
 #define __GDK_IMAGE_X11_C__
+#ifndef YDK_PER_SOURCE_ALIASES
 #include "gdkaliasdef.c"
+#endif

@@ -3764,4 +3764,6 @@ gdk_rgb_get_visual (void)
 }
 
 #define __GDK_RGB_C__
+#ifndef YDK_PER_SOURCE_ALIASES
 #include "gdkaliasdef.c"
+#endif

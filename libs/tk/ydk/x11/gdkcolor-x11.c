@@ -1499,4 +1499,6 @@ gdk_colormap_get_screen (GdkColormap *cmap)
 }
 
 #define __GDK_COLOR_X11_C__
+#ifndef YDK_PER_SOURCE_ALIASES
 #include "gdkaliasdef.c"
+#endif

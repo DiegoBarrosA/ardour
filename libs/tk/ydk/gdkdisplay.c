@@ -1456,4 +1456,6 @@ gdk_flush (void)
 #endif /* GDK_WINDOWING_WAYLAND */
 
 #define __GDK_DISPLAY_C__
+#ifndef YDK_PER_SOURCE_ALIASES
 #include "gdkaliasdef.c"
+#endif

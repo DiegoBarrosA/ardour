@@ -356,4 +356,6 @@ gdk_font_load (const gchar *font_name)
 }
 
 #define __GDK_FONT_C__
+#ifndef YDK_PER_SOURCE_ALIASES
 #include "gdkaliasdef.c"
+#endif

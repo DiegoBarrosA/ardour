@@ -136,4 +136,6 @@ gdk_rectangle_get_type (void)
 
 
 #define __GDK_RECTANGLE_C__
+#ifndef YDK_PER_SOURCE_ALIASES
 #include "gdkaliasdef.c"
+#endif

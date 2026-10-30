@@ -448,4 +448,6 @@ _gdk_input_ungrab_pointer (GdkDisplay *display,
 }
 
 #define __GDK_INPUT_XFREE_C__
+#ifndef YDK_PER_SOURCE_ALIASES
 #include "gdkaliasdef.c"
+#endif

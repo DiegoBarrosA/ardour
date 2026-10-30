@@ -664,4 +664,6 @@ gdk_visual_get_screen (GdkVisual *visual)
 }
 
 #define __GDK_VISUAL_X11_C__
+#ifndef YDK_PER_SOURCE_ALIASES
 #include "gdkaliasdef.c"
+#endif

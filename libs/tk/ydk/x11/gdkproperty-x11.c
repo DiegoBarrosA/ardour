@@ -801,4 +801,6 @@ gdk_property_delete (GdkWindow *window,
 }
 
 #define __GDK_PROPERTY_X11_C__
+#ifndef YDK_PER_SOURCE_ALIASES
 #include "gdkaliasdef.c"
+#endif

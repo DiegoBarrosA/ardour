@@ -459,4 +459,6 @@ gdk_pixmap_lookup_for_display (GdkDisplay *display, GdkNativeWindow anid)
 }
 
 #define __GDK_PIXMAP_X11_C__
-#include  "gdkaliasdef.c"
+#ifndef YDK_PER_SOURCE_ALIASES
+#include "gdkaliasdef.c"
+#endif

@@ -1481,4 +1481,6 @@ gdk_screen_get_window_stack (GdkScreen *screen)
 }
 
 #define __GDK_SCREEN_X11_C__
+#ifndef YDK_PER_SOURCE_ALIASES
 #include "gdkaliasdef.c"
+#endif

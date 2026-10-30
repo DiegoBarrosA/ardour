@@ -898,6 +898,9 @@ x_event_mask_to_gdk_event_mask (long mask)
  * Deprecated:2.24: Use gdk_x11_window_foreign_new_for_display() or
  *     equivalent backend-specific API instead
  **/
+extern GdkWindow *_gdk_wayland_window_foreign_new_for_display (GdkDisplay *display, GdkNativeWindow anid);
+extern GdkWindow *_gdk_wayland_window_lookup_for_display (GdkDisplay *display, GdkNativeWindow anid);
+
 GdkWindow *
 gdk_window_foreign_new_for_display (GdkDisplay     *display,
 				    GdkNativeWindow anid)
@@ -938,6 +941,11 @@ gdk_x11_window_foreign_new_for_display (GdkDisplay *display,
   gboolean result;
 
   g_return_val_if_fail (GDK_IS_DISPLAY (display), NULL);
+
+  /* Not X11: Wayland native ids (M8).  Called directly: in this TU the
+   * public name is renamed to the X11 implementation. */
+  if (!GDK_IS_DISPLAY_X11 (display))
+    return _gdk_wayland_window_foreign_new_for_display (display, window);
 
   display_x11 = GDK_DISPLAY_X11 (display);
 
@@ -1045,6 +1053,9 @@ GdkWindow *
 gdk_x11_window_lookup_for_display (GdkDisplay *display,
                                    Window       window)
 {
+  if (display != NULL && !GDK_IS_DISPLAY_X11 (display))
+    return _gdk_wayland_window_lookup_for_display (display, window);
+
   return (GdkWindow*) gdk_xid_table_lookup_for_display (display, window);
 }
 
@@ -5709,4 +5720,6 @@ gdk_window_impl_iface_init (GdkWindowImplIface *iface)
 }
 
 #define __GDK_WINDOW_X11_C__
+#ifndef YDK_PER_SOURCE_ALIASES
 #include "gdkaliasdef.c"
+#endif

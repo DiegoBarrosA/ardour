@@ -662,4 +662,6 @@ gdk_screen_set_property (GObject      *object,
 }
 
 #define __GDK_SCREEN_C__
+#ifndef YDK_PER_SOURCE_ALIASES
 #include "gdkaliasdef.c"
+#endif

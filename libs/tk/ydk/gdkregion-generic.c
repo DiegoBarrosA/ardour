@@ -1906,4 +1906,6 @@ gdk_region_spans_intersect_foreach (GdkRegion     *region,
 }
 
 #define __GDK_REGION_GENERIC_C__
+#ifndef YDK_PER_SOURCE_ALIASES
 #include "gdkaliasdef.c"
+#endif

@@ -261,4 +261,6 @@ gdk_display_manager_list_displays (GdkDisplayManager *display_manager)
 }
 
 #define __GDK_DISPLAY_MANAGER_C__
+#ifndef YDK_PER_SOURCE_ALIASES
 #include "gdkaliasdef.c"
+#endif

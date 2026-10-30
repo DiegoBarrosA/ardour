@@ -845,4 +845,6 @@ gdk_x11_font_get_name (GdkFont *font)
 }
      
 #define __GDK_FONT_X11_C__
+#ifndef YDK_PER_SOURCE_ALIASES
 #include "gdkaliasdef.c"
+#endif

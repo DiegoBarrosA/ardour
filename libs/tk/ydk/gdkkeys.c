@@ -388,4 +388,6 @@ gdk_keymap_get_default (void)
 }
 
 #define __GDK_KEYS_C__
+#ifndef YDK_PER_SOURCE_ALIASES
 #include "gdkaliasdef.c"
+#endif

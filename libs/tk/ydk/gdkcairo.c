@@ -350,4 +350,6 @@ gdk_cairo_set_source_window (cairo_t   *cr,
 
 
 #define __GDK_CAIRO_C__
+#ifndef YDK_PER_SOURCE_ALIASES
 #include "gdkaliasdef.c"
+#endif

@@ -150,4 +150,6 @@ gdk_xid_equal (XID *a,
 }
 
 #define __GDK_XID_C__
+#ifndef YDK_PER_SOURCE_ALIASES
 #include "gdkaliasdef.c"
+#endif

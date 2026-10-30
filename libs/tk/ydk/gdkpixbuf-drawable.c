@@ -1415,4 +1415,6 @@ gdk_pixbuf_get_from_image (GdkPixbuf   *dest,
 }
 
 #define __GDK_PIXBUF_DRAWABLE_C__
+#ifndef YDK_PER_SOURCE_ALIASES
 #include "gdkaliasdef.c"
+#endif

@@ -1438,4 +1438,6 @@ gdk_setting_get (const gchar *name,
 }
 
 #define __GDK_EVENTS_C__
+#ifndef YDK_PER_SOURCE_ALIASES
 #include "gdkaliasdef.c"
+#endif
