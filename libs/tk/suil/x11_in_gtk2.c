@@ -544,6 +544,17 @@ suil_wrapper_new(SuilHost*      host,
 	(void)host_type_uri;
 	(void)ui_type_uri;
 
+	/* This wrapper embeds an X11 UI window with XEMBED, through a GtkPlug.
+	 * On a display that is not X11 (for example Wayland) there is no X
+	 * window to embed, and the GtkPlug and Xlib calls cannot work.
+	 * Return NULL, so suil_instance_new fails and the host can fall back
+	 * to its generic UI. The host should not ask for this wrapper on a
+	 * display that is not X11, so this is only a safety net.
+	 */
+	if (!gdk_x11_display_is_x11(gdk_display_get_default())) {
+		return NULL;
+	}
+
 	SuilWrapper* wrapper = (SuilWrapper*)calloc(1, sizeof(SuilWrapper));
 	wrapper->wrap = wrapper_wrap;
 	wrapper->free = wrapper_free;
