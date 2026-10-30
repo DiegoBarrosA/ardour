@@ -821,7 +821,9 @@ gdk_display_x11_finalize (GObject *object)
 #ifdef HAVE_XINPUT2
   if (display_x11->xi.libxi)
     dlclose (display_x11->xi.libxi);
-  g_hash_table_destroy (display_x11->touch_devices);
+  /* created by the first touch device event, so it is NULL without one */
+  if (display_x11->touch_devices)
+    g_hash_table_destroy (display_x11->touch_devices);
 #endif
 
   /* Leader Window */
