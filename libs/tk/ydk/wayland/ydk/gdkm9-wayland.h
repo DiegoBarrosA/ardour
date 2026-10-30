@@ -157,6 +157,35 @@
  *     Several base toplevels share the root space only by convention (GTK
  *     computes positions from the toplevel of the attach widget): known gap.
  *
+ *     M11 UPDATE (finding 6, two outputs).  Every base toplevel still sits at
+ *     (0, 0), but the monitor list now says where that point is.  Wayland
+ *     gives a client no global position, so the honest model is that a
+ *     toplevel sits at the ORIGIN OF ITS OWN OUTPUT.  GTK finds the monitor
+ *     of a window through the root coordinates of its points.  Before M11 the
+ *     outputs sat on top of each other at (0, 0), because wlroots sends 0,0
+ *     in wl_output.geometry and puts the real position in
+ *     xdg_output.logical_position, which was ignored.  Monitor 0 was the first
+ *     output that was bound, for every window.  On a layout of an 864 px wide
+ *     output and a 2560 px wide output, GTK clamped the menus of a window on
+ *     the big output to 864 px, and monitor 0 (the size that Ardour reads for
+ *     "is the screen big enough") was the wrong output.  Now
+ *     gdkscale-wayland.c reads the position from xdg_output and reports the
+ *     monitors relative to a reference output:
+ *       - the reference output is the output (first wl_surface.enter) of the
+ *         family that has the keyboard focus, else of the one that has the
+ *         pointer focus, else of any mapped toplevel, else the first output;
+ *       - monitor 0 is the reference output at (0, 0), the others follow in
+ *         bind order at their layout position minus the reference position;
+ *       - gdk_screen_get_monitor_at_point / _at_window, geometry, mm sizes and
+ *         plug names use this list, so a point inside the window is on
+ *         monitor 0 and its geometry is the size of the window's output;
+ *       - the screen size is the bounding box of the layout and does not
+ *         change with the reference, so no signal is emitted for a change of
+ *         the reference.
+ *     With one monitor nothing changes.  A window on another output than the
+ *     reference output is described correctly once the user works in it (a
+ *     menu or dialog is opened by that work).
+ *
  * D3  PARENT CHOICE.  Done at COMMIT time (D5) so late state counts.  Order
  *     of candidates, first usable wins:
  *       a. transient_for of the window (new hints accessor, I9)

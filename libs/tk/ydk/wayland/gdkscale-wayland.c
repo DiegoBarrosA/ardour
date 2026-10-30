@@ -33,6 +33,7 @@
 
 #include "gdkprivate-wayland.h"
 #include "gdkseat-wayland.h"
+#include "gdkm9-wayland.h"
 #include "gdkm10-wayland.h"
 #include "fractional-scale-v1-client.h"
 #include "viewporter-client.h"
@@ -79,6 +80,15 @@ typedef struct
   struct zxdg_output_v1 *xdg;
   gint     pending_xdg_w, pending_xdg_h;
   gint     xdg_w, xdg_h;              /* 0 until the first xdg_output.done */
+
+  /* The position in the layout.  wl_output.geometry has it for compositors
+   * that send it, but wlroots (sway) sends 0,0 there and puts the real
+   * position in xdg_output.logical_position.  So every output sat at 0,0. */
+  gint     pending_xdg_x, pending_xdg_y;
+  gboolean has_pending_xdg;           /* a logical_size is pending */
+  gboolean has_pending_xdg_pos;       /* a logical_position is pending */
+  gint     xdg_x, xdg_y;
+  gboolean xdg_pos_valid;
 } GDKWOutput;
 
 struct _GDKWSurfaceScale
@@ -668,6 +678,12 @@ output_compute_logical (GDKWOutput *out)
     }
 }
 
+static gboolean
+output_is_monitor (const GDKWOutput *out)
+{
+  return out->have_mode && out->logical_w > 0 && out->logical_h > 0;
+}
+
 /* Outputs that count as monitors: the ones that have a mode. */
 static GDKWOutput *
 monitor_nth (GDKWScaleDisplay *st, gint n)
@@ -681,7 +697,7 @@ monitor_nth (GDKWScaleDisplay *st, gint n)
     {
       GDKWOutput *out = l->data;
 
-      if (!out->have_mode || out->logical_w <= 0 || out->logical_h <= 0)
+      if (!output_is_monitor (out))
         continue;
       if (i++ == n)
         return out;
@@ -697,6 +713,97 @@ monitor_count (GDKWScaleDisplay *st)
   while (monitor_nth (st, n) != NULL)
     n++;
   return n;
+}
+
+/* ------------------------------------------------------------------------
+ * The monitor list as the toplevel in use sees it (M11, finding 6)
+ *
+ * Wayland gives a client no global position, and the backend puts every
+ * toplevel at the origin of the root window (M9 decision D2).  GTK picks the
+ * monitor of a window by the root coordinates of its points, so a window on
+ * the second output, at (0,0), was taken for a window on the first output:
+ * menus were clamped to the wrong monitor and Ardour read the size of the
+ * wrong monitor.
+ *
+ * The honest model is that a toplevel sits at the origin of its own output.
+ * The monitor list is therefore reported relative to the output of the
+ * toplevel that the user works in (the reference output):
+ *   - monitor 0 is the reference output, at (0,0);
+ *   - the other outputs follow in bind order, at their compositor position
+ *     minus the position of the reference output;
+ *   - the reference output is the output of the family that has the keyboard
+ *     focus (a toplevel and its popups), else of the one that has the pointer
+ *     focus, else of any toplevel with an output, else the first monitor.  The
+ *     output of a toplevel is the first one of its wl_surface.enter list.
+ * With one monitor nothing changes: the rectangle is the compositor's.  The
+ * screen size stays the bounding box of the compositor layout, so it does not
+ * change when the reference changes, and no signal is emitted for that.
+ * A window on another output than the reference output is not described
+ * correctly until the user works in it; a menu or dialog is opened by that
+ * work, which makes its output the reference output.
+ * ------------------------------------------------------------------------ */
+
+static GDKWOutput *
+impl_output (GDKWWindowImplWayland *impl)
+{
+  GDKWWindowImplWayland *root;
+  GList *l;
+
+  if (impl == NULL)
+    return NULL;
+  root = _gdk_wayland_popup_family_root (impl);
+  if (root == NULL || root->wscale == NULL)
+    return NULL;
+  for (l = root->wscale->entered; l; l = l->next)
+    if (output_is_monitor (l->data))
+      return l->data;
+  return NULL;
+}
+
+static GDKWOutput *
+reference_output (GDKWScaleDisplay *st)
+{
+  GDKWSeat *seat;
+  GDKWOutput *out;
+  GSList *l;
+
+  if (st->display == NULL)
+    return monitor_nth (st, 0);
+  seat = _gdk_wayland_display_get_seat (GDK_DISPLAY_OBJECT (st->display));
+  if ((out = impl_output (seat->keyboard_focus)) != NULL)
+    return out;
+  if ((out = impl_output (seat->pointer_focus)) != NULL)
+    return out;
+  for (l = st->display->windows; l; l = l->next)
+    {
+      GDKWWindowImplWayland *impl = l->data;
+
+      if (impl->xdg_toplevel != NULL && (out = impl_output (impl)) != NULL)
+        return out;
+    }
+  return monitor_nth (st, 0);
+}
+
+/* The n-th monitor of the list that GTK sees. */
+static GDKWOutput *
+view_nth (GDKWScaleDisplay *st, gint n)
+{
+  GDKWOutput *ref, *out;
+  gint i, k = 0;
+
+  if (monitor_count (st) < 2)
+    return monitor_nth (st, n);
+  ref = reference_output (st);
+  if (n == 0)
+    return ref;
+  for (i = 0; (out = monitor_nth (st, i)) != NULL; i++)
+    {
+      if (out == ref)
+        continue;
+      if (++k == n)
+        return out;
+    }
+  return NULL;
 }
 
 static void
@@ -849,6 +956,22 @@ output_apply (GDKWOutput *out)
 {
   GDKWScaleDisplay *st = out->st;
 
+  if (out->has_pending_xdg)
+    {
+      out->xdg_w = out->pending_xdg_w;
+      out->xdg_h = out->pending_xdg_h;
+      out->has_pending_xdg = FALSE;
+    }
+  if (out->has_pending_xdg_pos)
+    {
+      out->xdg_x = out->pending_xdg_x;
+      out->xdg_y = out->pending_xdg_y;
+      out->xdg_pos_valid = TRUE;
+      out->x = out->xdg_x;
+      out->y = out->xdg_y;
+      out->has_pending_xdg_pos = FALSE;
+    }
+
   if (out->has_pending_scale)
     {
       out->scale = out->pending_scale > 0 ? out->pending_scale : 1;
@@ -872,8 +995,11 @@ output_geometry (void *data, struct wl_output *wl_output,
   GDKWOutput *out = data;
 
   out->have_geometry = TRUE;
-  out->x = x;
-  out->y = y;
+  if (!out->xdg_pos_valid)
+    {
+      out->x = x;
+      out->y = y;
+    }
   out->mm_w = MAX (0, physical_width);
   out->mm_h = MAX (0, physical_height);
   out->subpixel = subpixel;
@@ -951,7 +1077,11 @@ static void
 xdg_output_logical_position (void *data, struct zxdg_output_v1 *xdg,
                              int32_t x, int32_t y)
 {
-  /* wl_output.geometry gives the same position */
+  GDKWOutput *out = data;
+
+  out->pending_xdg_x = x;
+  out->pending_xdg_y = y;
+  out->has_pending_xdg_pos = TRUE;
 }
 
 static void
@@ -962,6 +1092,7 @@ xdg_output_logical_size (void *data, struct zxdg_output_v1 *xdg,
 
   out->pending_xdg_w = width;
   out->pending_xdg_h = height;
+  out->has_pending_xdg = TRUE;
 }
 
 static void
@@ -969,8 +1100,6 @@ xdg_output_done (void *data, struct zxdg_output_v1 *xdg)
 {
   GDKWOutput *out = data;
 
-  out->xdg_w = out->pending_xdg_w;
-  out->xdg_h = out->pending_xdg_h;
   output_apply (out);
 }
 
@@ -1015,6 +1144,7 @@ output_destroy_xdg (GDKWOutput *out)
   zxdg_output_v1_destroy (out->xdg);
   out->xdg = NULL;
   out->xdg_w = out->xdg_h = 0;
+  out->xdg_pos_valid = FALSE;
 }
 
 static GDKWOutput *
@@ -1327,11 +1457,13 @@ _gdk_wayland_scale_monitor_geometry (GdkDisplay *display, gint monitor,
     return;
   dest->x = dest->y = dest->width = dest->height = 0;
 
-  out = monitor_nth (st, monitor);
+  out = view_nth (st, monitor);
   if (out != NULL)
     {
-      dest->x = out->x;
-      dest->y = out->y;
+      GDKWOutput *ref = monitor_count (st) > 1 ? reference_output (st) : NULL;
+
+      dest->x = out->x - (ref != NULL ? ref->x : 0);
+      dest->y = out->y - (ref != NULL ? ref->y : 0);
       dest->width = out->logical_w;
       dest->height = out->logical_h;
     }
@@ -1346,7 +1478,7 @@ gint
 _gdk_wayland_scale_monitor_width_mm (GdkDisplay *display, gint monitor)
 {
   GDKWScaleDisplay *st = scale_state_get (display_checked (display), FALSE);
-  GDKWOutput *out = monitor_nth (st, monitor);
+  GDKWOutput *out = view_nth (st, monitor);
 
   if (out != NULL)
     return output_mm_w (out) > 0 ? output_mm_w (out) : px_to_mm (out->logical_w);
@@ -1359,7 +1491,7 @@ gint
 _gdk_wayland_scale_monitor_height_mm (GdkDisplay *display, gint monitor)
 {
   GDKWScaleDisplay *st = scale_state_get (display_checked (display), FALSE);
-  GDKWOutput *out = monitor_nth (st, monitor);
+  GDKWOutput *out = view_nth (st, monitor);
 
   if (out != NULL)
     return output_mm_h (out) > 0 ? output_mm_h (out) : px_to_mm (out->logical_h);
@@ -1372,7 +1504,7 @@ gchar *
 _gdk_wayland_scale_monitor_plug_name (GdkDisplay *display, gint monitor)
 {
   GDKWScaleDisplay *st = scale_state_get (display_checked (display), FALSE);
-  GDKWOutput *out = monitor_nth (st, monitor);
+  GDKWOutput *out = view_nth (st, monitor);
 
   if (out == NULL)
     return monitor == 0 ? g_strdup ("WL-1") : NULL;

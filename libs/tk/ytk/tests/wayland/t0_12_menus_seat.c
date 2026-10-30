@@ -26,6 +26,7 @@
  *   mark TEXT  log a MARK line (the driver uses it to cut the log into steps)
  *   win2, win2-hide   show or hide the second toplevel
  *   title TEXT        set the title of the main window
+ *   far              add a row with a dropdown 820 px from the left edge of the main window
  *   stall-next-show MS  block the main loop for MS the next time a menu is shown
  *   wire-on, wire-off, wire   record, stop and print the serials of xdg_popup.grab and of the
  *                     key and button events (WIRE lines); popups prints the grab record of
@@ -45,7 +46,7 @@
 #include <ydk/gdkm10-wayland.h>
 
 static gint64 t_start;
-static GtkWidget *main_win, *win2;
+static GtkWidget *main_win, *win2, *body_box, *far_row;
 static GPtrArray *menus;          /* all menus we made, with t12-label */
 static GHashTable *named;         /* name -> widget, for GEOM */
 static GHashTable *shown;         /* menu -> show count minus hide count */
@@ -603,6 +604,14 @@ dump_geometry (void)
     GdkRectangle mg;
 
     lg ("SCREEN", "%d %d", gdk_screen_get_width (scr), gdk_screen_get_height (scr));
+    if (main_win != NULL && main_win->window != NULL)
+      {
+        int wm = gdk_screen_get_monitor_at_window (scr, main_win->window);
+        GdkRectangle wg;
+
+        gdk_screen_get_monitor_geometry (scr, wm, &wg);
+        lg ("WINMON", "%d %d %d %d %d", wm, wg.x, wg.y, wg.width, wg.height);
+      }
     for (j = 0; j < nm; j++)
       {
         gdk_screen_get_monitor_geometry (scr, j, &mg);
@@ -704,6 +713,28 @@ dump_popups (void)
   g_list_free (tl);
 }
 
+/* "far": a row with a dropdown button far to the right, 820 px from the left edge of the window.
+ * A window on a second output has its menu cross the border of the first output in the root
+ * coordinates of GTK (the toplevel is at 0,0), which is where GTK clamps to the wrong monitor. */
+static void
+show_far_row (void)
+{
+  GtkWidget *b, *spacer;
+
+  if (far_row != NULL)
+    return;
+  far_row = gtk_hbox_new (FALSE, 0);
+  spacer = gtk_label_new ("");
+  gtk_widget_set_size_request (spacer, 820, 4);
+  gtk_box_pack_start (GTK_BOX (far_row), spacer, FALSE, FALSE, 0);
+  b = gtk_button_new_with_label ("Far (press)");
+  label_widget (b, "dd-far", TRUE);
+  g_signal_connect (b, "button-press-event", G_CALLBACK (dd_press), make_dropdown_menu ("DropFar", "Far"));
+  gtk_box_pack_start (GTK_BOX (far_row), b, FALSE, FALSE, 0);
+  gtk_box_pack_start (GTK_BOX (body_box), far_row, FALSE, FALSE, 0);
+  gtk_widget_show_all (far_row);
+}
+
 /* ---- stdin commands ----------------------------------------------------- */
 
 static void finish (void);
@@ -766,6 +797,8 @@ stdin_cb (GIOChannel *ch, GIOCondition cond, gpointer d)
         show_win2 ();
       else if (g_str_has_prefix (line, "stall-next-show "))
         stall_next_show_ms = atoi (line + 16);
+      else if (!strcmp (line, "far"))
+        show_far_row ();
       else if (!strcmp (line, "wire-on"))
         _gdk_wayland_test_wire_enable (TRUE);
       else if (!strcmp (line, "wire-off"))
@@ -834,7 +867,8 @@ main (int argc, char **argv)
   box = gtk_vbox_new (FALSE, 6);
   bar = build_menubar ();
   gtk_box_pack_start (GTK_BOX (box), bar, FALSE, FALSE, 0);
-  gtk_box_pack_start (GTK_BOX (box), build_body (), TRUE, TRUE, 6);
+  body_box = build_body ();
+  gtk_box_pack_start (GTK_BOX (box), body_box, TRUE, TRUE, 6);
   gtk_container_add (GTK_CONTAINER (main_win), box);
   gtk_widget_show_all (main_win);
   t_settle (600);

@@ -3,7 +3,7 @@
 # start-sway.sh -- starts a SEPARATE headless sway with a virtual pointer and keyboard.
 #
 # The sway has its own XDG_RUNTIME_DIR and sockets under $HARNESS_HOME/state and
-# never touches the sway of the login session.  Its output is 1920x1080.  A small
+# never touches the sway of the login session.  Its output is 1920x1080 (the config can say otherwise with a comment line "# harness-layout: W H", the size of the whole layout).  A small
 # client (seat-input) gives the seat a pointer and a keyboard, because a headless
 # sway has no input device and a client would see wl_seat.capabilities(0).
 #
@@ -36,6 +36,11 @@ fi
 rm -rf "$ST"; mkdir -p "$ST"
 RT=$ST/rt; mkdir -p "$RT"; chmod 700 "$RT"
 CONF=${HARNESS_SWAY_CONF:-$H/sway.conf}
+# the virtual pointer maps absolute positions onto the whole layout: its size is in the config
+LAYOUT=$(sed -n 's/^# harness-layout: *//p' "$CONF" | head -n 1)
+LAYOUT=${LAYOUT:-1920 1080}
+# a config with more than one output says so: the headless backend makes that many outputs
+NOUT=$(sed -n 's/^# harness-outputs: *//p' "$CONF" | head -n 1)
 FONTDIR=$(ls -d /nix/store/*-dejavu-fonts-*/share/fonts 2>/dev/null | head -n 1)
 cat > "$RT/fonts.conf" <<FC
 <?xml version="1.0"?>
@@ -47,6 +52,7 @@ FC
   unset WAYLAND_DISPLAY DISPLAY SWAYSOCK I3SOCK WAYLAND_SOCKET DBUS_SESSION_BUS_ADDRESS
   export XDG_RUNTIME_DIR=$RT
   export WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 WLR_RENDERER=pixman
+  [ -n "$NOUT" ] && export WLR_HEADLESS_OUTPUTS=$NOUT
   export FONTCONFIG_FILE=$RT/fonts.conf
   cd "$ST"
   exec setsid sway -c "$CONF" > "$ST/sway.log" 2>&1
@@ -67,7 +73,7 @@ mkfifo "$ST/input.fifo"
 (
   unset DISPLAY DBUS_SESSION_BUS_ADDRESS
   export XDG_RUNTIME_DIR=$RT WAYLAND_DISPLAY=$WD
-  exec "$BIN" "$ST/input.fifo" 1920 1080 > "$ST/seat-input.log" 2>&1
+  exec "$BIN" "$ST/input.fifo" $LAYOUT > "$ST/seat-input.log" 2>&1
 ) &
 for _ in $(seq 1 50); do grep -q ready "$ST/seat-input.log" 2>/dev/null && break; sleep 0.1; done
 grep -q ready "$ST/seat-input.log" || { echo "start-sway.sh: seat-input failed"; cat "$ST/seat-input.log"; exit 1; }

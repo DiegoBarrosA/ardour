@@ -16,6 +16,7 @@
  * D  popup_done      before the first configure: a refused grab is retried once without a grab,
  *                    but not when the parent lost the keyboard focus.
  * E  committed popup events that come before the first configure of the popup go to the popup.
+ * F  monitor view    the monitor list is relative to the output of the window in use.
  *
  * The program SKIPs on X11.
  *
@@ -587,6 +588,74 @@ test_drag_onto_committed_popup (void)
   reset_after_case ();
 }
 
+/* ---- F: the monitor list follows the window in use ---------------------------- */
+
+/* Every toplevel sits at 0,0 of the GTK root window, so the monitor list is reported relative to
+ * the output of the toplevel that has the keyboard focus: monitor 0 is that output, at 0,0, and
+ * the others follow at their offset from it.  With one monitor nothing changes. */
+static gboolean
+rect_is (const GdkRectangle *r, int x, int y, int w, int h)
+{
+  return r->x == x && r->y == y && r->width == w && r->height == h;
+}
+
+static void
+test_monitor_view (void)
+{
+  GdkScreen *scr = gdk_display_get_default_screen (disp);
+  GDKWTestScaleInfo sc;
+  GdkRectangle real, g, g1;
+  guint rid, fid = 0;
+  gint sw, sh;
+
+  gdk_screen_get_monitor_geometry (scr, 0, &real);
+  T_CHECK (gdk_screen_get_n_monitors (scr) == 1, "F: one monitor to start with");
+  memset (&sc, 0, sizeof sc);
+  HOOK (_gdk_wayland_test_scale_info (main_win->window, &sc), "scale info");
+  if (sc.n_entered < 1)
+    {
+      T_INFO ("F skipped: the compositor sent no wl_surface.enter for the main window");
+      return;
+    }
+  rid = sc.entered_ids[0];
+
+  HOOK (_gdk_wayland_test_output_add (disp, real.x + real.width + 40, real.y + 60, 2560, 1440, 1, 0, &fid), "second output");
+  T_CHECK (gdk_screen_get_n_monitors (scr) == 2, "F: two monitors");
+  sw = gdk_screen_get_width (scr);
+  sh = gdk_screen_get_height (scr);
+  gdk_screen_get_monitor_geometry (scr, 0, &g);
+  gdk_screen_get_monitor_geometry (scr, 1, &g1);
+  T_CHECK (rect_is (&g, real.x, real.y, real.width, real.height), "F: a window on the first output: monitor 0 is the first output");
+  T_CHECK (rect_is (&g1, real.width + 40, 60, 2560, 1440), "F: monitor 1 is the second output at its offset (%d %d %d %d)", g1.x, g1.y,
+           g1.width, g1.height);
+
+  /* the window moves to the second output */
+  HOOK (_gdk_wayland_test_surface_enter (main_win->window, fid), "enter second output");
+  HOOK (_gdk_wayland_test_surface_leave (main_win->window, rid), "leave first output");
+  gdk_screen_get_monitor_geometry (scr, 0, &g);
+  gdk_screen_get_monitor_geometry (scr, 1, &g1);
+  T_CHECK (rect_is (&g, 0, 0, 2560, 1440), "F: a window on the second output: monitor 0 is the second output at 0,0 (%d %d %d %d)",
+           g.x, g.y, g.width, g.height);
+  T_CHECK (rect_is (&g1, real.x - (real.x + real.width + 40), real.y - (real.y + 60), real.width, real.height),
+           "F: the first output follows at a negative offset (%d %d %d %d)", g1.x, g1.y, g1.width, g1.height);
+  T_CHECK (gdk_screen_get_monitor_at_point (scr, 1500, 700) == 0, "F: a point inside the window is on monitor 0");
+  T_CHECK (gdk_screen_get_monitor_at_point (scr, real.width + 20, 200) == 0,
+           "F: a point right of the first output's width but inside the window is on monitor 0");
+  T_CHECK (gdk_screen_get_monitor_at_window (scr, main_win->window) == 0, "F: the window is on monitor 0");
+  T_CHECK (gdk_screen_get_width (scr) == sw && gdk_screen_get_height (scr) == sh, "F: the screen size does not change with the window");
+
+  /* and back */
+  HOOK (_gdk_wayland_test_surface_enter (main_win->window, rid), "enter first output");
+  HOOK (_gdk_wayland_test_surface_leave (main_win->window, fid), "leave second output");
+  gdk_screen_get_monitor_geometry (scr, 0, &g);
+  T_CHECK (rect_is (&g, real.x, real.y, real.width, real.height), "F: back on the first output: monitor 0 is the first output");
+
+  HOOK (_gdk_wayland_test_output_remove (disp, fid), "remove the second output");
+  T_CHECK (gdk_screen_get_n_monitors (scr) == 1, "F: one monitor at the end");
+  gdk_screen_get_monitor_geometry (scr, 0, &g);
+  T_CHECK (rect_is (&g, real.x, real.y, real.width, real.height), "F: one monitor: the rectangle is the compositor's");
+}
+
 /* ---- main -------------------------------------------------------------- */
 
 int
@@ -638,6 +707,7 @@ main (int argc, char **argv)
   test_popup_done_before_configure (FALSE);
   test_popup_done_before_configure (TRUE);
   test_drag_onto_committed_popup ();
+  test_monitor_view ();
 
   HOOK (_gdk_wayland_test_pointer_leave (disp, main_win->window), "pointer leave");
   HOOK (_gdk_wayland_test_keyboard_leave (disp, main_win->window), "keyboard leave");

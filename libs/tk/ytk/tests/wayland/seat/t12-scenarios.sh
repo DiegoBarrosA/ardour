@@ -446,11 +446,13 @@ T12_ALL_SCENARIOS="$T12_ALL_SCENARIOS s20_titles"
 # Menus of a window near the right and bottom edge of the output.  GTK believes a toplevel sits
 # at 0,0 (Wayland hides the real position), so it never flips a menu itself.  The compositor
 # slides a popup that does not fit (SLIDE_X | SLIDE_Y).  Every popup has to stay inside the output.
-OUT_W=1920; OUT_H=1080
+# The edges are those of the output the test window sits on: the whole layout (1920x1080) unless the sway
+# config names another with "# harness-edge-output: X0 Y0 X1 Y1" (run-seat-tests.sh exports T12_EDGE).
+read -r OUT_X0 OUT_Y0 OUT_W OUT_H <<<"${T12_EDGE:-0 0 1920 1080}"
 move_main() { # global x y of the main window
   local id
   id=$(swaymsg -s "$HARNESS_SWAYSOCK" -t get_tree -r | jq -r '.. | objects | select((.app_id? // "") | test("^[Tt]0_12")) | select(.window_rect.width != 260) | .id' | head -n 1)
-  [ -n "$id" ] && swaymsg -s "$HARNESS_SWAYSOCK" -q "[con_id=$id] move position $1 $2"
+  [ -n "$id" ] && swaymsg -s "$HARNESS_SWAYSOCK" -q "[con_id=$id] move absolute position $1 $2"
   pause 500
 }
 popups_inside_output() { # desc: every popup toplevel lies inside the output
@@ -462,7 +464,7 @@ popups_inside_output() { # desc: every popup toplevel lies inside the output
     [[ $line =~ \(relative\ to\ main\ (-?[0-9]+),(-?[0-9]+)\)\ size\ ([0-9]+)x([0-9]+) ]] || continue
     rx=$(( OX + BASH_REMATCH[1] )); ry=$(( OY + BASH_REMATCH[2] )); w=${BASH_REMATCH[3]}; h=${BASH_REMATCH[4]}
     n=$((n+1))
-    if [ $rx -lt 0 ] || [ $ry -lt 0 ] || [ $((rx+w)) -gt $OUT_W ] || [ $((ry+h)) -gt $OUT_H ]; then bad="$bad [$rx,$ry ${w}x$h]"; fi
+    if [ $rx -lt $OUT_X0 ] || [ $ry -lt $OUT_Y0 ] || [ $((rx+w)) -gt $OUT_W ] || [ $((ry+h)) -gt $OUT_H ]; then bad="$bad [$rx,$ry ${w}x$h]"; fi
   done
   if [ -z "$bad" ]; then ok "$1 ($n popups inside the output)"; else fail "$1 (outside:$bad)"; fi
 }
@@ -583,13 +585,16 @@ s24_monitor_size() {
   local m="g$RANDOM$RANDOM" start; start=$(( $(lines) + 1 ))
   app_send geom; app_send "mark $m"
   for _ in $(seq 1 60); do grep -q "MARK .*$m" "$APP_LOG" && break; sleep 0.05; done
-  local mon scr ow oh
+  local mon="" scr="" ow=0 oh=0
   mon=$(tail -n +"$start" "$APP_LOG" | payload | grep '^MONITOR 0 ' | head -n 1)
   scr=$(tail -n +"$start" "$APP_LOG" | payload | grep '^SCREEN ' | head -n 1)
-  read -r ow oh <<<"$(swaymsg -s "$HARNESS_SWAYSOCK" -t get_outputs -r | jq -r '.[0] | "\(.rect.width) \(.rect.height)"')"
-  [ "$mon" = "MONITOR 0 0 0 $ow $oh" ] && ok "monitor 0 is ${ow}x${oh}, the logical size of the output" \
+  # monitor 0 is the output of the window (the main window sits at 100,100); the screen is the layout
+  local sw=0 sh=0
+  read -r ow oh <<<"$(swaymsg -s "$HARNESS_SWAYSOCK" -t get_outputs -r | jq -r --argjson x "$(( OX + 10 ))" --argjson y "$(( OY + 10 ))" '[.[] | select(.rect.x <= $x and $x < .rect.x + .rect.width and .rect.y <= $y and $y < .rect.y + .rect.height)] | first | "\(.rect.width) \(.rect.height)"')"
+  read -r sw sh <<<"$(swaymsg -s "$HARNESS_SWAYSOCK" -t get_outputs -r | jq -r '[(map(.rect.x + .rect.width) | max), (map(.rect.y + .rect.height) | max)] | "\(.[0]) \(.[1])"')"
+  [ "$mon" = "MONITOR 0 0 0 $ow $oh" ] && ok "monitor 0 is ${ow}x${oh}, the logical size of the output of the window" \
     || fail "monitor 0 is '$mon', the output is ${ow}x${oh} (logical)"
-  [ "$scr" = "SCREEN $ow $oh" ] && ok "the screen is ${ow}x${oh}" || fail "the screen is '$scr', the output is ${ow}x${oh}"
+  [ "$scr" = "SCREEN $sw $sh" ] && ok "the screen is ${sw}x${sh}, the bounding box of the layout" || fail "the screen is '$scr', the layout is ${sw}x${sh}"
 }
 
 T12_ALL_SCENARIOS="$T12_ALL_SCENARIOS s24_monitor_size"
@@ -797,3 +802,65 @@ s28_fast_gesture() {
 }
 
 T12_ALL_SCENARIOS="$T12_ALL_SCENARIOS s28_fast_gesture"
+
+# Two outputs (sway-2out.conf: 864x1536 at scale 1.25 at 0,0 and 2560x1440 at 864,40).  GTK believes
+# every toplevel sits at 0,0, so the monitor that GTK finds for a window is the one that holds 0,0.
+# A window on the second output was taken for a window on the first one: GTK clamped its menus to
+# the 864 px of the first output, and the size of "the screen" was that of the wrong monitor.  The
+# monitor list has to describe the output of the window that the user works in.
+output_rects() { swaymsg -s "$HARNESS_SWAYSOCK" -t get_outputs -r | jq -r 'sort_by(.rect.width) | map("\(.rect.x) \(.rect.y) \(.rect.width) \(.rect.height)") | .[]'; }
+monitor0() { # sets WM to "idx x y w h" of the monitor that GTK finds for the main window, M0 to "x y w h" of monitor 0
+  local m="m$RANDOM$RANDOM" start; start=$(( $(lines) + 1 ))
+  app_send geom; app_send "mark $m"
+  for _ in $(seq 1 60); do grep -q "MARK .*$m" "$APP_LOG" && break; sleep 0.05; done
+  WM=$(tail -n +"$start" "$APP_LOG" | payload | sed -n 's/^WINMON //p' | head -n 1)
+  M0=$(tail -n +"$start" "$APP_LOG" | payload | sed -n 's/^MONITOR 0 //p' | head -n 1)
+}
+move_win() { # con-class(main|win2) x y: global position through the compositor
+  local id sel
+  if [ "$1" = main ]; then sel='select(.window_rect.width != 260)'; else sel='select(.window_rect.width == 260)'; fi
+  id=$(swaymsg -s "$HARNESS_SWAYSOCK" -t get_tree -r | jq -r ".. | objects | select((.app_id? // \"\") | test(\"^[Tt]0_12\")) | $sel | .id" | head -n 1)
+  [ -n "$id" ] && swaymsg -s "$HARNESS_SWAYSOCK" -q "[con_id=$id] move absolute position $2 $3"
+  pause 500
+}
+s29_two_outputs() {
+  local n small big sx sy sw sh bx by bw bh
+  n=$(output_rects | wc -l)
+  if [ "$n" -lt 2 ]; then say "-- step s29-two-outputs: skipped, the compositor has $n output"; return; fi
+  read -r sx sy sw sh <<<"$(output_rects | head -n 1)"
+  read -r bx by bw bh <<<"$(output_rects | tail -n 1)"
+  t12_reset; step s29-window-on-second-output
+  app_send far; pause 400
+  move_win main $(( bx + 50 )) $(( by + 50 )); refresh_geom
+  lclick $(center ctxarea); pause 400     # the click gives the keyboard focus to the window
+  monitor0
+  [ "$WM" = "0 0 0 $bw $bh" ] && [ "$M0" = "0 0 $bw $bh" ] \
+    && ok "a window on the ${bw}x${bh} output: monitor 0 is ${bw}x${bh} at 0,0 and the window is on it" \
+    || fail "a window on the ${bw}x${bh} output: its monitor is '$WM', monitor 0 is '$M0'"
+  # the menu of the far dropdown starts at the button, which is about 820 px from the window edge,
+  # near the 864 px where the first output would end if the window were on it
+  refresh_geom
+  local bxr byr bwr bhr; read -r bxr byr bwr bhr <<<"${GEO[dd-far]}"
+  lclick $(center dd-far); expect "the far dropdown shows" 'SIG show menu\[DropFar\]'; pause 500; refresh_geom
+  local mx my mw mh r; read -r mx my mw mh r <<<"${MENUWIN[DropFar]}"
+  if [ -n "$mx" ] && [ "$mx" -ge $(( bxr - 1 )) ] && [ "$mx" -le $(( bxr + 1 )) ]; then ok "the menu starts at its button (x $mx, button $bxr): it is not clamped to the first output"
+  else fail "the menu starts at x ${mx:-none}, its button at $bxr (GTK clamped it to a monitor of ${sw} px)"; fi
+  shot s29-far-dropdown
+  keys Escape; pause 300; all_closed "closed after Escape"
+
+  # the second window on the small output: the monitor list follows the window that gets the focus
+  t12_reset quiet; step s29-window-on-first-output
+  app_send win2; pause 900
+  move_win win2 $(( sx + 100 )) $(( sy + 100 )); refresh_geom
+  lclick $(center w2:W2); pause 400; keys Escape; pause 300
+  monitor0
+  [ "$M0" = "0 0 $sw $sh" ] && ok "after a click in the window on the ${sw}x${sh} output monitor 0 is ${sw}x${sh}" \
+    || fail "after a click in the window on the ${sw}x${sh} output monitor 0 is '$M0'"
+  lclick $(center ctxarea); pause 400
+  monitor0
+  [ "$M0" = "0 0 $bw $bh" ] && ok "back in the main window monitor 0 is ${bw}x${bh} again" || fail "back in the main window monitor 0 is '$M0'"
+  app_send win2-hide; pause 500
+  move_win main 100 100
+}
+
+T12_ALL_SCENARIOS="$T12_ALL_SCENARIOS s29_two_outputs"
