@@ -534,6 +534,41 @@ _gdk_wayland_window_impl_xdg_surface_listener (void)
   return &xdg_surface_listener;
 }
 
+/* X11 reports each map and unmap of a native window with MapNotify and
+ * UnmapNotify, and the core queues GDK_MAP and GDK_UNMAP only for windows
+ * without an impl.  Wayland has no such event, so queue them here.  Without
+ * GDK_MAP, gtk_widget_show_now () never returns for a toplevel and the
+ * map-event handlers of GTK and Ardour never run.  Only the toplevel role is
+ * covered: the popup piece queues its own GDK_UNMAP when the compositor
+ * dismisses a popup (the demo checks for exactly one), and popups and
+ * surfaceless windows get no GDK_MAP yet.  Same heap event pattern as
+ * queue_configure () in gdkframe-wayland.c. */
+static void
+queue_map_event (GdkWindow *window, GdkEventType type)
+{
+  GdkWindowObject *private = (GdkWindowObject *) window;
+  GdkEvent *ev;
+
+  if (!(private->event_mask & GDK_STRUCTURE_MASK))
+    return;
+
+  ev = gdk_event_new (type);
+  ev->any.window = g_object_ref (window);
+  ev->any.send_event = FALSE;
+  gdk_event_set_screen (ev, gdk_drawable_get_screen (GDK_DRAWABLE (window)));
+  gdk_event_put (ev);
+  gdk_event_free (ev);
+}
+
+static void
+send_map_event (GdkWindow *window, GDKWWindowImplWayland *impl)
+{
+  if (impl->map_event_sent)
+    return;
+  impl->map_event_sent = TRUE;
+  queue_map_event (window, GDK_MAP);
+}
+
 static void
 gdk_window_wayland_show (GdkWindow *window, gboolean already_mapped)
 {
@@ -572,6 +607,7 @@ gdk_window_wayland_show (GdkWindow *window, gboolean already_mapped)
 
   /* creates the wl_surface when there is none */
   _gdk_wayland_window_impl_create_toplevel (impl);
+  send_map_event (window, impl);
 }
 
 /* Mirrors _gdk_xgrab_check_unmap () in gdkmain-x11.c: a window that stops
@@ -615,6 +651,12 @@ gdk_window_wayland_hide (GdkWindow *window)
   /* the display may already be gone */
   if (impl->screen != NULL && gdk_screen_get_display (impl->screen) != NULL)
     {
+      if (impl->map_event_sent)
+	{
+	  impl->map_event_sent = FALSE;
+	  queue_map_event (window, GDK_UNMAP);
+	}
+
       grab_check_unmap (window);
 
       /* M9: popups above this window go first (xdg-shell wants top-down),

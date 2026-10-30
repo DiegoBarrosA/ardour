@@ -185,6 +185,10 @@ struct _GDKWWindowImplWayland
 
   gboolean configured;
 
+  /* TRUE between the GDK_MAP and the GDK_UNMAP event queued for this window
+   * (gdkwindowimpl-wayland.c) */
+  gboolean map_event_sent;
+
   /* M9: NULL unless this impl is a PENDING or live xdg_popup */
   struct _GDKWPopup *popup;
 
