@@ -389,13 +389,66 @@ static const struct xdg_toplevel_listener xdg_toplevel_listener = {
  * store is already the double buffer.  By implementing GdkPaintable we tell
  * the core (gdk_window_begin_implicit_paint gdkwindow.c) to skip the
  * implicit paint and backing-pixmap machinery entirely; drawing during
- * expose goes straight to the window's own surface.  begin/end_paint are
- * therefore no-ops. */
+ * expose goes straight to the window's own surface.  end_paint is therefore
+ * a no-op.
+ *
+ * begin_paint_region is not a no-op (M11, G12, the "H1" bug).  The core
+ * returns right after calling this hook, so it never pushes a GdkWindowPaint
+ * and never runs gdk_window_clear_backing_region (), the step that gives a
+ * double buffered widget a clean background to draw on.  The X11 backend gets
+ * the same result with a pixmap that is cleared to the window background.
+ * gtkmain.c calls begin_paint_region (event->expose.region) for every
+ * double buffered widget, and widgets such as GtkLabel then draw only their
+ * ink.  Without the clear, the back store keeps the old ink and a changed
+ * text shows both the old and the new glyphs.
+ *
+ * So clear the part of the region that is visible and not covered by a child
+ * window to the window background.  gdk_window_clear_area () does the work
+ * in the core: it handles a solid colour, a tiled background pixmap and
+ * GDK_PARENT_RELATIVE_BG, with the same rules as the X11 path.  It reaches
+ * gdk_window_clear_backing_region_direct () because this impl has no
+ * clear_region vfunc (see gdk_window_impl_iface_init below).
+ *
+ * Damage: the expose region is the region that gdkframe-wayland.c damages
+ * after the update scope, and the clear stays inside it, so no extra damage
+ * is needed.  Outside an update scope the draw goes through the writer entry
+ * of the buffers piece (_gdk_wayland_buffers_ref_backing), which marks the
+ * window "unknown dirty", so the next flush sends full damage.
+ *
+ * Shape: gdkshape-wayland.c clears the pixels outside the bounding shape to
+ * transparent in the back store before every present.  That runs after the
+ * expose, so the opaque background written here does not show outside the
+ * shape.
+ *
+ * Alpha: the clear is opaque (the GdkColor background has no alpha), as it
+ * is for a double buffered widget under X11.  A translucent window draws its
+ * own pixels with CAIRO_OPERATOR_SOURCE, as under X11. */
 static void
 gdk_paintable_wayland_begin_paint_region (GdkPaintable *paintable,
 					  GdkWindow *window,
 					  const GdkRegion *region)
 {
+  GdkWindowObject *private = (GdkWindowObject *) window;
+  GdkRegion *clear;
+  GdkRectangle *rects = NULL;
+  gint n_rects = 0, i;
+
+  if (region == NULL || private->input_only ||
+      private->clip_region_with_children == NULL)
+    return;
+
+  /* Same clip as the core's own begin_paint_region (): what is visible,
+   * without the children, which are painted by their own windows. */
+  clear = gdk_region_copy (region);
+  gdk_region_intersect (clear, private->clip_region_with_children);
+  gdk_region_get_rectangles (clear, &rects, &n_rects);
+  gdk_region_destroy (clear);
+
+  for (i = 0; i < n_rects; i++)
+    gdk_window_clear_area (window, rects[i].x, rects[i].y,
+			   rects[i].width, rects[i].height);
+
+  g_free (rects);
 }
 
 static void
@@ -678,13 +731,6 @@ gdk_window_wayland_reparent (GdkWindow *window,
 }
 
 static void
-gdk_window_wayland_clear_region (GdkWindow *window,
-				 GdkRegion *region,
-				 gboolean send_expose)
-{
-}
-
-static void
 gdk_window_wayland_set_cursor (GdkWindow *window, GdkCursor *cursor)
 {
   _gdk_wayland_cursor_window_set_cursor (window, cursor);
@@ -885,7 +931,12 @@ gdk_window_impl_iface_init (GdkWindowImplIface *iface)
   iface->set_background = gdk_window_wayland_set_background;
   iface->set_back_pixmap = gdk_window_wayland_set_back_pixmap;
   iface->reparent = gdk_window_wayland_reparent;
-  iface->clear_region = gdk_window_wayland_clear_region;
+  /* No clear_region vfunc on purpose (M11, G12).  Wayland has no server
+   * side window background, so the core's direct clear
+   * (gdk_window_clear_backing_region_direct) is the right implementation.
+   * It draws the background colour or pixmap on the back store and, with
+   * send_expose, invalidates the region.  An empty stub here made
+   * gdk_window_clear_area () and gdk_window_clear () do nothing. */
   iface->set_cursor = gdk_window_wayland_set_cursor;
   iface->get_geometry = gdk_window_wayland_get_geometry;
   iface->get_root_coords = gdk_window_wayland_get_root_coords;
