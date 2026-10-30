@@ -5,6 +5,7 @@
 # usage: click.sh move X Y
 #        click.sh click X Y [N]          move, click button 1 N times
 #        click.sh rclick X Y             move, click button 3
+#        click.sh tap X Y                move, press and release with no delay (touchpad tap)
 #        click.sh press X Y [N] | release [N]     button N (default 1)
 #        click.sh path X1 Y1 X2 Y2 [STEPS]       move in small steps, 15 ms apart (hover test)
 #        click.sh drag X1 Y1 X2 Y2
@@ -22,6 +23,7 @@ case "$cmd" in
   move)    add "move $1 $2" ;;
   click)   add "move $1 $2"; add "sleep ${CLICK_SETTLE:-150}"
            for _ in $(seq 1 "${3:-1}"); do add "down 1"; add "sleep 60"; add "up 1"; add "sleep 100"; done ;;
+  tap)     add "move $1 $2"; add "sleep ${CLICK_SETTLE:-150}"; add "down 1"; add "up 1"; add "sleep 100" ;;
   rclick)  add "move $1 $2"; add "sleep ${CLICK_SETTLE:-150}"; add "down 3"; add "sleep 60"; add "up 3"; add "sleep 100" ;;
   press)   add "move $1 $2"; add "sleep ${CLICK_SETTLE:-150}"; add "down ${3:-1}" ;;
   release) add "up ${1:-1}"; add "sleep 100" ;;

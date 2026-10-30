@@ -6,12 +6,19 @@
 # mouse does and the compositor sends motion, enter and leave events on the way.
 #
 # Results on wayland/m11 at 2e81c8dc10 (headless sway 1.12, ffm = focus_follows_mouse):
-#   s12-dropdown-drag   FAILS: press on a dropdown button, drag onto an item, release: the item is
-#                       not activated and the menu stays open (Ardour: it closes without activating).
-#                       Events during the drag go to the main surface and are not mapped to the popup.
-#   s17-second-window   FAILS: with a menu open, a click in another toplevel of the same client closes
-#                       the menu and is not swallowed.  With ffm the menu closes on hover (popup_done).
-# Every other scenario passes with and without ffm and at scale 2.
+#   s12-dropdown-drag   FAILED: press on a dropdown button, drag onto an item, release: the item was
+#                       not activated and the menu stayed open (Ardour: it closed without activating).
+#                       Events during the drag went to the main surface and were not mapped to the popup.
+#   s17-second-window   FAILED, but the cause is the compositor, not the backend.  Sway closes the
+#                       popups of a toplevel when that toplevel loses keyboard focus (send_unfocus in
+#                       sway/input/seat.c calls view_close_popups, which destroys every xdg_popup of
+#                       the view, with or without xdg_popup.grab).  So a menu closes when focus moves
+#                       to another toplevel of the same client: on a click there (the click is then
+#                       delivered, X11 would swallow it) and with focus_follows_mouse when the pointer
+#                       enters it.  The scenario now checks that the menu closes cleanly and that both
+#                       windows work afterwards.
+# Every other scenario passes with and without ffm, at scale 2 and at scale 1.25.
+# T12_FFM is 1 when the sway of the run has focus_follows_mouse yes (run-seat-tests.sh sets it).
 
 PX=0; PY=0
 hover()  { arm; "$CLICK" path "$PX" "$PY" "$1" "$2" "${3:-8}"; PX=$1; PY=$2; }
@@ -19,6 +26,9 @@ hover()  { arm; "$CLICK" path "$PX" "$PY" "$1" "$2" "${3:-8}"; PX=$1; PY=$2; }
 hovv()   { arm; "$CLICK" path "$PX" "$PY" "$PX" "$2" 4; "$CLICK" path "$PX" "$2" "$1" "$2" 6; PX=$1; PY=$2; }
 lclick() { hover "$1" "$2"; "$CLICK" click "$1" "$2"; }
 rclick() { hover "$1" "$2"; "$CLICK" rclick "$1" "$2"; }
+ltap()   { hover "$1" "$2"; "$CLICK" tap "$1" "$2"; }   # press and release at once, like a touchpad tap
+vtap()   { hovv "$1" "$2"; "$CLICK" tap "$1" "$2"; }     # same, entering a menu from the item above it
+vclick() { hovv "$1" "$2"; "$CLICK" click "$1" "$2"; }
 keys()   { arm; "$CLICK" key "$@"; }
 pause()  { sleep "$(awk "BEGIN{print $1/1000}")"; }
 
@@ -307,19 +317,27 @@ s17_second_window() {
   open_file
   hover 330 $(( OY + 150 )) 8; hover $(center w2:W2) 10
   pause 700
-  expect_not "File stays open while the pointer is over the second window" 'SIG hide menu\[File\]'
   shot s17-over-second-window
-  lclick $(center w2:W2)
-  expect "File closes on a click in the second window" 'SIG hide menu\[File\]'
-  expect_not "the click does not open the menu of the second window" 'SIG show menu\[W2\]' 500
-  shot s17-after-click
-  all_closed "everything is closed"
-  lclick $(center w2:W2)
+  if [ "${T12_FFM:-0}" = 1 ]; then
+    expect "File closes when the pointer enters the second window (sway moves focus)" 'SIG hide menu\[File\]'
+    all_closed "everything is closed after the hover"
+    lclick $(center w2:W2)
+  else
+    expect_not "File stays open while the pointer is over the second window" 'SIG hide menu\[File\]'
+    lclick $(center w2:W2)
+    expect "File closes on a click in the second window" 'SIG hide menu\[File\]'
+    # Sway moves focus on the press and closes the popup, then delivers the press (X11 swallows it).
+    expect "the click reaches the second window and opens its menu" 'SIG show menu\[W2\]'
+  fi
   expect "the second window opens its own menu" 'SIG show menu\[W2\]'
   refresh_geom
   shot s17-second-menu
   lclick $(item_center W2 "Other B")
   expect "Other B activates" 'SIG activate item\[Other B\]'
+  all_closed "closed after the click"
+  # The main window still works after sway closed its popup.
+  open_file; vclick $(item_center File "New")
+  expect "New activates in the main window" 'SIG activate item\[New\]'
   all_closed "closed after the click"
   app_send win2-hide; pause 600
 }
@@ -413,3 +431,98 @@ s20_titles() {
 }
 
 T12_ALL_SCENARIOS="$T12_ALL_SCENARIOS s20_titles"
+
+# Menus of a window near the right and bottom edge of the output.  GTK believes a toplevel sits
+# at 0,0 (Wayland hides the real position), so it never flips a menu itself.  The compositor
+# slides a popup that does not fit (SLIDE_X | SLIDE_Y).  Every popup has to stay inside the output.
+OUT_W=1920; OUT_H=1080
+move_main() { # global x y of the main window
+  local id
+  id=$(swaymsg -s "$HARNESS_SWAYSOCK" -t get_tree -r | jq -r '.. | objects | select((.app_id? // "") | test("^[Tt]0_12")) | select(.window_rect.width != 260) | .id' | head -n 1)
+  [ -n "$id" ] && swaymsg -s "$HARNESS_SWAYSOCK" -q "[con_id=$id] move position $1 $2"
+  pause 500
+}
+popups_inside_output() { # desc: every popup toplevel lies inside the output
+  local line bad="" n=0 rx ry w h
+  refresh_geom
+  for line in "${TOPS[@]}"; do
+    [[ $line =~ \ main\ type=0 ]] && continue
+    [[ $line =~ \ win2\ type=0 ]] && continue
+    [[ $line =~ \(relative\ to\ main\ (-?[0-9]+),(-?[0-9]+)\)\ size\ ([0-9]+)x([0-9]+) ]] || continue
+    rx=$(( OX + BASH_REMATCH[1] )); ry=$(( OY + BASH_REMATCH[2] )); w=${BASH_REMATCH[3]}; h=${BASH_REMATCH[4]}
+    n=$((n+1))
+    if [ $rx -lt 0 ] || [ $ry -lt 0 ] || [ $((rx+w)) -gt $OUT_W ] || [ $((ry+h)) -gt $OUT_H ]; then bad="$bad [$rx,$ry ${w}x$h]"; fi
+  done
+  if [ -z "$bad" ]; then ok "$1 ($n popups inside the output)"; else fail "$1 (outside:$bad)"; fi
+}
+s21_near_edges() {
+  t12_reset; step s21-near-bottom-right; SHOT_GEOM="900,380 1020x700"
+  move_main $(( OUT_W - 400 )) $(( OUT_H - 260 )); refresh_geom
+  read -r PX PY <<<"$(center ctxarea)"
+  open_file
+  hovv $(item_center File "Open Recent")
+  expect "Recent shows" 'SIG show menu\[Recent\]' 2000
+  refresh_geom; hover $(item_center Recent "More")
+  expect "More shows" 'SIG show menu\[More\]' 2000
+  refresh_geom; hover $(item_center More "Deeper")
+  expect "Deeper shows" 'SIG show menu\[Deeper\]' 2000
+  pause 400
+  popups_inside_output "the cascade of File stays inside the output"
+  shot s21-cascade-right-edge
+  refresh_geom; hover $(item_center Deeper "Deepest 2")
+  expect "Deepest 2 is selected" 'SIG select item\[Deepest 2\]'
+  lclick $(item_center Deeper "Deepest 2")
+  expect "Deepest 2 activates" 'SIG activate item\[Deepest 2\]'
+  all_closed "closed after the click"
+
+  t12_reset quiet; step s21-dropdown-bottom
+  lclick $(center dd-press)
+  expect "dropdown shows" 'SIG show menu\[DropPress\]'
+  pause 400; popups_inside_output "the dropdown near the bottom edge stays inside the output"
+  shot s21-dropdown-bottom
+  refresh_geom; lclick $(item_center DropPress "DropPress 4")
+  expect "DropPress 4 activates" 'SIG activate item\[DropPress 4\]'
+  all_closed "closed after the click"
+
+  t12_reset quiet; step s21-combo-bottom
+  lclick $(center combo); expect "combo opens" 'notify::popup-shown combo 1'
+  pause 400; popups_inside_output "the combo menu stays inside the output"
+  shot s21-combo-bottom
+  keys Escape; pause 300; all_closed "closed after Escape"
+  move_main 100 100; unset SHOT_GEOM
+}
+
+T12_ALL_SCENARIOS="$T12_ALL_SCENARIOS s21_near_edges"
+
+# A touchpad tap is a press and a release with no delay.  The release can reach the client before
+# the popup the press opened is mapped.  The menu has to stay open, like a short click on X11.
+s22_fast_tap() {
+  t12_reset; step s22-tap-dropdown
+  ltap $(center dd-press)
+  expect "tap on a press-dropdown shows the menu" 'SIG show menu\[DropPress\]'
+  expect_not "the menu stays open after the tap" 'SIG hide menu\[DropPress\]' 700
+  refresh_geom; menu_open DropPress && ok "DropPress is mapped" || fail "DropPress is not mapped"
+  ltap $(item_center DropPress "DropPress 3")
+  expect "a tap on an item activates it" 'SIG activate item\[DropPress 3\]'
+  all_closed "closed after the tap"
+
+  t12_reset quiet; step s22-tap-menubar
+  ltap $(center bar:File)
+  expect "tap on File shows the menu" 'SIG show menu\[File\]'
+  expect_not "File stays open after the tap" 'SIG hide menu\[File\]' 700
+  refresh_geom
+  vtap $(item_center File "New")
+  expect "a tap on New activates it" 'SIG activate item\[New\]'
+  all_closed "closed after the tap"
+
+  t12_reset quiet; step s22-tap-combo
+  ltap $(center combo)
+  expect "tap on the combo opens it" 'notify::popup-shown combo 1'
+  expect_not "the combo stays open after the tap" 'notify::popup-shown combo 0' 700
+  refresh_geom
+  ltap $(item_center GtkMenu "#5")
+  expect "a tap on a combo item changes it" 'SIG changed combo active=5'
+  all_closed "closed after the tap"
+}
+
+T12_ALL_SCENARIOS="$T12_ALL_SCENARIOS s22_fast_tap"

@@ -71,6 +71,8 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 . "$SEAT/client-env.sh" || exit 1
+# T12_FFM tells the scenarios whether sway moves focus with the pointer (focus_follows_mouse yes)
+CONF=${SWAYCONF:-$SEAT/sway.conf}; T12_FFM=0; grep -qE "^[[:space:]]*focus_follows_mouse[[:space:]]+(yes|always)" "$CONF" && T12_FFM=1; export T12_FFM
 export GTK_PATH="$BUILD/libs/clearlooks-newer" G_MESSAGES_DEBUG= T_HAVE_SEAT=1
 SUMMARY="$LOGS/summary.txt"; : > "$SUMMARY"
 ALLRC=0
