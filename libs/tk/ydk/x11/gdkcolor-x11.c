@@ -344,19 +344,11 @@ gdk_colormap_sync (GdkColormap *colormap,
   else
     gdk_colormap_sync_palette (colormap);
 }
-		   
-/**
- * gdk_screen_get_system_colormap:
- * @screen: a #GdkScreen
- *
- * Gets the system's default colormap for @screen
- *
- * Returns: (transfer none): the default colormap for @screen.
- *
- * Since: 2.2
- */
+
+/* ydk-wayland: X11 implementation of the GdkScreenClass system colormap
+ * query (see gdkscreen.h). */
 GdkColormap *
-gdk_screen_get_system_colormap (GdkScreen *screen)
+gdkw_screen_x11_get_system_colormap (GdkScreen *screen)
 {
   GdkColormap *colormap = NULL;
   GdkColormapPrivateX11 *private;

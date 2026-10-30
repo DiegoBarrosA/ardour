@@ -2697,36 +2697,6 @@ gdk_screen_broadcast_client_message (GdkScreen *screen,
 						0);
 }
 
-/*
- *--------------------------------------------------------------
- * gdk_flush
- *
- *   Flushes the Xlib output buffer and then waits
- *   until all requests have been received and processed
- *   by the X server. The only real use for this function
- *   is in dealing with XShm.
- *
- * Arguments:
- *
- * Results:
- *
- * Side effects:
- *
- *--------------------------------------------------------------
- */
-
-void
-gdk_flush (void)
-{
-  GSList *tmp_list = _gdk_displays;
-  
-  while (tmp_list)
-    {
-      XSync (GDK_DISPLAY_XDISPLAY (tmp_list->data), False);
-      tmp_list = tmp_list->next;
-    }
-}
-
 static Bool
 timestamp_predicate (Display *display,
 		     XEvent  *xevent,
