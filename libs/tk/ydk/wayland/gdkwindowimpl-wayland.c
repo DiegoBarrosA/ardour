@@ -1002,6 +1002,15 @@ _gdk_wayland_window_impl_new (GdkWindow     *window,
 								visual);
 	}
     }
+  else
+    {
+      /* X11 gives an input-only window the system colormap (gdkwindow-x11.c).
+       * GTK relies on it: gtk_style_attach () on the input-only window of a
+       * GtkInvisible, which every GtkClipboard owns, reads the colormap and
+       * would fail the colormap assertion with NULL. */
+      impl->colormap = gdk_screen_get_system_colormap (screen);
+      g_object_ref (impl->colormap);
+    }
 
   /* Capture the WM_CLASS hint so it can be forwarded as the xdg_toplevel
    * app_id at show time.  wmclass_class is the more specific half and
