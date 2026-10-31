@@ -9,7 +9,7 @@
 # session.  It is not part of run-tests.sh, because it needs sway, jq and grim.
 #
 # usage: run-seat-tests.sh [--wldebug] [--keep-sway] [--only "s01 s02 ..."] [test-stem ...]
-#   test-stem  t0_10_popup_menu, t0_12_menus_seat or t0_15_insensitive_menu_items (default: all three)
+#   test-stem  t0_10_popup_menu, t0_12_menus_seat or t0_15_insensitive_menu_items or t0_16_scale_flip_repaint (default: all four)
 #   --wldebug  run T0.12 with WAYLAND_DEBUG=1, the trace goes to LOGS/t0_12_menus_seat.trace
 #   --ffm      use seat/sway-ffm.conf (focus_follows_mouse yes, the sway default), restarts the sway
 #   --sway-conf FILE  start the sway with this config (seat/sway-scale2.conf gives a HiDPI output), restarts the sway
@@ -51,7 +51,7 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
-[ ${#TESTS[@]} -gt 0 ] || TESTS=(t0_10_popup_menu t0_12_menus_seat t0_15_insensitive_menu_items)
+[ ${#TESTS[@]} -gt 0 ] || TESTS=(t0_10_popup_menu t0_12_menus_seat t0_15_insensitive_menu_items t0_16_scale_flip_repaint)
 for t in sway swaymsg grim jq; do command -v $t >/dev/null || { echo "run-seat-tests.sh: $t is not in PATH" >&2; exit 1; }; done
 
 mkdir -p "$LOGS"

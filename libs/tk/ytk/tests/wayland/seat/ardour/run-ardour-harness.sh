@@ -15,7 +15,7 @@ OUT=${1:?outdir}; mkdir -p "$OUT"
 . "$(dirname "${BASH_SOURCE[0]}")/ard-lib.sh"
 . "$SEAT/client-env.sh"
 export HOME=$ARD_HOME XDG_CONFIG_HOME=$ARD_HOME/.config XDG_CACHE_HOME=$ARD_HOME/.cache XDG_DATA_HOME=$ARD_HOME/.local/share
-export ARDOUR_TRY_AUTOSTART_ENGINE=1 UBUNTU_MENUPROXY= G_MESSAGES_DEBUG=
+export ARDOUR_TRY_AUTOSTART_ENGINE=${ARDOUR_TRY_AUTOSTART_ENGINE:-1} UBUNTU_MENUPROXY= G_MESSAGES_DEBUG=
 [ "${WLDEBUG:-0}" = 1 ] && export WAYLAND_DEBUG=1
 cd "$ROOT"
 nohup nix-shell "$SHELL_NIX" --run \
