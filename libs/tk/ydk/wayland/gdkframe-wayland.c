@@ -90,8 +90,6 @@ struct _GDKWFrame
 
   gint    scope_depth;           /* open process_updates scopes */
 
-  guint   scale120;              /* last scale seen by set_scale, 0 unknown */
-
   /* geometry of the last commit */
   gint    commit_lw, commit_lh;
   guint   commit_scale120;
@@ -895,11 +893,11 @@ _gdk_wayland_frame_set_scale (GDKWWindowImplWayland *impl, guint scale120)
       return;
     }
 
-  /* S1 */
-  if (scale120 == f->scale120)
-    return;
+  /* S1: the store already has this scale.  Do not compare with the last scale this
+   * record saw: the record outlives the wl_surface (a GtkMenu window is shown again and
+   * again, each time with a new surface that starts at the hint), so the last value
+   * can equal the new one while the store of the new surface has the other scale. */
   current = backing_scale120 (impl);
-  f->scale120 = scale120;
   if (current == scale120)
     return;
 
