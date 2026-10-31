@@ -48,5 +48,7 @@ gdk_window_impl_get_type (void)
 }
 
 #define __GDK_WINDOW_IMPL_C__
+#ifndef YDK_PER_SOURCE_ALIASES
 #include "gdkaliasdef.c"
+#endif
 

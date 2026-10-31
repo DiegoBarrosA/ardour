@@ -656,4 +656,6 @@ gdk_image_new (GdkImageType  type,
 }
 
 #define __GDK_IMAGE_C__
+#ifndef YDK_PER_SOURCE_ALIASES
 #include "gdkaliasdef.c"
+#endif

@@ -117,8 +117,13 @@ xembed_set_info (GdkWindow     *window,
 {
   GdkDisplay *display = gdk_window_get_display (window);
   unsigned long buffer[2];
+  Atom xembed_info_atom;
 
-  Atom xembed_info_atom = gdk_x11_get_xatom_by_name_for_display (display, "_XEMBED_INFO");
+  /* On a display that is not X11 there is no Display for XChangeProperty. */
+  if (!GTK_DISPLAY_IS_X11 (display))
+    return;
+
+  xembed_info_atom = gdk_x11_get_xatom_by_name_for_display (display, "_XEMBED_INFO");
 
   buffer[0] = GTK_XEMBED_PROTOCOL_VERSION;
   buffer[1] = flags;

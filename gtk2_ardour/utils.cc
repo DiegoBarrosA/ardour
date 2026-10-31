@@ -75,6 +75,10 @@
 #include "ui_config.h"
 #include "utils.h"
 
+#ifdef GDK_WINDOWING_X11
+#include <ydk/gdkx.h>
+#endif
+
 #include "pbd/i18n.h"
 
 using namespace std;
@@ -639,6 +643,21 @@ ARDOUR_UI_UTILS::key_is_legal_for_numeric_entry (guint keyval)
 	}
 
 	return false;
+}
+
+bool
+ARDOUR_UI_UTILS::display_is_x11 ()
+{
+#ifdef GDK_WINDOWING_X11
+	/* A build can have more than one GDK backend (X11 and Wayland on Linux).
+	 * GDK_WINDOWING_X11 only says that X11 is compiled in, not that the
+	 * default display is an X11 display.
+	 */
+	GdkDisplay* display = gdk_display_get_default ();
+	return display && gdk_x11_display_is_x11 (display);
+#else
+	return false;
+#endif
 }
 
 int

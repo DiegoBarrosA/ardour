@@ -289,4 +289,6 @@ gdk_app_launch_context_new (void)
 }
 
 #define __GDK_APP_LAUNCH_CONTEXT_C__
+#ifndef YDK_PER_SOURCE_ALIASES
 #include "gdkaliasdef.c"
+#endif

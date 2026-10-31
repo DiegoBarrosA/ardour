@@ -117,10 +117,26 @@ struct _GdkDisplayClass
 						    gint        screen_num);
   GdkScreen *		     (*get_default_screen) (GdkDisplay *display);
 
-  
   /* Signals */
   void (*closed) (GdkDisplay *display,
 		  gboolean    is_error);
+
+  /* ydk-wayland: layout note.  The three slots below are new.  They come after
+   * the "closed" signal slot, so every slot that existed before keeps its
+   * offset.  A backend class compiled against the old header registers a
+   * smaller class struct, so rebuild every backend against this header. */
+
+  /* Backend-neutral flush and sync.  GTK2 owned these as per-backend public
+   * functions (X11: XFlush/XSync).  They are dispatched here so the Wayland
+   * backend can flush and roundtrip its wl_display. */
+  void (*flush)              (GdkDisplay *display);
+  void (*sync)               (GdkDisplay *display);
+
+  /* Backend keymap accessor.  GTK2 implemented gdk_keymap_get_for_display ()
+   * per-backend.  It is dispatched here like the other per-display
+   * operations, so X11 and Wayland can coexist.  The struct tag avoids a
+   * second typedef of GdkKeymap, which gdkkeys.h declares. */
+  struct _GdkKeymap *(*keymap) (GdkDisplay *display);
 };
 
 struct _GdkDisplayPointerHooks

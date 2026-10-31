@@ -759,10 +759,7 @@ gdk_rgb_xpixel_from_rgb_internal (GdkColormap *colormap,
       /* If bits not used for color are used for something other than padding,
        * it's likely alpha, so we set them to 1s.
        */
-      unused = ~ (image_info->visual->red_mask | 
-		  image_info->visual->green_mask | 
-		  image_info->visual->blue_mask |
-		  (((~(guint32)0)) << image_info->visual->depth));
+      unused = gdk_rgb_alpha_mask (image_info);	/* shift by depth 32 is UB inline */
 
       pixel = (unused + ((r >> (16 - image_info->visual->red_prec)) << image_info->visual->red_shift) +
 	       ((g >> (16 - image_info->visual->green_prec)) << image_info->visual->green_shift) +
@@ -3767,4 +3764,6 @@ gdk_rgb_get_visual (void)
 }
 
 #define __GDK_RGB_C__
+#ifndef YDK_PER_SOURCE_ALIASES
 #include "gdkaliasdef.c"
+#endif

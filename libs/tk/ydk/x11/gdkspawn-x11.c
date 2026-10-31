@@ -225,4 +225,6 @@ gdk_spawn_command_line_on_screen (GdkScreen    *screen,
 }
 
 #define __GDK_SPAWN_X11_C__
+#ifndef YDK_PER_SOURCE_ALIASES
 #include "gdkaliasdef.c"
+#endif

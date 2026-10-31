@@ -49,6 +49,10 @@ Colormap gdk_x11_colormap_get_xcolormap   (GdkColormap *colormap);
 Display *gdk_x11_cursor_get_xdisplay      (GdkCursor   *cursor);
 Cursor   gdk_x11_cursor_get_xcursor       (GdkCursor   *cursor);
 Display *gdk_x11_display_get_xdisplay     (GdkDisplay  *display);
+/* ydk-wayland: TRUE for a live X11 display, FALSE for NULL and for a Wayland
+ * display.  Test it before using GDK_DISPLAY_XDISPLAY, GDK_WINDOW_XID and the
+ * other X11 handle macros: on a Wayland display they give NULL and 0. */
+gboolean gdk_x11_display_is_x11           (GdkDisplay  *display);
 Visual * gdk_x11_visual_get_xvisual       (GdkVisual   *visual);
 #if !defined(GDK_DISABLE_DEPRECATED) || defined(GDK_COMPILATION)
 Display *gdk_x11_gc_get_xdisplay          (GdkGC       *gc);
@@ -62,6 +66,13 @@ void     gdk_x11_window_move_to_current_desktop (GdkWindow   *window);
 
 const char* gdk_x11_screen_get_window_manager_name (GdkScreen *screen);
 
+/* ydk-wayland: on a non-X11 display these functions return NULL or 0:
+ * gdk_x11_display_get_xdisplay, gdk_x11_drawable_get_xdisplay,
+ * gdk_x11_drawable_get_xid, gdk_x11_screen_get_xscreen,
+ * gdk_x11_screen_get_screen_number and the three gdk_x11_get_default_*
+ * functions.  The accessors for colormaps, cursors, images, visuals and GCs
+ * do not check: only X11 code holds those objects.  A NULL Display * still
+ * crashes inside Xlib, so call gdk_x11_display_is_x11 () first. */
 #ifndef GDK_MULTIHEAD_SAFE
 Window   gdk_x11_get_default_root_xwindow (void);
 Display *gdk_x11_get_default_xdisplay     (void);

@@ -1599,4 +1599,6 @@ gdk_x11_ref_cairo_surface (GdkDrawable *drawable)
 }
 
 #define __GDK_DRAWABLE_X11_C__
+#ifndef YDK_PER_SOURCE_ALIASES
 #include "gdkaliasdef.c"
+#endif

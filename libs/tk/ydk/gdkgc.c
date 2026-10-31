@@ -1596,4 +1596,6 @@ _gdk_gc_update_context (GdkGC          *gc,
 
 
 #define __GDK_GC_C__
+#ifndef YDK_PER_SOURCE_ALIASES
 #include "gdkaliasdef.c"
+#endif

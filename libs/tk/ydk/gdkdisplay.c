@@ -204,6 +204,68 @@ gdk_display_close (GdkDisplay *display)
     }
 }
 
+#ifdef GDK_WINDOWING_WAYLAND
+/* ydk-wayland: on Linux every backend dispatches these through the display,
+ * screen and keymap classes, so the single definitions live here.  The
+ * quartz and win32 backends still define their own copies and never define
+ * GDK_WINDOWING_WAYLAND. */
+/**
+ * gdk_display_get_n_screens:
+ * @display: a #GdkDisplay
+ * 
+ * Gets the number of screens managed by the @display.
+ * 
+ * Returns: number of screens.
+ * 
+ * Since: 2.2
+ */
+gint
+gdk_display_get_n_screens (GdkDisplay *display)
+{
+  g_return_val_if_fail (GDK_IS_DISPLAY (display), 0);
+
+  return GDK_DISPLAY_GET_CLASS (display)->get_n_screens (display);
+}
+
+/**
+ * gdk_display_get_screen:
+ * @display: a #GdkDisplay
+ * @screen_num: the screen number
+ *
+ * Returns a screen object for one of the screens of the display.
+ *
+ * Returns: the #GdkScreen object
+ *
+ * Since: 2.2
+ */
+GdkScreen *
+gdk_display_get_screen (GdkDisplay *display, 
+			gint        screen_num)
+{
+  g_return_val_if_fail (GDK_IS_DISPLAY (display), NULL);
+
+  return GDK_DISPLAY_GET_CLASS (display)->get_screen (display, screen_num);
+}
+
+/**
+ * gdk_display_get_default_screen:
+ * @display: a #GdkDisplay
+ *
+ * Get the default #GdkScreen for @display.
+ * 
+ * Returns: the default #GdkScreen object for @display
+ *
+ * Since: 2.2
+ */
+GdkScreen *
+gdk_display_get_default_screen (GdkDisplay *display)
+{
+  g_return_val_if_fail (GDK_IS_DISPLAY (display), NULL);
+
+  return GDK_DISPLAY_GET_CLASS (display)->get_default_screen (display);
+}
+#endif /* GDK_WINDOWING_WAYLAND */
+
 /**
  * gdk_display_is_closed:
  * @display: a #GdkDisplay
@@ -1308,5 +1370,92 @@ gdk_display_pointer_is_grabbed (GdkDisplay *display)
   return (info && !info->implicit);
 }
 
+#ifdef GDK_WINDOWING_WAYLAND
+/* ydk-wayland: on Linux every backend dispatches these through the display,
+ * screen and keymap classes, so the single definitions live here.  The
+ * quartz and win32 backends still define their own copies and never define
+ * GDK_WINDOWING_WAYLAND. */
+/**
+ * gdk_display_flush:
+ * @display: a #GdkDisplay
+ *
+ * Flushes any requests queued for the windowing system; this happens
+ * automatically when the main loop blocks waiting for new events, but if
+ * your application is drawing without returning control to the main loop,
+ * you may need to call this function explicitely. A common case where this
+ * function needs to be called is when an application is executing drawing
+ * commands from a thread other than the thread where the main loop is
+ * running.
+ *
+ * This is most useful for X11. On windowing systems where requests are
+ * handled synchronously, this function will do nothing.
+ *
+ * Since: 2.4
+ *
+ * ydk-wayland: backend-neutral.  The Windowing System sends its buffered
+ * requests; this is dispatched to the selected backend's display class.
+ */
+void
+gdk_display_flush (GdkDisplay *display)
+{
+  g_return_if_fail (GDK_IS_DISPLAY (display));
+
+  if (!display->closed &&
+      GDK_DISPLAY_GET_CLASS (display)->flush)
+    GDK_DISPLAY_GET_CLASS (display)->flush (display);
+}
+
+/**
+ * gdk_display_sync:
+ * @display: a #GdkDisplay
+ *
+ * Flushes any requests queued for the windowing system and waits until all
+ * requests have been handled. This is often used for making sure that the
+ * display is synchronized with the current state of the program, e.g. before
+ * doing XGetImage calls.
+ *
+ * This is most useful for X11. On windowing systems where requests are
+ * handled synchronously, this function will do nothing.
+ *
+ * Since: 2.2
+ *
+ * ydk-wayland: backend-neutral.  The Windowing System drains its requests
+ * and blocks until they are processed; this is dispatched to the selected
+ * backend's display class.
+ */
+void
+gdk_display_sync (GdkDisplay *display)
+{
+  g_return_if_fail (GDK_IS_DISPLAY (display));
+
+  if (GDK_DISPLAY_GET_CLASS (display)->sync)
+    GDK_DISPLAY_GET_CLASS (display)->sync (display);
+}
+
+/**
+ * gdk_flush:
+ *
+ * Flushes the output queue of each open display and waits until all
+ * requests have been received and processed by the server. It's needed for
+ * dealing with XShm.
+ *
+ * ydk-wayland: backend-neutral; calls gdk_display_sync() for every open
+ * display.
+ */
+void
+gdk_flush (void)
+{
+  GSList *tmp_list = _gdk_displays;
+
+  while (tmp_list)
+    {
+      gdk_display_sync (tmp_list->data);
+      tmp_list = tmp_list->next;
+    }
+}
+#endif /* GDK_WINDOWING_WAYLAND */
+
 #define __GDK_DISPLAY_C__
+#ifndef YDK_PER_SOURCE_ALIASES
 #include "gdkaliasdef.c"
+#endif

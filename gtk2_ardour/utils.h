@@ -115,6 +115,14 @@ bool running_from_source_tree ();
 
 void inhibit_screensaver (bool);
 
+/** @return true if the default GDK display is an X11 display.
+ *
+ * Use this at run time before any Xlib call or X11 window id. On Linux a
+ * build can contain more than one GDK backend, so the GDK_WINDOWING_X11
+ * macro is not enough. Always false on macOS and Windows.
+ */
+bool display_is_x11 ();
+
 void copy_patch_changes (std::shared_ptr<ARDOUR::Auditioner>, std::shared_ptr<ARDOUR::Trigger>);
 
 bool convert_drop_to_paths (std::vector<std::string>&, const Gtk::SelectionData&);

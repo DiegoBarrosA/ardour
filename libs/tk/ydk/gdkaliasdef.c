@@ -985,8 +985,12 @@ extern __typeof (gdk_display_pointer_ungrab) gdk_display_pointer_ungrab __attrib
 #undef gdk_display_keyboard_ungrab 
 extern __typeof (gdk_display_keyboard_ungrab) gdk_display_keyboard_ungrab __attribute((alias("IA__gdk_display_keyboard_ungrab"), visibility("default")));
 
+/* ydk-wayland: with per-source aliases (YDK_PER_SOURCE_ALIASES) the dispatcher
+ * in gdkbackend.c defines gdk_display_open and emits this alias itself. */
+#ifndef YDK_PER_SOURCE_ALIASES
 #undef gdk_display_open 
 extern __typeof (gdk_display_open) gdk_display_open __attribute((alias("IA__gdk_display_open"), visibility("default")));
+#endif
 
 #undef gdk_display_request_selection_notification 
 extern __typeof (gdk_display_request_selection_notification) gdk_display_request_selection_notification __attribute((alias("IA__gdk_display_request_selection_notification"), visibility("default")));

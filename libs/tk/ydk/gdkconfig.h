@@ -28,7 +28,12 @@ extern "C" {
 # define GDK_WINDOWING_WIN32
 # define GDK_NATIVE_WINDOW_POINTER
 #else
+/* Linux: the X11 and Wayland backends are both compiled into libydk.
+ * GDK_BACKEND selects one at run time, X11 is the default (see gdkbackend.c).
+ * GDK_WINDOWING_X11 stays defined on Linux, so test the display with
+ * gdk_x11_display_is_x11 () before you use X11 handles. */
 # define GDK_WINDOWING_X11
+# define GDK_WINDOWING_WAYLAND
 #endif
 
 #define GDK_HAVE_WCHAR_H 1
