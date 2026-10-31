@@ -1679,6 +1679,10 @@ void     _gdk_wayland_scale_surface_destroy  (GDKWWindowImplWayland *impl);
  * surface state (returns the HINT).  Range GDKW_SCALE_MIN..MAX. */
 guint    _gdk_wayland_scale_surface_scale120 (GDKWWindowImplWayland *impl);
 
+/* A popup takes the scale of its parent while it has no better information. */
+void     _gdk_wayland_scale_inherit_parent   (GDKWWindowImplWayland *impl,
+                                              GDKWWindowImplWayland *parent);
+
 /* Called by the frame piece inside a commit, after the copy and before the
  * attach, when the scale state is dirty or the buffer geometry changed.  It
  * decides integer or fractional path (D11) from @scale120 and the logical

@@ -128,6 +128,7 @@ struct _GDKWScaleDisplay
   struct zxdg_output_manager_v1 *xdg_manager;
   guint32               xdg_manager_name;
   gboolean              force_fractional;
+  guint                 last_toplevel_scale120; /* scale of the last toplevel that learned it from the compositor, 0 none */
   gchar                *emitted_sig;     /* what the screen signals last reported */
   gboolean              finalized;
 
@@ -368,6 +369,9 @@ surface_update (GDKWSurfaceScale *ss)
   guint s = surface_eval (ss, &source);
 
   ss->source = source;
+  /* what the next toplevel starts with (a guess better than the hint) */
+  if (source != GDKW_TEST_SCALE_HINT && ss->impl != NULL && ss->impl->popup == NULL)
+    ss->st->last_toplevel_scale120 = s;
   if (s == ss->scale120)
     return;
 
@@ -522,9 +526,23 @@ _gdk_wayland_scale_surface_created (GDKWWindowImplWayland *impl)
   st->surfaces = g_list_prepend (st->surfaces, ss);
   impl->wscale = ss;
 
-  /* The initial value is the HINT.  The frame piece reads it through
-   * _gdk_wayland_scale_surface_scale120 () when it makes the first store. */
+  /* The initial value is a guess, source HINT.  The frame piece reads it through
+   * _gdk_wayland_scale_surface_scale120 () when it makes the first store.  A guess that
+   * is wrong costs a flip and a full repaint, so use the best one we have: the scale of
+   * the last toplevel of the client, else of the surface with the pointer or the keyboard
+   * focus, else the largest output scale (the compositor sends enter only after the first
+   * commit).  A popup takes the scale of its parent when the parent is chosen (below). */
   ss->scale120 = surface_eval (ss, &ss->source);
+  if (ss->source == GDKW_TEST_SCALE_HINT)
+    {
+      GDKWSeat *seat = _gdk_wayland_display_get_seat (GDK_DISPLAY_OBJECT (display));
+      GDKWWindowImplWayland *focus = seat != NULL ? (seat->pointer_focus != NULL ? seat->pointer_focus : seat->keyboard_focus) : NULL;
+
+      if (st->last_toplevel_scale120 > 0)
+        ss->scale120 = st->last_toplevel_scale120;
+      else if (focus != NULL && focus != impl && focus->wscale != NULL)
+        ss->scale120 = focus->wscale->scale120;
+    }
 }
 
 void
@@ -552,6 +570,23 @@ _gdk_wayland_scale_surface_destroy (GDKWWindowImplWayland *impl)
   ss->st->surfaces = g_list_remove (ss->st->surfaces, ss);
   g_list_free (ss->entered);
   g_free (ss);
+}
+
+/* A popup starts at the scale of its parent: both are on the same output, and a popup that
+ * starts at the hint and flips shows a half painted buffer.  Only while nothing better is
+ * known (source HINT); a store that exists is replaced by the frame piece. */
+void
+_gdk_wayland_scale_inherit_parent (GDKWWindowImplWayland *impl,
+                                  GDKWWindowImplWayland *parent)
+{
+  GDKWSurfaceScale *ss = impl != NULL ? impl->wscale : NULL;
+
+  if (ss == NULL || parent == NULL || parent->wscale == NULL ||
+      ss->source != GDKW_TEST_SCALE_HINT || ss->scale120 == parent->wscale->scale120)
+    return;
+
+  ss->scale120 = parent->wscale->scale120;
+  _gdk_wayland_frame_set_scale (impl, ss->scale120);
 }
 
 guint

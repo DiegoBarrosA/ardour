@@ -1299,6 +1299,8 @@ commit_one (PopupDisplay *pd, GDKWPopup *p)
       return;
     }
 
+  _gdk_wayland_scale_inherit_parent (impl, parent);
+
   if (from_transient)
     {
       GArray *snap;
